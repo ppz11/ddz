@@ -4,7 +4,13 @@ window.Net = (function () {
   /* 打包成 App 时由 build-www 注入固定服务器地址；浏览器访问时留空，走同源 */
   var SERVER = window.APP_SERVER || '';
   /* 允许在诊断框里手动改写服务器地址并立即生效（免重新编译） */
-  function setServer(v) { SERVER = String(v || '').trim().replace(/\/$/, ''); try { ws = null; } catch (e) {} }
+  function setServer(v) {
+    SERVER = String(v || '').trim().replace(/\/$/, '');
+    retry = 0; queue.length = 0; opened = false;
+    clearTimeout(timer);
+    try { if (ws) ws.close(); } catch (e) {}
+    ws = null;
+  }
   function wsUrl() {
     if (!SERVER) return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
     return SERVER.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws';
@@ -43,11 +49,22 @@ window.Net = (function () {
     else queue.push(m);
   }
   function api(path, body) {
-    return fetch((SERVER || base) + path, {
+    var url = (SERVER || base) + path;
+    return fetch(url, {
       method: body ? 'POST' : 'GET',
       headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined
-    }).then(function (r) { return r.json(); });
+    }).then(function (r) {
+      if (!r.ok) {
+        var e = new Error('HTTP ' + r.status + ' @ ' + url);
+        e.httpStatus = r.status; e.url = url; throw e;
+      }
+      return r.json();
+    }, function (err) {
+      /* fetch 失败时浏览器只给 "Failed to fetch"，这里补上真实地址，便于定位 */
+      var e = new Error((err && err.message ? err.message : '请求失败') + ' → ' + url);
+      e.url = url; e.cause = err; throw e;
+    });
   }
   function upload(file, kind, dur) {
     return new Promise(function (res, rej) {
@@ -68,6 +85,10 @@ window.Net = (function () {
   }
   return {
     on: on, send: send, connect: connect, api: api, upload: upload, abs: abs,
+    /* 诊断与手动改地址（必须导出，否则 app.js 里永远是 undefined） */
+    setServer: setServer, serverLabel: serverLabel,
+    /* 当前实际使用的地址（供诊断展示） */
+    currentServer: function () { return SERVER || ''; },
     get open() { return opened && ws && ws.readyState === 1; },
     close: function () { if (ws) try { ws.close(); } catch (e) {} }
   };

@@ -50,13 +50,9 @@ public class MainActivity extends BridgeActivity {
         // 默认竖屏；进入牌桌时由 JS 调 DDZNative.setOrientation('landscape') 切横屏
         try { setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT); } catch (Exception ignored) { }
 
+        applyWebViewSettings();
         WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;
         if (wv != null) {
-            // 关键：页面跑在 https://localhost（安全上下文），App 却要请求 http://服务器:8080，
-            // 属于「混合内容」，WebView 默认拦截 → 表现就是「连接服务器失败」。这里强制放行。
-            try {
-                wv.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-            } catch (Exception ignored) { }
             wv.addJavascriptInterface(new DDZBridge(), "DDZNative");
             final WebChromeClient orig = wv.getWebChromeClient();
             wv.setWebChromeClient(new WebChromeClient() {
@@ -110,6 +106,28 @@ public class MainActivity extends BridgeActivity {
                     Manifest.permission.CAMERA
             }, REQ_PERM);
         }
+    }
+
+    /**
+     * 关键：页面跑在 https://localhost（安全上下文），App 却要请求 http://服务器:8080，
+     * 属于「混合内容」，WebView 默认拦截 → 表现就是「连接服务器失败」。这里强制放行。
+     *
+     * 注意：Bridge 的 WebView 在部分 Capacitor 版本里 onCreate 时还没建好（getWebView() 返回 null），
+     * 所以这里在 onCreate 和 onStart 各调一次，确保一定生效。
+     */
+    private void applyWebViewSettings() {
+        try {
+            WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;
+            if (wv == null) return;
+            wv.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+            wv.getSettings().setMediaPlaybackRequiresUserGesture(false);
+        } catch (Exception ignored) { }
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        applyWebViewSettings();
     }
 
     public class DDZBridge {

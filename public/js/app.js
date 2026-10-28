@@ -129,6 +129,25 @@ window.App = (function () {
     setTimeout(function () { login(); }, 700);
   }
   /* ---------- 连接诊断：连不上时把「目标地址 + 原因」直接显示在启动页 ---------- */
+  /* 主动探测一次服务器，把「页面来源 / 原生桥接是否加载 / HTTP 状态」直接摆出来，
+     一眼就能区分：地址错、服务器没开、还是 App 的 WebView 拦了 http（混合内容）。 */
+  function probeServer(u) {
+    var t0 = Date.now();
+    var done = function (txt) {
+      var el = document.getElementById('dg-probe');
+      if (!el) return;
+      var href = ''; try { href = location.href; } catch (e) {}
+      el.innerHTML = '<div class="dg-m" style="opacity:.75;font-size:11px;line-height:1.7;margin-top:6px">'
+        + '页面来源：' + esc(href) + '<br>'
+        + (window.DDZNative ? '原生桥接：✔ 已加载' : '原生桥接：✘ 未加载（http 可能被 WebView 拦截）') + '<br>'
+        + esc(txt) + '（' + (Date.now() - t0) + 'ms）</div>';
+    };
+    fetch(u + '/api/health', { method: 'GET' })
+      .then(function (r) {
+        return r.text().then(function (t) { done('探测结果：HTTP ' + r.status + ' ' + String(t).slice(0, 70)); });
+      })
+      .catch(function (e) { done('探测结果：失败 → ' + String((e && e.message) || e)); });
+  }
   var connTries = 0;
   function showConnError(err) {
     connTries++;
@@ -152,6 +171,7 @@ window.App = (function () {
       '<div class="dg-t">⚠ 连接服务器失败</div>' +
       '<div class="dg-a">' + esc(target) + '</div>' +
       '<div class="dg-m">' + esc(why) + '</div>' +
+      '<div id="dg-probe"></div>' +
       '<div class="dg-row"><input id="dg-in" placeholder="服务器地址 http://IP:8080" value="' +
         esc(target.indexOf('http') === 0 ? target : '') + '"></div>' +
       '<div class="dg-row">' +
@@ -159,6 +179,7 @@ window.App = (function () {
         '<button class="dg-b" id="dg-save">用这个地址</button>' +
       '</div>';
     box.classList.remove('hidden');
+    probeServer(target);
     var br = document.getElementById('dg-retry');
     if (br) br.onclick = function () { connTries = 0; box.classList.add('hidden'); login(); };
     var bs = document.getElementById('dg-save');
