@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  允许明文 HTTP / WS 访问自己的服务器。
+
+  Android 9（API 28）起默认禁止明文流量，App 里访问 http://IP:8080 会被系统直接拦掉，
+  表现就是「连接服务器失败」。Capacitor 的页面跑在 https://localhost（安全上下文），
+  再去请求 http:// 属于混合内容，更需要显式放行。
+
+  这里同时做了两件事：
+    1) <base-config cleartextTrafficPermitted="true">  放开全局明文
+    2) <domain-config> 显式允许服务器域名 / IP（双保险）
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- 显式放行斗地主服务器（换成自己的 IP / 域名也可以，这里按 IP 放行） -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">101.201.106.149</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

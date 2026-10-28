@@ -1,0 +1,173 @@
+name: 编译安卓安装包
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: "服务器地址（例如 http://101.201.106.149:8080）"
+        required: true
+        default: "http://101.201.106.149:8080"
+      app_name:
+        description: "App 显示名称"
+        required: false
+        default: "PP斗地主"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 安装依赖
+        run: npm install
+
+      - name: 生成前端资源
+        run: npm run build:www
+        env:
+          APP_SERVER: ${{ github.event.inputs.server_url }}
+
+      - name: 初始化安卓工程
+        run: npx cap add android
+
+      - name: 同步前端到安卓
+        run: npx cap sync android
+
+      # ---- 覆盖图标（精致版「斗」图标）与应用名 ----
+      - name: 覆盖图标与应用名
+        run: |
+          RES=android/app/src/main/res
+          if [ -d android-src/res ]; then
+            cp -rf android-src/res/. "$RES"/
+            echo "✔ 图标已覆盖"
+          fi
+          # 移除自适应图标目录，避免与新图标冲突
+          rm -rf "$RES/mipmap-anydpi-v26"
+          NAME="${{ github.event.inputs.app_name }}"
+          mkdir -p "$RES/values"
+          cat > "$RES/values/strings.xml" <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">$NAME</string>
+              <string name="title_activity_main">$NAME</string>
+              <string name="package_name">com.yuanbao.ddz</string>
+              <string name="custom_url_scheme">com.yuanbao.ddz</string>
+          </resources>
+          EOF
+          echo "✔ 应用名称: $NAME"
+
+      # ---- 注入原生能力：横竖屏切换 / 原生录音 / 麦克风摄像头授权 ----
+      - name: 注入原生桥接 MainActivity
+        run: |
+          MJ=android/app/src/main/java/com/yuanbao/ddz/MainActivity.java
+          if [ -f android-src/capacitor/MainActivity.java ]; then
+            cp -f android-src/capacitor/MainActivity.java "$MJ"
+            echo "✔ 已注入原生桥接（横竖屏 / 录音 / 权限）"
+          else
+            echo "✘ 找不到 android-src/capacitor/MainActivity.java"; exit 1
+          fi
+          grep -q "DDZNative" "$MJ" || { echo "✘ DDZNative 注入失败"; exit 1; }
+
+      # ---- 明文访问 + 方向策略 ----
+      # 关键：Android 9+ 默认禁止明文 http/ws。Capacitor 的 manifest 里 <application 后面是换行，
+      # 用 sed 's|<application |...' 永远匹配不上，属性会被静默跳过 → App 连不上服务器。
+      # 这里改用 Python 精确改写，无论格式如何都一定生效。
+      - name: 方向策略与明文访问
+        run: |
+          MF=android/app/src/main/AndroidManifest.xml
+          # 拷贝网络安全配置
+          mkdir -p android/app/src/main/res/xml
+          cp -f android-src/res/xml/network_security_config.xml android/app/src/main/res/xml/
+          python3 - <<'PYEOF'
+          import re, sys
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p, encoding="utf-8").read()
+          ns = '{http://schemas.android.com/apk/res/android}'
+
+          def has(attr):
+              return ('android:' + attr) in s
+
+          # 1) usesCleartextTraffic
+          if not has('usesCleartextTraffic'):
+              s2 = re.sub(r'<application(\s|>)', r'<application android:usesCleartextTraffic="true"\1', s, count=1)
+              s = s2 if s2 != s else s
+          # 2) networkSecurityConfig
+          if not has('networkSecurityConfig'):
+              s2 = re.sub(r'<application(\s|>)', r'<application android:networkSecurityConfig="@xml/network_security_config"\1', s, count=1)
+              s = s2 if s2 != s else s
+          # 3) 屏幕方向：绝不能锁 portrait，否则打牌切不了横屏
+          s = s.replace('android:screenOrientation="portrait"', 'android:screenOrientation="fullSensor"')
+          s = s.replace('android:screenOrientation="landscape"', 'android:screenOrientation="fullSensor"')
+          if not has('screenOrientation'):
+              s2 = re.sub(r'android:name="\.MainActivity"',
+                          r'android:name=".MainActivity"\n            android:screenOrientation="fullSensor"', s, count=1)
+              s = s2 if s2 != s else s
+          open(p, "w", encoding="utf-8").write(s)
+          print("--- application 标签 ---")
+          for line in s.splitlines():
+              if '<application' in line or 'usesCleartextTraffic' in line or 'networkSecurityConfig' in line or 'screenOrientation' in line:
+                  print("   " + line.strip())
+          PYEOF
+          echo "--- 最终校验 ---"
+          grep -q 'usesCleartextTraffic="true"' "$MF" && echo "✔ 明文访问已放行" || { echo "✘ 明文访问未放行"; exit 1; }
+          grep -q 'networkSecurityConfig' "$MF" && echo "✔ 网络安全配置已引用" || { echo "✘ 网络安全配置缺失"; exit 1; }
+          [ -f android/app/src/main/res/xml/network_security_config.xml ] && echo "✔ 配置文件已就位" || { echo "✘ 配置文件缺失"; exit 1; }
+
+      # ---- 麦克风 / 摄像头权限（语音消息、语音通话、视频通话）----
+      - name: 补齐录音与摄像头权限
+        run: |
+          MF=android/app/src/main/AndroidManifest.xml
+          for p in RECORD_AUDIO CAMERA MODIFY_AUDIO_SETTINGS; do
+            if ! grep -q "android.permission.$p" "$MF"; then
+              sed -i "0,/<uses-permission/s|<uses-permission |<uses-permission android:name=\"android.permission.$p\"/>\n    <uses-permission |" "$MF"
+            fi
+          done
+          echo "--- 权限清单 ---"
+          grep -o 'android:name="android.permission.[A-Z_]*"' "$MF" || true
+
+      - name: 校验原生能力是否进入工程
+        run: |
+          MJ=android/app/src/main/java/com/yuanbao/ddz/MainActivity.java
+          MF=android/app/src/main/AndroidManifest.xml
+          MISS=0
+          grep -q "setOrientation" "$MJ" || { echo "✘ 缺 setOrientation"; MISS=1; }
+          grep -q "startRecord" "$MJ"  || { echo "✘ 缺 startRecord"; MISS=1; }
+          grep -q "onPermissionRequest" "$MJ" || { echo "✘ 缺权限放行"; MISS=1; }
+          grep -q "RECORD_AUDIO" "$MF" || { echo "✘ 缺录音权限"; MISS=1; }
+          grep -q "CAMERA" "$MF" || { echo "✘ 缺摄像头权限"; MISS=1; }
+          grep -q 'screenOrientation="fullSensor"' "$MF" || { echo "✘ 屏幕方向未放开"; MISS=1; }
+          [ "$MISS" = "0" ] && echo "✔ 原生能力校验全部通过" || { echo "原生能力校验失败"; exit 1; }
+
+      - name: 编译 APK
+        run: cd android && ./gradlew assembleDebug --no-daemon
+
+      - name: 重命名 APK
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk ddz.apk
+          ls -lh ddz.apk
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: ddz-apk
+          path: ddz.apk
+
+      - name: 汇总信息
+        run: |
+          echo "### 编译完成 ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- 服务器地址：${{ github.event.inputs.server_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 应用名称：${{ github.event.inputs.app_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 屏幕方向：默认竖屏，进入牌桌自动横屏" >> $GITHUB_STEP_SUMMARY
+          echo "- 原生能力：横竖屏切换 · 原生录音（语音消息）· 麦克风/摄像头（语音、视频通话）" >> $GITHUB_STEP_SUMMARY
+          echo "- 在页面底部 **Artifacts** 区域点击 \`ddz-apk\` 下载即可" >> $GITHUB_STEP_SUMMARY

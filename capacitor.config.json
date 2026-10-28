@@ -1,0 +1,15 @@
+{
+  "appId": "com.yuanbao.ddz",
+  "appName": "PP斗地主",
+  "webDir": "www",
+  "loggingEnabled": false,
+  "android": {
+    "allowMixedContent": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "LocalNotifications": {},
+    "App": {},
+    "ScreenOrientation": {}
+  }
+}

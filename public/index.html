@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#061f18">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>PP斗地主</title>
+<link rel="icon" href="/icon-512.png">
+<link rel="apple-touch-icon" href="/icon-512.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="app">
+  <div class="felt"></div>
+
+  <!-- 启动页 -->
+  <div id="boot">
+    <svg class="logo" viewBox="0 0 120 120">
+      <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#f3c96b"/><stop offset="1" stop-color="#c99a3a"/></linearGradient></defs>
+      <rect x="8" y="8" width="104" height="104" rx="24" fill="url(#lg)"/>
+      <rect x="20" y="20" width="80" height="80" rx="16" fill="#0d4436"/>
+      <text x="60" y="76" font-size="46" text-anchor="middle" fill="#f3c96b">♠</text>
+      <text x="88" y="42" font-size="26" text-anchor="middle" fill="#e5484d">♥</text>
+    </svg>
+    <div class="title">PP斗地主</div>
+    <div class="sub">1V1 · 联网对战</div>
+    <div class="bar"><i></i></div>
+    <!-- 连接诊断：连不上时这里会显示目标地址、失败原因和手动改地址的入口 -->
+    <div id="boot-diag" class="hidden"></div>
+  </div>
+
+  <!-- 登录页 -->
+  <div id="login" class="hidden">
+    <div class="panel">
+      <div class="av" id="lg-av"></div>
+      <div class="nick" id="lg-nick">—</div>
+      <div class="tip" id="lg-tip">&nbsp;</div>
+      <button class="btn" id="lg-go">进入牌桌</button>
+      <button class="btn ghost" id="lg-new" style="margin-top:10px">换一个身份</button>
+      <button class="btn ghost" id="lg-id" style="margin-top:10px;opacity:.55;font-size:12px">用 ID 登录</button>
+      <!-- 诊断用：显示当前 App 实际连接的服务器地址 -->
+      <div id="lg-srv" style="margin-top:14px;font-size:11px;color:#5c6b66;text-align:center;line-height:1.6;word-break:break-all"></div>
+    </div>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="main" class="hidden">
+    <div id="topbar">
+      <div class="me">
+        <div class="av" id="tb-av"></div>
+        <div>
+          <div class="nm" id="tb-nick">—</div>
+          <div class="id" id="tb-uid"></div>
+        </div>
+      </div>
+      <div class="sp"></div>
+      <div class="coin"><span>🪙</span><b id="tb-coin">0</b></div>
+    </div>
+
+    <div id="pages">
+      <!-- 大厅 -->
+      <section class="page" id="page-home">
+        <div class="cardbox onlinebox">
+          <div class="hd"><span>在线玩家</span></div>
+          <div class="onum" id="online-n">—</div>
+          <div class="osub">正在为你匹配对手</div>
+        </div>
+        <div class="hero">
+          <svg class="deco" viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="46" fill="none" stroke="#f3c96b" stroke-width="2" opacity=".5"/>
+            <text x="50" y="66" font-size="44" text-anchor="middle" fill="#f3c96b" opacity=".9">♠</text>
+          </svg>
+          <h3>1V1 极速对局</h3>
+          <p>联网真人对战 · 两种玩法任选 · 一局三分钟</p>
+        </div>
+        <div class="mode">
+          <div class="m on" data-rule="let46">
+            <div class="tag">推荐</div>
+            <h4>让牌玩法</h4>
+            <p>46 张牌 · 抢地主让牌<br>农民打剩到让牌数即胜</p>
+          </div>
+          <div class="m" data-rule="duo37">
+            <h4>经典玩法</h4>
+            <p>37 张 · 叫分抢地主<br>先出完手牌者获胜</p>
+          </div>
+        </div>
+        <div style="margin:0 14px 12px;display:flex;gap:10px">
+          <button class="btn jade" id="btn-quick" style="flex:1">⚡ 快速匹配</button>
+          <button class="btn" id="btn-create" style="flex:1">🏠 创建房间</button>
+        </div>
+        <div style="margin:0 14px 12px;display:flex;gap:10px">
+          <input id="join-input" inputmode="numeric" placeholder="输入房间号" style="flex:1 1 0;min-width:0;padding:12px;border-radius:14px;background:rgba(255,255,255,.08);border:1px solid var(--line);color:var(--txt);font-size:15px;letter-spacing:3px;text-align:center;outline:none">
+          <button class="btn ghost" id="btn-join" style="flex:0 0 78px">进入</button>
+        </div>
+      </section>
+
+      <!-- 牌桌 -->
+      <section class="page" id="page-play">
+        <!-- 没在对局中时显示：与大厅/我的完全同款的卡片布局 -->
+        <div id="play-empty">
+          <div class="cardbox onlinebox">
+            <div class="hd"><span>在线玩家</span></div>
+            <div class="onum" id="online-n2">—</div>
+            <div class="osub">正在为你匹配对手</div>
+          </div>
+          <div class="hero">
+            <svg class="deco" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="46" fill="none" stroke="#f3c96b" stroke-width="2" opacity=".5"/>
+              <text x="50" y="66" font-size="44" text-anchor="middle" fill="#f3c96b" opacity=".9">♠</text>
+            </svg>
+            <h3>还没有开始对局</h3>
+            <p>选一个玩法直接开局，或输入好友的房间号加入</p>
+          </div>
+          <div class="mode">
+            <div class="m on" data-rule="let46">
+              <div class="tag">推荐</div>
+              <h4>让牌玩法</h4>
+              <p>46 张牌 · 抢地主让牌<br>农民打剩到让牌数即胜</p>
+            </div>
+            <div class="m" data-rule="duo37">
+              <h4>经典玩法</h4>
+              <p>37 张 · 叫分抢地主<br>先出完手牌者获胜</p>
+            </div>
+          </div>
+          <div style="margin:0 14px 12px;display:flex;gap:10px">
+            <button class="btn jade" id="pe-quick" style="flex:1">⚡ 快速匹配</button>
+            <button class="btn" id="pe-create" style="flex:1">🏠 创建房间</button>
+          </div>
+          <div style="margin:0 14px 12px;display:flex;gap:10px">
+            <input id="pe-input" inputmode="numeric" placeholder="输入房间号" style="flex:1 1 0;min-width:0;padding:12px;border-radius:14px;background:rgba(255,255,255,.08);border:1px solid var(--line);color:var(--txt);font-size:15px;letter-spacing:3px;text-align:center;outline:none">
+            <button class="btn ghost" id="pe-join" style="flex:0 0 78px">进入</button>
+          </div>
+        </div>
+        <div class="table">
+          <div class="topseats" id="seat-top"></div>
+          <div class="seatleft" id="seat-left"></div>
+          <div class="seatright" id="seat-right"></div>
+          <div class="mid">
+            <div class="notice hidden" id="mid-notice"></div>
+            <div class="played" id="played"></div>
+          </div>
+          <div class="bottombar" id="bottom-bar"></div>
+          <div class="myinfo" id="my-info"></div>
+          <div class="myplayed" id="my-played"></div>
+          <div id="action-zone"></div>
+          <div class="handwrap"><div class="hand" id="hand"></div></div>
+        </div>
+        <button class="tablechat" id="btn-table-chat">💬</button>
+        <div class="ruletip hidden" id="rule-tip"></div>
+        <div class="tchat hidden" id="tchat"></div>
+      </section>
+
+      <!-- 创建房间 -->
+      <section class="page" id="page-create">
+        <div class="hero">
+          <h3>创建房间</h3>
+          <p>选择对局模式与玩法，开房后可直接邀请在线好友</p>
+        </div>
+
+        <div class="setbox">
+          <div class="set-hd">对局模式</div>
+          <div class="modesel" id="sel-mode">
+            <div class="ms on" data-mode="duo">
+              <div class="ms-ic">👥</div>
+              <div class="ms-t">双人斗地主</div>
+              <div class="ms-d">1V1 对战</div>
+            </div>
+            <div class="ms" data-mode="trio">
+              <div class="ms-ic">👨‍👩‍👦</div>
+              <div class="ms-t">三人斗地主</div>
+              <div class="ms-d">经典三人对局</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="setbox">
+          <div class="set-hd">玩法规则</div>
+          <div class="rulesel" id="sel-rule">
+            <div class="rs on" data-rule="let46">
+              <b>让牌玩法</b>
+              <span>去掉 3、4 共 46 张 · 抢地主让牌 · 农民打剩到让牌数即胜</span>
+            </div>
+            <div class="rs" data-rule="duo37">
+              <b>经典玩法</b>
+              <span>54 张随机去掉 17 张 · 共 37 张 · 叫分抢地主 · 先出完手牌者胜</span>
+            </div>
+          </div>
+          <div class="tip-line" id="rule-note">三人斗地主默认使用经典玩法（54 张叫分）</div>
+        </div>
+
+        <div class="setbox">
+          <div class="set-hd">邀请在线好友</div>
+          <div class="invite-list" id="invite-list"><div class="empty">正在获取在线玩家…</div></div>
+          <div class="tip-line">没有真人加入时，系统会自动邀请在线玩家上桌，牌桌上完全看不出区别</div>
+        </div>
+
+        <div style="margin:4px 14px 20px">
+          <button class="btn jade" id="btn-do-create">创建房间并开始</button>
+          <button class="btn ghost" id="btn-back-home" style="margin-top:10px">返回大厅</button>
+        </div>
+      </section>
+
+      <!-- 聊天 -->
+      <section class="page" id="page-chat">
+        <div class="clist" id="chat-list"></div>
+      </section>
+
+      <!-- 我的 -->
+      <section class="page" id="page-me">
+        <div class="mecard">
+          <div class="a" id="me-av"></div>
+          <div>
+            <div class="n" id="me-nick">—</div>
+            <div class="i" id="me-uid" style="cursor:default;-webkit-tap-highlight-color:transparent"></div>
+            <button class="btn ghost sm b" id="btn-reroll">🎲 换个身份</button>
+          </div>
+        </div>
+        <div class="coinrow"><span>🪙 我的金币</span><b id="me-coin">0</b></div>
+        <div class="stats">
+          <div class="stat"><b id="st-all">0</b><span>总场次</span></div>
+          <div class="stat"><b id="st-win">0</b><span>胜场</span></div>
+          <div class="stat"><b id="st-rate">0%</b><span>胜率</span></div>
+        </div>
+        <div class="sec">
+          <div class="hd"><h4>对局记录</h4><button id="btn-clear-rec">清空全部</button></div>
+          <div id="rec-list"></div>
+        </div>
+        <div class="rowset">音效<button class="sw on" id="sw-sound"><i></i></button></div>
+        <div class="rowset">出牌语音播报<button class="sw on" id="sw-voice"><i></i></button></div>
+        <div class="rowset">背景音乐<button class="sw on" id="sw-bgm"><i></i></button></div>
+        <div class="rowset">出牌震动<button class="sw on" id="sw-vibe"><i></i></button></div>
+        <div style="height:16px"></div>
+        <div style="margin:0 14px 20px"><button class="btn ghost" id="btn-logout">退出登录</button></div>
+      </section>
+    </div>
+
+    <nav id="tabbar">
+      <div class="tab on" data-p="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10l9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>大厅</span></div>
+      <div class="tab" data-p="play"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="12" height="16" rx="2"/><rect x="9" y="2" width="12" height="16" rx="2" fill="currentColor" opacity=".25"/></svg><span>对战</span></div>
+      <div class="tab" data-p="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-8 8H8l-4 3v-5.5A8 8 0 0 1 13 4a8 8 0 0 1 8 8z"/></svg><span>聊天</span><i class="dot hidden" id="chat-dot">0</i></div>
+      <div class="tab" data-p="me"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg><span>我的</span></div>
+    </nav>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toast"></div>
+</div>
+
+<script src="/shared/engine.js"></script>
+<script src="/shared/ads.js"></script>
+<script src="/js/avatar.js"></script>
+<script src="/js/stickers.js"></script>
+<script src="/js/sound.js"></script>
+<script src="/js/net.js"></script>
+<script src="/js/nav.js"></script>
+<script src="/js/rec.js"></script>
+<script src="/js/call.js"></script>
+<script src="/js/game.js"></script>
+<script src="/js/chat.js"></script>
+<script src="/js/secret.js"></script>
+<script src="/js/notify.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "name": "ddz-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "双人/三人斗地主 · 联网对战 + 私密聊天",
+  "scripts": {
+    "build:www": "node scripts/build-www.js",
+    "cap:add": "cap add android",
+    "cap:sync": "cap sync android",
+    "cap:open": "cap open android",
+    "android:apk": "cd android && ./gradlew assembleDebug",
+    "server": "cd server && node server.js",
+    "test": "node test/e2e.js"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/local-notifications": "^6.1.0",
+    "@capacitor/app": "^6.0.1",
+    "@capacitor/screen-orientation": "^6.0.2",
+    "@capacitor/geolocation": "^6.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
+  }
+}

@@ -1,0 +1,44 @@
+// ============================================================
+// Gradle 全局镜像配置 —— 解决国内编译 Android 拉不到依赖的问题
+//
+// 用法（任选其一）：
+//   1) 放到 ~/.gradle/init.gradle          → 对本机所有 Gradle 工程生效
+//   2) CI 里 cp 到 ~/.gradle/init.gradle   → 见 .cnb.yml
+//
+// 原理：Gradle 默认从 dl.google.com / repo1.maven.org 拉依赖，
+//       国内经常超时。这里把镜像源排在前面，Gradle 会依次尝试，
+//       命中就用镜像，镜像没有再回落到官方源。
+// ============================================================
+
+settingsEvaluated { settings ->
+    // 插件（Android Gradle Plugin、Kotlin 插件等）
+    settings.pluginManagement {
+        repositories {
+            maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+            maven { url 'https://maven.aliyun.com/repository/public' }
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
+            // 回落官方源（镜像万一缺包）
+            gradlePluginPortal()
+            google()
+            mavenCentral()
+        }
+    }
+
+    // 依赖（androidx、Capacitor、各种库）
+    settings.dependencyResolutionManagement {
+        repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+        repositories {
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://maven.aliyun.com/repository/public' }
+            maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+            maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
+            maven { url 'https://repo.huaweicloud.com/repository/maven/' }
+            maven { url 'https://maven.oscs.oschina.net/content/groups/public/' }
+            // 回落官方源
+            google()
+            mavenCentral()
+        }
+    }
+}
+

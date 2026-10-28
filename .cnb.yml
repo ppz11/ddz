@@ -1,0 +1,122 @@
+# ============================================================
+# 腾讯云 CNB (cnb.cool) —— 编译 PP斗地主 APK
+#
+# 文件名必须是 .cnb.yml，放在仓库根目录
+# 触发方式：push 到 main 自动构建；也可在 CNB 仓库页「云原生构建」里手动点「开始构建」
+# 产物：构建完成后在「制品」里下载 ddz.apk
+#
+# 为什么不用 GitHub Actions：国内访问 GitHub 不稳定
+# 为什么能用：本配置全程走国内镜像（阿里云 / 腾讯云），不碰 dl.google.com
+# ============================================================
+
+main:
+  push:
+    - runner:
+        cpus: 8 # 8 核；免费额度 160 核时/月，约可跑 20 小时，编译一次够用很多回
+      docker:
+        # CNB 社区提供的 Android 构建镜像，已含 JDK + Android SDK
+        image: docker.cnb.cool/jacknic/docker/android-cimg:jdk17
+        volumes:
+          - /root/.gradle:copy-on-write # 缓存 Gradle 依赖，二次构建快很多
+          - /root/.npm:copy-on-write # 缓存 npm 依赖
+      stages:
+        - name: 1. 环境自检
+          script: |
+            echo "=== JDK ==="; java -version 2>&1 | head -1
+            echo "=== Node ==="; node -v 2>/dev/null || echo "⚠ 该镜像没有 node，请换成含 node 的镜像"
+            echo "=== Android SDK ==="; echo "ANDROID_HOME=$ANDROID_HOME"
+            ls "$ANDROID_HOME" 2>/dev/null | head -5
+            echo "=== 当前目录 ==="; ls
+
+        - name: 2. 配置国内镜像（关键步骤）
+          script: |
+            # Gradle 依赖镜像：不配这步，卡在下载依赖基本必失败
+            mkdir -p ~/.gradle
+            cp scripts/gradle-init-mirror.gradle ~/.gradle/init.gradle
+            echo "✔ Gradle 镜像已配置"
+            # npm 走淘宝镜像
+            npm config set registry https://registry.npmmirror.com
+            echo "✔ npm 镜像已配置: $(npm config get registry)"
+
+        - name: 3. 安装依赖并生成前端资源
+          script: |
+            npm install
+            # APP_SERVER 换成你自己的服务器地址
+            APP_SERVER="http://你的公网IP:8080" npm run build:www
+            echo "=== www 产物 ==="
+            ls www
+
+        - name: 4. 生成安卓工程
+          script: |
+            npx cap add android
+            npx cap sync android
+            # Gradle 发行包也换成腾讯云镜像，避免卡在下载 gradle-xxx.zip
+            if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
+              sed -i 's|distributionUrl=.*|distributionUrl=https\\://mirrors.cloud.tencent.com/gradle/gradle-8.0-bin.zip|' \
+                android/gradle/wrapper/gradle-wrapper.properties
+              echo "✔ Gradle 发行包已切到腾讯云镜像"
+              cat android/gradle/wrapper/gradle-wrapper.properties
+            fi
+
+        - name: 5. 注入原生能力（横竖屏 / 录音 / 权限）
+          script: |
+            # 原生桥接 MainActivity
+            MJ=android/app/src/main/java/com/yuanbao/ddz/MainActivity.java
+            cp -f android-src/capacitor/MainActivity.java "$MJ"
+            grep -q "DDZNative" "$MJ" || { echo "✘ DDZNative 注入失败"; exit 1; }
+
+            # 方向策略：必须放开，不能锁 portrait，否则打牌切不了横屏
+            MF=android/app/src/main/AndroidManifest.xml
+            grep -q "usesCleartextTraffic" "$MF" || \
+              sed -i 's|<application |<application android:usesCleartextTraffic="true" |' "$MF"
+            sed -i 's|android:screenOrientation="portrait"|android:screenOrientation="fullSensor"|' "$MF"
+            sed -i 's|android:screenOrientation="landscape"|android:screenOrientation="fullSensor"|' "$MF"
+
+            # 麦克风 / 摄像头权限
+            for p in RECORD_AUDIO CAMERA MODIFY_AUDIO_SETTINGS; do
+              grep -q "android.permission.$p" "$MF" || \
+                sed -i "0,/<uses-permission/s|<uses-permission |<uses-permission android:name=\"android.permission.$p\"/>\n    <uses-permission |" "$MF"
+            done
+
+            # 应用名与图标
+            RES=android/app/src/main/res
+            [ -d android-src/res ] && cp -rf android-src/res/. "$RES"/
+            rm -rf "$RES/mipmap-anydpi-v26"
+            mkdir -p "$RES/values"
+            cat > "$RES/values/strings.xml" <<'XML'
+            <?xml version="1.0" encoding="utf-8"?>
+            <resources>
+                <string name="app_name">PP斗地主</string>
+                <string name="title_activity_main">PP斗地主</string>
+                <string name="package_name">com.yuanbao.ddz</string>
+                <string name="custom_url_scheme">com.yuanbao.ddz</string>
+            </resources>
+            XML
+            echo "✔ 原生能力与图标已注入"
+
+        - name: 6. 校验（缺一样就失败，避免产出残缺包）
+          script: |
+            MJ=android/app/src/main/java/com/yuanbao/ddz/MainActivity.java
+            MF=android/app/src/main/AndroidManifest.xml
+            MISS=0
+            grep -q "setOrientation" "$MJ"     || { echo "✘ 缺 setOrientation"; MISS=1; }
+            grep -q "startRecord" "$MJ"        || { echo "✘ 缺 startRecord"; MISS=1; }
+            grep -q "onPermissionRequest" "$MJ" || { echo "✘ 缺权限放行"; MISS=1; }
+            grep -q "RECORD_AUDIO" "$MF"       || { echo "✘ 缺录音权限"; MISS=1; }
+            grep -q "CAMERA" "$MF"             || { echo "✘ 缺摄像头权限"; MISS=1; }
+            grep -q 'screenOrientation="fullSensor"' "$MF" || { echo "✘ 屏幕方向未放开"; MISS=1; }
+            [ "$MISS" = "0" ] && echo "✔ 原生能力校验全部通过" || { echo "原生能力校验失败"; exit 1; }
+
+        - name: 7. 编译 APK（最慢，约 5~10 分钟）
+          script: |
+            cd android
+            chmod +x gradlew
+            ./gradlew assembleDebug --no-daemon -g /root/.gradle
+
+        - name: 8. 收集产物
+          script: |
+            mkdir -p dist
+            cp android/app/build/outputs/apk/debug/app-debug.apk dist/ddz.apk 2>/dev/null || \
+              find android -name "*.apk" -exec cp {} dist/ddz.apk \;
+            ls -lh dist/
+            echo "✔ APK 已生成：dist/ddz.apk"
