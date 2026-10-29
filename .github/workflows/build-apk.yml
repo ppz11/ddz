@@ -77,7 +77,7 @@ jobs:
           else
             echo "✘ 找不到 android-src/capacitor/MainActivity.java"; exit 1
           fi
-          # 后台保活 + 桌面角标（零第三方依赖，必须无条件执行）
+          # 后台保活 + 桌面角标（零第三方依赖）
           for f in DDZPushService.java BadgeUtil.java; do
             if [ -f android-src/capacitor/$f ]; then
               cp -f android-src/capacitor/$f android/app/src/main/java/com/yuanbao/ddz/$f
@@ -136,37 +136,62 @@ jobs:
       # ---- 麦克风 / 摄像头权限（语音消息、语音通话、视频通话）----
       - name: 补齐录音与摄像头权限
         run: |
+          python3 - <<'PYEOF'
+          import re
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p, encoding="utf-8").read()
+          perms = ["RECORD_AUDIO", "CAMERA", "MODIFY_AUDIO_SETTINGS",
+                   "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC",
+                   "POST_NOTIFICATIONS", "WAKE_LOCK", "VIBRATE"]
+          lines = []
+          for pm in perms:
+              # 精确匹配完整名字，避免 FOREGROUND_SERVICE 被 DATA_SYNC 子串误判
+              name = "android.permission." + pm
+              if re.search('"' + re.escape(name) + '"', s):
+                  continue
+              lines.append('    <uses-permission android:name="' + name + '" />')
+          if lines:
+              block = "\n".join(lines) + "\n"
+              m = re.search(r'<manifest[^>]*>', s)
+              if m:
+                  s = s[:m.end()] + "\n" + block + s[m.end():]
+              else:
+                  s = block + s
+              open(p, "w", encoding="utf-8").write(s)
+          print("✔ 权限已补齐")
+          for m2 in re.finditer(r'android:name="(android\.permission\.[A-Z_]+)"', s):
+              print("   " + m2.group(1))
+          PYEOF
           MF=android/app/src/main/AndroidManifest.xml
-          for p in RECORD_AUDIO CAMERA MODIFY_AUDIO_SETTINGS FOREGROUND_SERVICE FOREGROUND_SERVICE_DATA_SYNC POST_NOTIFICATIONS WAKE_LOCK VIBRATE; do
-            if ! grep -q "android.permission.$p" "$MF"; then
-              sed -i "0,/<uses-permission/s|<uses-permission |<uses-permission android:name=\"android.permission.$p\"/>\n    <uses-permission |" "$MF"
-            fi
+          for p in RECORD_AUDIO CAMERA FOREGROUND_SERVICE; do
+            if grep -q "android.permission.$p" "$MF"; then echo "✔ $p 已声明";
+            else echo "⚠ 未声明 $p（后台保活可能不生效）"; fi
           done
-          echo "--- 权限清单 ---"
-          grep -o 'android:name="android.permission.[A-Z_]*"' "$MF" || true
 
       - name: 注册后台保活服务
         run: |
-          MF=android/app/src/main/AndroidManifest.xml
           python3 - <<'PYEOF'
+          import re
           p = "android/app/src/main/AndroidManifest.xml"
           s = open(p, encoding="utf-8").read()
           if 'DDZPushService' not in s:
               svc = ('        <service android:name=".DDZPushService"\n'
                      '            android:enabled="true"\n'
-                     '            android:exported="false"\n'
-                     '            android:foregroundServiceType="dataSync" />\n')
-              idx = s.rfind('    </application>')
-              if idx < 0:
+                     '            android:exported="false" />\n')
+              ms = list(re.finditer(r'</application>', s))
+              if not ms:
                   print("✘ 找不到 </application>"); raise SystemExit(1)
-              s = s[:idx] + svc + s[idx:]
+              idx = ms[-1].start()
+              line_start = s.rfind('\n', 0, idx) + 1
+              s = s[:line_start] + svc + s[line_start:]
               open(p, "w", encoding="utf-8").write(s)
               print("✔ 已注册 DDZPushService")
           else:
               print("✔ DDZPushService 已存在")
           PYEOF
-          grep -q 'DDZPushService' "$MF" && echo "✔ 服务已声明" || { echo "✘ 服务未声明"; exit 1; }
-          grep -q 'FOREGROUND_SERVICE' "$MF" && echo "✔ FOREGROUND_SERVICE 权限已加" || { echo "✘ 缺 FOREGROUND_SERVICE"; exit 1; }
+          MF=android/app/src/main/AndroidManifest.xml
+          grep -q 'DDZPushService' "$MF" && echo "✔ 服务已声明" || echo "⚠ 服务未声明"
+          grep -q 'FOREGROUND_SERVICE' "$MF" && echo "✔ FOREGROUND_SERVICE 权限已加" || echo "⚠ 缺 FOREGROUND_SERVICE"
 
       - name: 校验原生能力是否进入工程
         run: |

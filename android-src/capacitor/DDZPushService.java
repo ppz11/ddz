@@ -120,9 +120,6 @@ public class DDZPushService extends Service {
     }
 
     /* 运行时取 App 图标，不引用 R 里可能不存在的资源，避免编译失败 */
-    static int iconRes() {
-        return android.R.drawable.stat_notify_chat;
-    }
     static int iconRes(Context ctx) {
         try {
             int id = ctx.getApplicationInfo().icon;

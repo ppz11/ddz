@@ -134,7 +134,7 @@ public class MainActivity extends BridgeActivity {
         ensurePush();
     }
 
-    /* 首次进入（已登录）后启动保活服务；App 被杀由系统回收，这是 Android 机制 */
+    /* 首次进入后启动保活服务；App 被杀由系统回收，这是 Android 机制 */
     private boolean pushStarted = false;
     private void ensurePush() {
         try {
@@ -177,7 +177,7 @@ public class MainActivity extends BridgeActivity {
                 @Override
                 public void run() {
                     try {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        if (android.os.Build.VERSION.SDK_INT >= 33) {   // 33 = TIRAMISU
                             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                                     != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                                 requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, REQ_PERM);

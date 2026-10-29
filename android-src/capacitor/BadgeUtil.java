@@ -133,7 +133,10 @@ public final class BadgeUtil {
             ContentValues cv = new ContentValues();
             cv.put("badgecount", count);
             try {
-                cr.update(uri, cv, "package=?", new String[]{ctx.getPackageName()}, null);
+                /* ContentResolver.update 只有 3 参数版本（旧 targetSdk）
+                   和 Bundle 版本，没有 4 参数重载 —— 之前多传一个 null
+                   会直接导致 javac 编译失败。这里用 3 参数版本。 */
+                cr.update(uri, cv, "package=?", new String[]{ctx.getPackageName()});
                 return true;
             } catch (Throwable e) { return false; }
         } catch (Throwable e) { return false; }
