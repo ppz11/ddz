@@ -10,7 +10,21 @@ window.Call = (function () {
   var peerInfo = null;
   var el = null, incomingBox = null, rtcWatch = null;
 
+  /* ICE 服务器：默认只有公共 STUN（同城同网一般够用）。
+     服务端若配了 TURN，启动时会自动换成带中继的配置 —— 这样
+     「一个 WiFi、一个 4G」这种跨网络场景也能连通（媒体流经服务器转发）。 */
   var ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  var hasRelay = false, relayed = false;
+  function loadIce() {
+    try {
+      Net.api('/api/ice').then(function (r) {
+        if (r && r.ok && r.iceServers && r.iceServers.length) {
+          ICE = r.iceServers;
+          hasRelay = !!r.relay;
+        }
+      }).catch(function () { });
+    } catch (e) { }
+  }
 
   /* 为什么不能视频：要么没有接口，要么不是安全环境（App 走 http 时浏览器禁用摄像头） */
   function rtcWhy() {
@@ -29,6 +43,7 @@ window.Call = (function () {
   }
 
   function init() {
+    loadIce();                       // 启动时拉取 TURN 配置（跨网络通话的关键）
     Net.on('call:invite', function (m) { onInvite(m); });
     Net.on('call:accept', function (m) { onAccept(m); });
     Net.on('call:reject', function (m) { stopRing(); App.toast('对方拒绝了通话'); hangup(true); });
@@ -114,18 +129,26 @@ window.Call = (function () {
 
   /* ---------------- WebRTC ---------------- */
   function setupRtc(isCaller) {
+    relayed = false;
     try { pc = new RTCPeerConnection({ iceServers: ICE }); } catch (e) { useRtc = false; return pttMode(); }
-    // 兜底：摄像头权限一直没给 / 连不上时，6 秒后自动转为「按住说话」，避免永远卡在呼叫中
+    /* 兜底超时：配了 TURN 中继时给足 18 秒（中继协商明显比直连慢），
+       没配就维持 8 秒，避免没配 TURN 的用户干等。 */
     clearTimeout(rtcWatch);
     rtcWatch = setTimeout(function () {
       if (state !== 'active' || !useRtc) return;
       if (pc && pc.connectionState === 'connected') return;
       useRtc = false;
+      var why = hasRelay ? '网络穿透失败（双方可能在不同网络），' : '跨网络中转未配置，';
+      if (mode === 'video') App.toast(why + '已切换为「按住说话」');
       if (pc) { try { pc.close(); } catch (e) { } pc = null; }
       pttMode();
-    }, 6000);
+    }, hasRelay ? 18000 : 8000);
     pc.onicecandidate = function (e) {
-      if (e.candidate) Net.send({ t: 'call:signal', to: peer, data: { type: 'candidate', candidate: e.candidate } });
+      if (e.candidate) {
+        /* 看到 relay 候选说明媒体流会走服务器中转 —— 跨网络场景靠它连通 */
+        if (e.candidate && e.candidate.candidate && /typ relay/.test(e.candidate.candidate)) relayed = true;
+        Net.send({ t: 'call:signal', to: peer, data: { type: 'candidate', candidate: e.candidate } });
+      }
     };
     pc.ontrack = function (e) {
       var v = document.getElementById('c-remote');
@@ -134,8 +157,16 @@ window.Call = (function () {
     };
     pc.onconnectionstatechange = function () {
       if (!pc) return;
-      if (pc.connectionState === 'connected') { clearTimeout(rtcWatch); setSt(mode === 'video' ? '视频通话中' : '语音通话中'); }
-      else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') { useRtc = false; pttMode(); }
+      if (pc.connectionState === 'connected') {
+        clearTimeout(rtcWatch);
+        setSt(mode === 'video' ? '视频通话中' : '语音通话中');
+        if (relayed) App.toast('已通过服务器中转接通（双方不在同一网络）');
+      } else if (pc.connectionState === 'failed') {
+        useRtc = false;
+        App.toast(hasRelay ? '网络穿透失败，已切换为「按住说话」'
+                           : '双方不在同一网络且未配置中转，已切换为「按住说话」');
+        pttMode();
+      } else if (pc.connectionState === 'disconnected') { useRtc = false; pttMode(); }
     };
     var want = { audio: true, video: mode === 'video' };
     navigator.mediaDevices.getUserMedia(want).then(function (s) {

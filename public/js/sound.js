@@ -1,15 +1,50 @@
 /* 音效：全部用 WebAudio 实时合成，不打包任何音频文件（省 3~8MB 体积）
  * 新增：出牌语音播报（说出牌型） + 循环背景音乐（程序化合成，无需音频文件）
+ * 修复：App 切到后台时立即静音并挂起音频（此前后台仍在响）
  */
 window.Sfx = (function () {
   var ctx = null, on = true, voiceOn = true, bgmOn = true;
   var bgmSrc = null, bgmGain = null, bgmBuf = null, bgmCtx = null;
+  /* 后台状态：切后台 → 停 BGM + 挂起 AudioContext；回前台 → 恢复 */
+  var hidden = false, wasPlaying = false;
 
   function ac() {
     if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { ctx = null; } }
-    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (ctx && ctx.state === 'suspended' && !hidden) ctx.resume();
     return ctx;
   }
+  /* ---------- 切后台自动静音 ---------- */
+  function toBackground() {
+    if (hidden) return;
+    hidden = true;
+    wasPlaying = !!(bgmSrc && bgmOn && on);
+    stopBgm();
+    try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) { }
+    if (ctx && ctx.suspend) { try { ctx.suspend(); } catch (e) { } }
+  }
+  function toForeground() {
+    if (!hidden) return;
+    hidden = false;
+    if (ctx && ctx.resume) { try { ctx.resume(); } catch (e) { } }
+    if (wasPlaying && bgmOn && on) startBgm();
+    wasPlaying = false;
+  }
+  function watchVisibility() {
+    var fire = function () {
+      // 三种信号任一为真即视为「在后台」
+      var isHidden = document.hidden || document.visibilityState === 'hidden';
+      if (isHidden) toBackground(); else toForeground();
+    };
+    document.addEventListener('visibilitychange', fire);
+    // 安卓 WebView / iOS 上 visibilitychange 偶发不触发，用 pagehide/pagehow 与 blur/focus 兜底
+    window.addEventListener('pagehide', toBackground);
+    window.addEventListener('pageshow', toForeground);
+    window.addEventListener('blur', toBackground);
+    window.addEventListener('focus', toForeground);
+    document.addEventListener('pause', toBackground, false);      // Cordova/Capacitor
+    document.addEventListener('resume', toForeground, false);
+  }
+  if (document.addEventListener) watchVisibility();
   function tone(freq, dur, type, vol, slideTo, delay) {
     if (!on) return;
     var c = ac(); if (!c) return;
@@ -92,9 +127,18 @@ window.Sfx = (function () {
   }
 
   /* ---------------- 背景音乐（程序化合成循环，无任何音频文件） ---------------- */
-  /* 用 OfflineAudioContext 预渲染一段循环，再循环播放：省 CPU、不会跑调 */
-  function renderBgm() {
-    var SR = 22050, BPM = 108, BEAT = 60 / BPM, BARS = 8, BEATS = BARS * 4;
+  /* 用 OfflineAudioContext 预渲染一段循环，再循环播放：省 CPU、不会跑调
+   * 分两种场景：hall = 大厅（舒缓）；table = 牌桌（节奏更强，有棋牌房的感觉） */
+  var SCENE = {
+    hall:  { bpm: 104, vol: 0.17, kick: 0.26, hat: 0.045, mel: 0.11, bass: 0.14, arp: 0.045 },
+    table: { bpm: 124, vol: 0.24, kick: 0.40, hat: 0.075, mel: 0.15, bass: 0.20, arp: 0.070 }
+  };
+  var scene = 'hall';
+  var bgmBufs = {};
+
+  function renderBgm(kind) {
+    var cfg = SCENE[kind] || SCENE.hall;
+    var SR = 22050, BPM = cfg.bpm, BEAT = 60 / BPM, BARS = 8, BEATS = BARS * 4;
     var len = Math.ceil(BEATS * BEAT * SR);
     var OC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
     if (!OC) return null;
@@ -119,7 +163,7 @@ window.Sfx = (function () {
       var o = oc.createOscillator(), g = oc.createGain();
       o.type = 'sawtooth'; o.frequency.setValueAtTime(hz(semi - 24), t);
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.16, t + 0.03);
+      g.gain.exponentialRampToValueAtTime(cfg.bass, t + 0.03);
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       var f = oc.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 420;
       o.connect(f); f.connect(g); g.connect(master);
@@ -131,7 +175,7 @@ window.Sfx = (function () {
       for (var i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 3);
       var s = oc.createBufferSource(); s.buffer = b;
       var f = oc.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 6000;
-      var g = oc.createGain(); g.gain.value = vol == null ? 0.05 : vol;
+      var g = oc.createGain(); g.gain.value = vol == null ? cfg.hat : vol;
       s.connect(f); f.connect(g); g.connect(master);
       s.start(t);
     }
@@ -140,7 +184,7 @@ window.Sfx = (function () {
       o.type = 'sine'; o.frequency.setValueAtTime(130, t);
       o.frequency.exponentialRampToValueAtTime(45, t + 0.11);
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.3, t + 0.012);
+      g.gain.exponentialRampToValueAtTime(cfg.kick, t + 0.012);
       g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
       o.connect(g); g.connect(master);
       o.start(t); o.stop(t + 0.18);
@@ -158,7 +202,8 @@ window.Sfx = (function () {
       // 鼓组
       kick(bt); kick(bt + 2 * BEAT);
       if (bar % 2 === 1) kick(bt + 3.5 * BEAT);
-      for (var h = 0; h < 8; h++) hat(bt + h * BEAT / 2, h % 2 ? 0.028 : 0.05);
+      if (kind === 'table') { kick(bt + 1 * BEAT); kick(bt + 2.5 * BEAT); if (bar % 4 === 3) kick(bt + 3.75 * BEAT); }
+      for (var h = 0; h < 8; h++) hat(bt + h * BEAT / 2, h % 2 ? cfg.hat * 0.6 : cfg.hat);
       // 贝斯
       bass(bt, rt, BEAT * 1.6);
       bass(bt + 2 * BEAT, rt, BEAT * 1.6);
@@ -167,31 +212,42 @@ window.Sfx = (function () {
       MEL.forEach(function (m, i) {
         var semi = m[1] + (bar % 4 >= 2 ? 0 : 0) + (bar >= 4 ? 0 : 0);
         if ((bar + i) % 8 === 7) semi += 5;
-        note(bt + m[0] * BEAT, semi, m[2] * BEAT * 0.92, 'triangle', 0.12);
-        note(bt + m[0] * BEAT, semi + 12, m[2] * BEAT * 0.8, 'sine', 0.045);
+        note(bt + m[0] * BEAT, semi, m[2] * BEAT * 0.92, 'triangle', cfg.mel);
+        note(bt + m[0] * BEAT, semi + 12, m[2] * BEAT * 0.8, 'sine', cfg.mel * 0.38);
       });
       // 琶音铺底
       for (var a = 0; a < 4; a++) {
-        note(bt + a * BEAT + BEAT / 2, rt + a * 4 + 12, BEAT * 0.42, 'sine', 0.05);
+        note(bt + a * BEAT + BEAT / 2, rt + a * 4 + 12, BEAT * 0.42, 'sine', cfg.arp);
       }
     }
     return oc.startRendering();
   }
 
   function startBgm() {
-    if (!bgmOn) return;
+    if (!bgmOn || hidden) return;
     var c = ac(); if (!c) return;
     if (bgmSrc) return;
-    if (bgmBuf) return playBuf();
+    if (bgmBufs[scene]) { bgmBuf = bgmBufs[scene]; return playBuf(); }
     try {
-      var pr = renderBgm();
+      var pr = renderBgm(scene);
       if (!pr || !pr.then) return;
-      // 首次渲染时先播一段轻柔的占位音，避免静默等待
       pr.then(function (buf) {
-        bgmBuf = buf;
-        if (bgmOn && !bgmSrc) playBuf();
+        bgmBufs[scene] = buf;
+        if (!bgmOn || hidden) return;
+        // 渲染期间场景可能已切换，以当前 scene 为准
+        if (scene in bgmBufs) { bgmBuf = bgmBufs[scene]; playBuf(); }
       }).catch(function () { });
     } catch (e) { }
+  }
+  /* 切换场景（大厅 / 牌桌）：牌桌换更快节奏的曲子，让打牌有「牌房」氛围 */
+  function setScene(s) {
+    s = (s === 'table') ? 'table' : 'hall';
+    if (s === scene && bgmSrc) return;
+    scene = s;
+    if (!bgmOn || hidden) return;
+    stopBgm();
+    bgmBuf = bgmBufs[scene] || null;
+    startBgm();
   }
   function playBuf() {
     var c = ac(); if (!c || !bgmBuf) return;
@@ -199,8 +255,9 @@ window.Sfx = (function () {
       bgmSrc = c.createBufferSource();
       bgmSrc.buffer = bgmBuf; bgmSrc.loop = true;
       bgmGain = c.createGain();
+      var target = (SCENE[scene] || SCENE.hall).vol;
       bgmGain.gain.value = 0;                       // 淡入
-      bgmGain.gain.linearRampToValueAtTime(0.16, c.currentTime + 1.6);
+      bgmGain.gain.linearRampToValueAtTime(target, c.currentTime + 1.2);
       bgmSrc.connect(bgmGain); bgmGain.connect(c.destination);
       bgmSrc.start(0);
     } catch (e) { bgmSrc = null; }
@@ -210,7 +267,16 @@ window.Sfx = (function () {
     bgmGain = null;
   }
   function duck(on2) {                              // 出牌/炸弹时压低音乐
-    if (bgmGain) { try { bgmGain.gain.value = on2 ? 0.05 : 0.16; } catch (e) { } }
+    if (bgmGain) {
+      var target = (SCENE[scene] || SCENE.hall).vol;
+      try { bgmGain.gain.value = on2 ? target * 0.3 : target; } catch (e) { }
+    }
+  }
+  /* 出牌提示音：拍牌声 + 短促滑音，出牌/对手出牌都用它，耳朵能立刻分辨 */
+  function cardDrop(strong) {
+    noise(0.075, strong ? 0.42 : 0.3, 2400);
+    tone(strong ? 300 : 420, 0.07, 'square', strong ? 0.16 : 0.1, strong ? 150 : 260);
+    noise(0.05, 0.18, 900, 0.035);
   }
 
   var S = {
@@ -222,11 +288,16 @@ window.Sfx = (function () {
     },
     setVoice: function (v) { voiceOn = !!v; if (!v) { try { speechSynthesis.cancel(); } catch (e) { } } },
     setBgm: function (v) { bgmOn = !!v; if (v) startBgm(); else stopBgm(); },
+    setScene: setScene, cardDrop: cardDrop,
     bgm: startBgm, stopBgm: stopBgm, duck: duck,
     announce: announce, speak: speakText,
     tap: function () { tone(880, 0.06, 'triangle', 0.12); },
     deal: function () { noise(0.09, 0.16, 2600); },
-    play: function () { noise(0.13, 0.2, 1800); tone(520, 0.09, 'triangle', 0.1, 900); },
+    play: function () { cardDrop(false); tone(520, 0.09, 'triangle', 0.1, 900); },
+    /* 轮到你出牌的提示音（三连上行，明确「该你了」） */
+    yourTurn: function () {
+      [660, 880, 1170].forEach(function (f, i) { tone(f, 0.1, 'triangle', 0.15, null, i * 0.075); });
+    },
     pass: function () { tone(300, 0.13, 'sine', 0.13, 190); },
     warn: function () { tone(240, 0.16, 'square', 0.1, 170); },
     bomb: bombSfx,

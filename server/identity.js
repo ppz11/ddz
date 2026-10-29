@@ -9,7 +9,9 @@ const NOUN = ['熊猫', '猎鹰', '狐狸', '老虎', '企鹅', '水獺', '柴�
 function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
 
 function nick() {
-  return pick(ADJ) + '的' + pick(NOUN);
+  // 昵称控制在 8 个字以内：牌桌左右信息块宽度才稳定，不会被长昵称撑爆
+  var s = pick(ADJ) + '的' + pick(NOUN);
+  return s.length > 8 ? s.slice(0, 8) : s;
 }
 
 /* 头像参数：前端据此绘制 SVG，保证「精致 + 每次不同」 */

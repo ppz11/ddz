@@ -91,6 +91,22 @@ install_deps() {
   echo "✔ 依赖就绪"
 }
 
+# ---- TURN 中继：跨网络（WiFi ↔ 4G）语音/视频通话必备 ----
+# 生成给 systemd 用的 Environment= 行；已装 coturn 就带上密钥，没装就留空（只走 STUN）
+turn_env_lines() {
+  local conf=/etc/ddz/turn.env
+  [ -f "$conf" ] || return 0
+  # shellcheck disable=SC1090
+  . "$conf" 2>/dev/null || return 0
+  local out=""
+  [ -n "$TURN_SECRET" ] && out="$out\nEnvironment=TURN_SECRET=$TURN_SECRET"
+  [ -n "$TURN_URLS" ]   && out="$out\nEnvironment=TURN_URLS=$TURN_URLS"
+  [ -n "$TURN_USER" ]   && out="$out\nEnvironment=TURN_USER=$TURN_USER"
+  [ -n "$TURN_PASS" ]   && out="$out\nEnvironment=TURN_PASS=$TURN_PASS"
+  [ -n "$out" ] && printf "%b" "$out"
+  return 0
+}
+
 # ---- 4. 配置 systemd ----
 setup_service() {
   echo "→ 配置开机自启 ..."
@@ -103,6 +119,7 @@ After=network.target
 Type=simple
 WorkingDirectory=$APP_DIR/server
 Environment=PORT=$PORT
+$(turn_env_lines)
 ExecStart=$(command -v node) $APP_DIR/server/server.js
 Restart=always
 RestartSec=3

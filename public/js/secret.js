@@ -313,8 +313,9 @@ window.Secret = (function () {
     var b = document.getElementById('s-body'); if (!b) return;
     var head = '<div class="srow">' +
       '<div><div style="font-size:13px">隐私伪装模式</div>' +
-      '<div style="font-size:10px;color:#5c6b66;margin-top:2px">通知栏与列表一律显示为斗地主资讯</div></div>' +
-      '<button class="sw' + (App.disguise() ? ' on' : '') + '" id="s-disguise"><i></i></button></div>';
+      '<div style="font-size:10px;color:#5c6b66;margin-top:2px">开启后会话内容会被隐藏（含语音/图片）</div></div>' +
+      '<button class="sw' + (App.disguise() ? ' on' : '') + '" id="s-disguise"><i></i></button></div>' +
+      '<div class="slist-hd"><span>私密会话</span><button id="s-manage">管理</button></div>';
     if (!rooms.length) {
       b.innerHTML = head +
         '<div style="text-align:center;padding:30px 20px;color:#5c6b66;font-size:12px;line-height:2">' +
@@ -371,6 +372,12 @@ window.Secret = (function () {
         });
       });
       paintRoomSel();
+      /* 顶部「管理」：一键进入多选删除，不必靠长按才发现 */
+      var sb = b.querySelector('#s-manage');
+      if (sb) {
+        sb.textContent = sSelMode === 'room' ? '完成' : '管理';
+        sb.onclick = function () { if (sSelMode === 'room') exitSel(); else enterRoomSel(); };
+      }
     }
     var dg = b.querySelector('#s-disguise');
     if (dg) dg.onclick = function () {
@@ -691,10 +698,18 @@ window.Secret = (function () {
     });
   }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+  /* 长按：手指轻微抖动不打断（超过 10px 才算拖动取消），否则在手机上很难触发 */
   function longPress(el, fn) {
     var t = null, ms = arguments.length > 2 ? arguments[2] : 550;
-    el.addEventListener('pointerdown', function () { t = setTimeout(fn, ms); });
-    ['pointerup', 'pointercancel', 'pointermove'].forEach(function (e) { el.addEventListener(e, function () { clearTimeout(t); }); });
+    var x0 = 0, y0 = 0;
+    el.addEventListener('pointerdown', function (e) {
+      x0 = e.clientX; y0 = e.clientY;
+      clearTimeout(t); t = setTimeout(fn, ms);
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (Math.abs(e.clientX - x0) > 10 || Math.abs(e.clientY - y0) > 10) clearTimeout(t);
+    });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (e) { el.addEventListener(e, function () { clearTimeout(t); }); });
   }
     function withUser(pid) { if (!pid) return; Net.send({ t: 'secret:create', withPid: pid }); }
   function pullState() { Net.send({ t: 'loc:state' }); }

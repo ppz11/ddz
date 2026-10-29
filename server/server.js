@@ -20,6 +20,57 @@ const PUBLIC = path.join(__dirname, '..', 'public');
 const SHARED = path.join(__dirname, '..', 'shared');
 const MAX_UPLOAD = 28 * 1024 * 1024;
 
+/* ============================================================
+ *  TURN 中继（语音 / 视频通话跨网络必备）
+ *
+ *  为什么必须有：STUN 只能帮双方「打洞」，遇到下面几种网络就穿不过去 ——
+ *    · 4G/5G 的运营商 CGNAT（几乎都是对称型 NAT）
+ *    · 公司 / 校园网的严格防火墙
+ *    · 一方 WiFi、一方流量（最常见的失败场景）
+ *  这时媒体流必须经 TURN 服务器中转，否则就是「能拨通但黑屏 / 没声音」。
+ *
+ *  配置方式（三选一，配了就生效，没配就只走 STUN）：
+ *    export TURN_SECRET=xxx        # coturn 的 static-auth-secret（推荐，临时凭证）
+ *    export TURN_URLS=turn:1.2.3.4:3478
+ *  或者用静态账号：
+ *    export TURN_USER=ddz  TURN_PASS=xxx  TURN_URLS=turn:...
+ * ============================================================ */
+const TURN_SECRET = process.env.TURN_SECRET || '';
+const TURN_USER = process.env.TURN_USER || '';
+const TURN_PASS = process.env.TURN_PASS || '';
+let TURN_URLS = (process.env.TURN_URLS || '').split(',').map(s => s.trim()).filter(Boolean);
+let TURN_HOST = '';                    // 未显式配置时按请求来源推断
+function guessTurnHost(req) {
+  try {
+    var h = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    if (!h || h === 'localhost' || h === '127.0.0.1') return '';
+    return h;
+  } catch (e) { return ''; }
+}
+function iceConfig(req) {
+  var ice = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  var urls = TURN_URLS.slice();
+  if (!urls.length) {
+    var host = TURN_HOST || guessTurnHost(req);
+    if (host) urls = ['turn:' + host + ':3478', 'turn:' + host + ':3478?transport=tcp'];
+  }
+  if (!urls.length) return { iceServers: ice, relay: false };
+  var cred;
+  if (TURN_SECRET) {
+    // 临时凭证（coturn use-auth-secret）：用户名 = 过期时间戳:标识，密码 = HMAC-SHA1
+    var ttl = 24 * 3600;
+    var user = Math.floor(Date.now() / 1000 + ttl) + ':ddz';
+    var pass = crypto.createHmac('sha1', TURN_SECRET).update(user).digest('base64');
+    cred = { username: user, credential: pass };
+  } else if (TURN_USER && TURN_PASS) {
+    cred = { username: TURN_USER, credential: TURN_PASS };
+  } else {
+    return { iceServers: ice, relay: false };
+  }
+  ice.push({ urls: urls, username: cred.username, credential: cred.credential });
+  return { iceServers: ice, relay: true };
+}
+
 store.ensure();
 const db = store.get();
 
@@ -157,15 +208,33 @@ function makeBot() {
 const pubOf = s => s ? { uid: s.uid, nick: s.cur.nick, avatar: s.cur.avatar, bot: !!s.bot } : null;
 
 /* ---------------- HTTP ---------------- */
+/* CORS：App 里页面跑在 https://localhost（Capacitor 源），请求 http://服务器:8080 属于跨域。
+   POST + Content-Type: application/json 会触发 OPTIONS 预检，
+   服务器必须明确允许，否则浏览器直接报 Failed to fetch（而 GET /api/health 却能通，就是这个原因）。 */
+function applyCors(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Max-Age', '86400');
+}
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  applyCors(req, res);
+  // 预检请求直接返回，不进入业务逻辑
+  if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     if (p === '/api/health') return json(res, 200, { ok: true, users: Object.keys(db.users).length, ts: Date.now() });
+    /* 语音/视频通话的 ICE 配置：带 TURN 中继才能保证跨网络（WiFi↔4G）也能连通 */
+    if (p === '/api/ice') { var ic = iceConfig(req); return json(res, 200, { ok: true, relay: ic.relay, iceServers: ic.iceServers }); }
     if (p === '/api/register' && req.method === 'POST') {
       const b = JSON.parse((await body(req, 4096)).toString() || '{}');
-      const u = createUser(b.device || '');
+      /* 一台手机 = 一个账号：同一 device 再次注册时复用原有 uid，
+         重装、退出登录、清缓存后回来仍是同一个人，聊天/战绩/私密空间都还在 */
+      const dev = String(b.device || '').trim();
+      let u = dev ? Object.values(db.users).find(x => x.device === dev && !x.bot && !x.test) : null;
+      if (!u) u = createUser(dev);
+      else { u.lastLogin = Date.now(); personOf(u); u.coins = coinsOf(u); store.save(); }
       return json(res, 200, { uid: u.uid, token: u.token, me: pub(u), coins: u.coins | 0 });
     }
     if (p === '/api/login' && req.method === 'POST') {
@@ -195,14 +264,48 @@ const server = http.createServer(async (req, res) => {
       const rec = store.putUpload(b.name || 'file', b.mime || 'application/octet-stream', buf, { kind: b.kind, dur: b.dur });
       return json(res, 200, { id: rec.id, url: '/api/file/' + rec.id, name: rec.name, size: rec.size, mime: rec.mime });
     }
+    /* 文件服务：必须支持 HTTP Range（206 Partial Content）。
+       Android WebView / Chrome 的音视频播放器会先发 Range 请求，
+       服务器不支持 206 时，语音听不了、视频播不动 —— 此前就是缺这一块。
+       另外：?dl=1 时用 attachment 触发下载/保存。 */
     if (p.startsWith('/api/file/')) {
       const rec = store.getUpload(p.slice('/api/file/'.length));
       if (!rec) return json(res, 404, { err: 'not found' });
       const fp = store.uploadPath(rec);
-      res.writeHead(200, {
-        'Content-Type': rec.mime || 'application/octet-stream', 'Content-Length': fs.statSync(fp).size,
-        'Content-Disposition': 'inline; filename*=UTF-8\'\'' + encodeURIComponent(rec.name)
-      });
+      let size = 0;
+      try { size = fs.statSync(fp).size; } catch (e) { return json(res, 404, { err: '文件已失效' }); }
+      let mime = rec.mime || 'application/octet-stream';
+      // 语音/视频统一按可播放类型返回，避免上传时记的 mime 五花八门导致播放不了
+      const nm = String(rec.name || '').toLowerCase();
+      if (/\.(mp3|m4a|aac|wav|ogg|opus|flac|amr|3gp)$/.test(nm)) mime = mime.startsWith('audio/') ? mime : 'audio/mpeg';
+      if (/\.(mp4|mov|webm|mkv|avi|3gp|m4v)$/.test(nm)) mime = mime.startsWith('video/') ? mime : 'video/mp4';
+      const dl = url.searchParams.get('dl') === '1';
+      const disp = dl
+        ? 'attachment; filename="' + String(rec.name || 'file').replace(/["]/g, '') + '"; filename*=UTF-8\'\'' + encodeURIComponent(rec.name || 'file')
+        : 'inline; filename="' + String(rec.name || 'file').replace(/["]/g, '') + '"; filename*=UTF-8\'\'' + encodeURIComponent(rec.name || 'file');
+      const base = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Content-Disposition': disp };
+      const range = req.headers.range;
+      if (range) {
+        const m2 = /bytes=(\d*)-(\d*)/.exec(range);
+        if (m2) {
+          let start = m2[1] ? parseInt(m2[1], 10) : 0;
+          let end = m2[2] ? parseInt(m2[2], 10) : size - 1;
+          if (isNaN(start)) start = 0;
+          if (isNaN(end) || end >= size) end = size - 1;
+          if (start > end || start >= size) {
+            res.writeHead(416, Object.assign({}, base, { 'Content-Range': 'bytes */' + size }));
+            return res.end();
+          }
+          res.writeHead(206, Object.assign({}, base, {
+            'Content-Range': 'bytes ' + start + '-' + end + '/' + size,
+            'Content-Length': end - start + 1
+          }));
+          if (req.method === 'HEAD') return res.end();
+          return fs.createReadStream(fp, { start: start, end: end }).pipe(res);
+        }
+      }
+      res.writeHead(200, Object.assign({}, base, { 'Content-Length': size }));
+      if (req.method === 'HEAD') return res.end();
       return fs.createReadStream(fp).pipe(res);
     }
     if (p === '/api/history') {
@@ -485,6 +588,29 @@ function scheduleAutoFill(room, ms) {
 
 /* ---------------- 消息 ---------------- */
 function saveMsg(m) { db.messages.push(m); if (db.messages.length > 6000) db.messages = db.messages.slice(-3000); store.save(); }
+
+/* 邀请卡片：在双方会话里落一条 kind:'invite' 的消息，
+   对方即使当时离线，回头打开聊天也能看到并一键加入。 */
+function sendInviteCard(from, to, room) {
+  if (to === from.uid) return;
+  const target = db.users[to];
+  if (!target) return;
+  const msg = {
+    id: mid(), from: from.uid, to: to, ts: Date.now(), read: false,
+    kind: 'invite',
+    gid: room.gid,
+    rule: room.rule,
+    text: '🎮 邀请你一起打牌',
+    nick: (from.cur && from.cur.nick) || '玩家'
+  };
+  saveMsg(msg);
+  const w = online.get(to);
+  if (w) send(w, { t: 'chat', msg });
+  // 邀请方自己也能看到「已发出邀请」，方便对照
+  send(online.get(from.uid), { t: 'chat', msg: Object.assign({}, msg, { to: to, mine: true }) });
+  const wc = online.get(from.uid);
+  if (wc) send(wc, { t: 'contacts', list: contactsOf(from.uid) });
+}
 /* ---------- 单向删除：只影响本人，对方完全不知道 ---------- */
 function hideOf(uid) {
   if (!db.hidden) db.hidden = {};
@@ -534,10 +660,11 @@ function contactsOf(u) {
     if (o && db.users[o]) set.set(o, m.ts);
   });
   db.games.forEach(g => { if (g.players.indexOf(u) >= 0) g.players.forEach(p => { if (p !== u && db.users[p]) set.set(p, Math.max(set.get(p) || 0, g.ts)); }); });
-  // 所有用手机登录过的真人玩家自动进入列表，无需先加好友
-  Object.values(db.users).forEach(x => {
-    if (x.uid === u || x.bot) return;
-    if (!set.has(x.uid)) set.set(x.uid, x.lastLogin || x.createdAt || 0);
+  /* 只显示「真正打过交道」的人：聊过天 或 同场打过牌 或 此刻在线。
+     不再把服务器里注册过的所有账号都塞进列表 —— 那会凭空冒出一大堆从没见过的假人。 */
+  online.forEach((_v, k) => {
+    if (k === u || !db.users[k] || db.users[k].bot || set.has(k)) return;
+    set.set(k, Date.now());
   });
   /* 聊天界面只显示「对方」：
      - 自己正在用的 ID 不出现在列表里
@@ -725,15 +852,18 @@ function handle(ws, st, m) {
       if (m.withBot) { fillBots(room); pushRoom(room); tryStart(room); break; }
       pushRoom(room);
       send(ws, { t: 'room', ...roomView(room), you: 0, created: true });
-      // 直接指定要邀请的好友：开房后立刻把邀请发过去
+      // 直接指定要邀请的好友：开房后立刻把邀请发过去（弹窗 + 会话卡片）
       if (m.invite && m.invite !== u.uid) {
         const tgt = db.users[m.invite];
         const w = tgt && online.get(m.invite);
-        if (w && tgt.uid !== u.uid) {
-          send(w, { t: 'invite', by: pub(u), gid: room.gid, rule: room.rule });
-          send(ws, { t: 'toast', msg: '已邀请对方，等待加入…' });
-        } else if (tgt && tgt.uid !== u.uid) {
-          send(ws, { t: 'toast', msg: '对方当前离线，房间已开好' });
+        if (tgt && tgt.uid !== u.uid) {
+          if (w) {
+            send(w, { t: 'invite', by: pub(u), gid: room.gid, rule: room.rule });
+            send(ws, { t: 'toast', msg: '已邀请对方，等待加入…' });
+          } else {
+            send(ws, { t: 'toast', msg: '对方当前离线，已在聊天里留了邀请卡片' });
+          }
+          sendInviteCard(u, m.invite, room);
         }
       }
       // 给好友留出加入时间；超时未坐满则自动邀请在线玩家上桌（界面上只显示「邀请在线玩家」）
@@ -787,6 +917,7 @@ function handle(ws, st, m) {
     case 'room:leave': clearBotTimersOf(u); leaveRoom(u); send(ws, { t: 'room:left', bye: true }); break;
 
     /* 邀请在线好友：没有房间时先按当前规则开好房，再发邀请 */
+    /* 邀请 = 弹窗 + 聊天会话里一张可点击加入的卡片（落库，离线也能看到） */
     case 'room:invite': {
       const target = db.users[m.to];
       if (!target || target.uid === u.uid) return send(ws, { t: 'err', msg: '玩家不存在' });
@@ -800,7 +931,27 @@ function handle(ws, st, m) {
       const w = online.get(m.to);
       if (w) send(w, { t: 'invite', by: pub(u), gid: room.gid, rule: room.rule });
       else send(ws, { t: 'toast', msg: '对方当前离线，已发送邀请' });
+      sendInviteCard(u, m.to, room);
       scheduleAutoFill(room, 15000);
+      break;
+    }
+    /* 加入别人发来的邀请卡片：直接进房间 */
+    case 'invite:join': {
+      const room = rooms.get(String(m.gid || '').trim());
+      if (!room) return send(ws, { t: 'err', msg: '房间已解散' });
+      if (room.game) return send(ws, { t: 'err', msg: '这局已经开始啦' });
+      if (seatOf(room, u) >= 0) { pushRoom(room); return; }
+      let free = room.seats.findIndex(s => !s);
+      if (free < 0) {
+        for (let i = room.seats.length - 1; i >= 1; i--) {
+          if (room.seats[i] && room.seats[i].bot) { free = i; break; }
+        }
+      }
+      if (free < 0) return send(ws, { t: 'err', msg: '房间已满' });
+      clearBotTimers(room);
+      room.seats[free] = u;
+      pushRoom(room);
+      tryStart(room);
       break;
     }
 
@@ -909,6 +1060,26 @@ function handle(ws, st, m) {
       break;
     }
     case 'contacts': send(ws, { t: 'contacts', list: contactsOf(u.uid) }); break;
+    /* 重置本机账号：清掉这个 ID 的全部数据，并解除设备绑定。
+       前端同时会换一个新的设备号，下次进入就是全新账号。 */
+    case 'account:reset': {
+      const uid = u.uid, dev = u.device;
+      try {
+        db.messages = (db.messages || []).filter(x => x.from !== uid && x.to !== uid);
+        db.secretRooms = (db.secretRooms || []).filter(r => (r.members || []).indexOf(uid) < 0 && (r.pidMembers || []).indexOf(uid) < 0);
+        if (dev && db.persons) {
+          Object.values(db.persons).forEach(p => {
+            if ((p.devices || []).indexOf(dev) >= 0) p.devices = p.devices.filter(d => d !== dev);
+            if ((p.uids || []).indexOf(uid) >= 0) p.uids = p.uids.filter(x => x !== uid);
+          });
+        }
+        delete db.users[uid];
+        online.delete(uid);
+        store.save();
+      } catch (e) { }
+      send(ws, { t: 'account:reset', ok: true });
+      break;
+    }
     case 'loc:state': { const p = personOf(u); send(ws, { t: 'loc:state', on: !!p.locOn, at: p.locAt || 0, last: p.loc || null }); break; }
     case 'user:find': {
       const q = String(m.q || '').trim();
@@ -917,17 +1088,23 @@ function handle(ws, st, m) {
     }
 
     /* ---- 私密空间 ---- */
-    case 'secret:status': send(ws, { t: 'secret:status', has: !!u.secretPin, rooms: u.secretPin ? mySecretRooms(u) : [] }); break;
+    /* 私密空间暗号挂在「人」（person）上，而不是某个具体 ID 上：
+       换昵称 / 换 ID / 重装后，只要还是同一台手机，暗号和私密内容都还在 */
+    case 'secret:status': {
+      const pin = personOf(u).secretPin;
+      send(ws, { t: 'secret:status', has: !!pin, rooms: pin ? mySecretRooms(u) : [] }); break;
+    }
     case 'secret:setpin': {
       const p = String(m.pin || '').replace(/\D/g, '').slice(0, 4);
       if (p.length !== 4) return send(ws, { t: 'err', msg: '暗号需为 4 位数字' });
-      u.secretPin = p; store.save();
+      personOf(u).secretPin = p; store.save();
       send(ws, { t: 'secret:ok', has: true, rooms: mySecretRooms(u) });
       break;
     }
     case 'secret:unlock': {
-      if (!u.secretPin) return send(ws, { t: 'secret:ok', has: false, rooms: [] });
-      if (u.secretPin !== String(m.pin || '').replace(/\D/g, '').slice(0, 4)) return send(ws, { t: 'secret:bad' });
+      const pin = personOf(u).secretPin;
+      if (!pin) return send(ws, { t: 'secret:ok', has: false, rooms: [] });
+      if (pin !== String(m.pin || '').replace(/\D/g, '').slice(0, 4)) return send(ws, { t: 'secret:bad' });
       send(ws, { t: 'secret:ok', has: true, rooms: mySecretRooms(u) });
       break;
     }
@@ -1020,13 +1197,13 @@ function handle(ws, st, m) {
       sHideMsgs(personOf(u).pid, (r.msgs || []).map(x => String(x.id)));
       send(ws, { t: 'secret:msgs', rid: r.rid, list: [],
         me: pubPerson(personOf(u)), other: { pid: '', nick: '好友', avatar: null } });
-      send(ws, { t: 'secret:ok', has: !!u.secretPin, rooms: mySecretRooms(u) });
+      send(ws, { t: 'secret:ok', has: !!personOf(u).secretPin, rooms: mySecretRooms(u) });
       break;
     }
     /* 单向：只从我自己的列表里移除，对方那边保留 */
     case 'secret:hide': {
       sHideRooms(personOf(u).pid, [m.rid]);
-      send(ws, { t: 'secret:ok', has: !!u.secretPin, rooms: mySecretRooms(u) });
+      send(ws, { t: 'secret:ok', has: !!personOf(u).secretPin, rooms: mySecretRooms(u) });
       break;
     }
     /* 批量移除私密会话 */
@@ -1034,7 +1211,7 @@ function handle(ws, st, m) {
       const rids = (Array.isArray(m.rids) ? m.rids : []).map(String).filter(Boolean);
       if (!rids.length) return;
       sHideRooms(personOf(u).pid, rids);
-      send(ws, { t: 'secret:ok', has: !!u.secretPin, rooms: mySecretRooms(u) });
+      send(ws, { t: 'secret:ok', has: !!personOf(u).secretPin, rooms: mySecretRooms(u) });
       break;
     }
     /* 删除私密会话里的一条 / 多条消息（双方同步消失） */
@@ -1045,7 +1222,7 @@ function handle(ws, st, m) {
       if (!ids.length) return;
       sHideMsgs(personOf(u).pid, ids);
       send(ws, { t: 'secret:delmsgs', rid: r.rid, ids, mine: true });
-      send(ws, { t: 'secret:ok', has: !!u.secretPin, rooms: mySecretRooms(u) });
+      send(ws, { t: 'secret:ok', has: !!personOf(u).secretPin, rooms: mySecretRooms(u) });
       break;
     }
     case 'history': send(ws, { t: 'history', list: myGames(u) }); break;

@@ -100,56 +100,57 @@
 
       <!-- 牌桌 -->
       <section class="page" id="page-play">
-        <!-- 没在对局中时显示：与大厅/我的完全同款的卡片布局 -->
+        <!-- 没在对局中时显示：仍然是「牌桌」的样子（空桌 + 开局入口），不再是另一套大厅卡片 -->
         <div id="play-empty">
-          <div class="cardbox onlinebox">
-            <div class="hd"><span>在线玩家</span></div>
-            <div class="onum" id="online-n2">—</div>
-            <div class="osub">正在为你匹配对手</div>
-          </div>
-          <div class="hero">
-            <svg class="deco" viewBox="0 0 100 100">
-              <circle cx="50" cy="50" r="46" fill="none" stroke="#f3c96b" stroke-width="2" opacity=".5"/>
-              <text x="50" y="66" font-size="44" text-anchor="middle" fill="#f3c96b" opacity=".9">♠</text>
-            </svg>
-            <h3>还没有开始对局</h3>
-            <p>选一个玩法直接开局，或输入好友的房间号加入</p>
-          </div>
-          <div class="mode">
-            <div class="m on" data-rule="let46">
-              <div class="tag">推荐</div>
-              <h4>让牌玩法</h4>
-              <p>46 张牌 · 抢地主让牌<br>农民打剩到让牌数即胜</p>
+          <div class="etable">
+            <div class="eseat">
+              <div class="a">🎴</div>
+              <div class="t">虚位以待</div>
             </div>
-            <div class="m" data-rule="duo37">
-              <h4>经典玩法</h4>
-              <p>37 张 · 叫分抢地主<br>先出完手牌者获胜</p>
+            <div class="emid">
+              <div class="elogo">♠</div>
+              <div class="etit">牌桌已就位，等你开局</div>
+              <div class="esub">选一个玩法直接开局，或输入好友的房间号加入</div>
+              <div class="emode" id="pe-mode">
+                <div class="em on" data-rule="let46"><b>让牌玩法</b><span>46 张 · 抢地主让牌</span></div>
+                <div class="em" data-rule="duo37"><b>经典玩法</b><span>37 张 · 叫分抢地主</span></div>
+              </div>
+              <div class="erow">
+                <button class="btn jade" id="pe-quick">⚡ 快速匹配</button>
+                <button class="btn" id="pe-create">🏠 创建房间</button>
+              </div>
+              <div class="erow">
+                <input id="pe-input" inputmode="numeric" placeholder="输入房间号">
+                <button class="btn ghost" id="pe-join">进入</button>
+              </div>
+              <div class="eonline">在线玩家 <b id="online-n2">—</b></div>
             </div>
-          </div>
-          <div style="margin:0 14px 12px;display:flex;gap:10px">
-            <button class="btn jade" id="pe-quick" style="flex:1">⚡ 快速匹配</button>
-            <button class="btn" id="pe-create" style="flex:1">🏠 创建房间</button>
-          </div>
-          <div style="margin:0 14px 12px;display:flex;gap:10px">
-            <input id="pe-input" inputmode="numeric" placeholder="输入房间号" style="flex:1 1 0;min-width:0;padding:12px;border-radius:14px;background:rgba(255,255,255,.08);border:1px solid var(--line);color:var(--txt);font-size:15px;letter-spacing:3px;text-align:center;outline:none">
-            <button class="btn ghost" id="pe-join" style="flex:0 0 78px">进入</button>
+            <div class="eseat me">
+              <div class="a" id="pe-myav">🙂</div>
+              <div class="t" id="pe-mynick">我</div>
+            </div>
           </div>
         </div>
         <div class="table">
-          <div class="topseats" id="seat-top"></div>
-          <div class="seatleft" id="seat-left"></div>
-          <div class="seatright" id="seat-right"></div>
-          <div class="mid">
-            <div class="notice hidden" id="mid-notice"></div>
-            <div class="played" id="played"></div>
+          <!-- 底牌：统一放在牌桌最上方 -->
+          <div class="dibar" id="bottom-bar"></div>
+          <!-- 左右两侧：对手 / 自己，出牌都朝牌桌中间展开 -->
+          <div class="field">
+            <div class="seatleft" id="seat-left"></div>
+            <div class="mid">
+              <div class="notice hidden" id="mid-notice"></div>
+              <div class="played" id="played"></div>
+            </div>
+            <div class="seatright" id="seat-right"></div>
           </div>
-          <div class="bottombar" id="bottom-bar"></div>
+          <div class="topseats" id="seat-top"></div>
           <div class="myinfo" id="my-info"></div>
           <div class="myplayed" id="my-played"></div>
           <div id="action-zone"></div>
           <div class="handwrap"><div class="hand" id="hand"></div></div>
         </div>
         <button class="tablechat" id="btn-table-chat">💬</button>
+        <button class="orientbtn" id="btn-orient">⛶ 竖屏</button>
         <div class="ruletip hidden" id="rule-tip"></div>
         <div class="tchat hidden" id="tchat"></div>
       </section>
@@ -206,6 +207,7 @@
 
       <!-- 聊天 -->
       <section class="page" id="page-chat">
+        <div class="clist-hd"><span>消息</span><button id="chat-manage">管理</button></div>
         <div class="clist" id="chat-list"></div>
       </section>
 
@@ -232,9 +234,12 @@
         <div class="rowset">音效<button class="sw on" id="sw-sound"><i></i></button></div>
         <div class="rowset">出牌语音播报<button class="sw on" id="sw-voice"><i></i></button></div>
         <div class="rowset">背景音乐<button class="sw on" id="sw-bgm"><i></i></button></div>
+        <div class="rowset">隐私伪装<button class="sw" id="sw-disguise"><i></i></button></div>
+        <div class="tipline">开启后会话内容会伪装成「邀请你开局」，语音/图片/视频将不再显示</div>
         <div class="rowset">出牌震动<button class="sw on" id="sw-vibe"><i></i></button></div>
         <div style="height:16px"></div>
-        <div style="margin:0 14px 20px"><button class="btn ghost" id="btn-logout">退出登录</button></div>
+        <div style="margin:0 14px 10px"><button class="btn ghost" id="btn-logout">退出登录</button></div>
+        <div style="margin:0 14px 20px"><button class="btn ghost danger" id="btn-reset">🧹 重置本机数据</button></div>
       </section>
     </div>
 

@@ -128,6 +128,20 @@ public class MainActivity extends BridgeActivity {
     public void onStart() {
         super.onStart();
         applyWebViewSettings();
+        // 回到前台：清掉桌面角标
+        try { BadgeUtil.setBadge(this, 0); } catch (Throwable ignored) { }
+        // 启动后台保活服务（前台服务，保证退到后台时 WebSocket 不被掐断）
+        ensurePush();
+    }
+
+    /* 首次进入（已登录）后启动保活服务；App 被杀由系统回收，这是 Android 机制 */
+    private boolean pushStarted = false;
+    private void ensurePush() {
+        try {
+            if (pushStarted) return;
+            pushStarted = true;
+            new DDZBridge().startPush();
+        } catch (Throwable ignored) { }
     }
 
     public class DDZBridge {
@@ -154,6 +168,83 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public String hasNative() { return "1"; }
+
+        /* ---------- 后台保活（方案 A）：前台服务 ---------- */
+
+        @JavascriptInterface
+        public void startPush() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, REQ_PERM);
+                            }
+                        }
+                    } catch (Throwable ignored) { }
+                    try {
+                        android.content.Intent i = new android.content.Intent(MainActivity.this, DDZPushService.class);
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            startForegroundService(i);
+                        } else {
+                            startService(i);
+                        }
+                    } catch (Throwable ignored) { }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void stopPush() {
+            try {
+                stopService(new android.content.Intent(MainActivity.this, DDZPushService.class));
+            } catch (Throwable ignored) { }
+        }
+
+        /** 发一条系统通知；badge 同时用于部分 launcher 的角标数字 */
+        @JavascriptInterface
+        public void notifyMsg(final String title, final String body, final int id, final int badge) {
+            DDZPushService.postNotification(MainActivity.this, title, body, id, badge);
+        }
+
+        /** 桌面角标数字；0 = 清除 */
+        @JavascriptInterface
+        public void setBadge(final int n) {
+            try { BadgeUtil.setBadge(MainActivity.this, n); } catch (Throwable ignored) { }
+        }
+
+        /**
+         * 把聊天里的语音 / 图片 / 视频 / 文件保存到手机。
+         * 走系统 DownloadManager 落到公共「下载」目录，无需存储权限（Android 10+ 亦可用）。
+         * 返回 "ok" 或 "error:原因"。
+         */
+        @JavascriptInterface
+        public String saveFile(final String url, final String name) {
+            if (url == null || url.length() == 0) return "error:地址为空";
+            try {
+                android.app.DownloadManager dm = (android.app.DownloadManager) getSystemService(android.content.Context.DOWNLOAD_SERVICE);
+                if (dm == null) return "error:系统不支持下载";
+                android.app.DownloadManager.Request rq =
+                        new android.app.DownloadManager.Request(android.net.Uri.parse(url));
+                String fn = (name == null || name.trim().length() == 0) ? "ddz_file" : name.trim();
+                fn = fn.replaceAll("[\\\\/:*?\"<>|]", "_");
+                rq.setTitle(fn);
+                rq.setDescription("PP斗地主");
+                rq.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                rq.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fn);
+                rq.allowScanningByMediaScanner();
+                // 服务器是 http，需要明确放行明文（Android 9+ 默认禁止）
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    rq.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fn);
+                }
+                dm.enqueue(rq);
+                return "ok";
+            } catch (Exception e) {
+                return "error:" + (e.getMessage() == null ? "下载失败" : e.getMessage());
+            }
+        }
 
         @JavascriptInterface
         public String startRecord() {

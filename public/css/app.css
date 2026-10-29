@@ -110,11 +110,11 @@ input,textarea{font-family:inherit}
 .table{position:absolute;inset:0;display:flex;flex-direction:column}
 .tseat{display:flex;align-items:center;gap:8px;padding:calc(var(--safe-t) + 8px) 12px 6px;position:relative;z-index:4}
 .tseat.right{flex-direction:row-reverse}
-.tseat .av{width:40px;height:40px;border-radius:50%;overflow:hidden;border:2px solid rgba(255,255,255,.25);position:relative}
+.tseat .av{width:32px;height:32px;border-radius:50%;overflow:hidden;border:2px solid rgba(255,255,255,.25);position:relative}
 .tseat .av .crown{position:absolute;top:-9px;left:50%;transform:translateX(-50%);width:20px;height:16px}
 .tseat .info{min-width:0}
-.tseat .nm{font-size:13px;font-weight:700}
-.tseat .cnt{font-size:11px;color:var(--gold);margin-top:2px}
+.tseat .nm{font-size:12px;font-weight:700}
+.tseat .cnt{font-size:10px;color:var(--gold);margin-top:1px}
 .tseat .rl{font-size:10px;padding:1px 6px;border-radius:8px;background:var(--red);color:#fff;margin-left:5px}
 .tseat .rl.f{background:var(--jade);color:#04281f}
 .tseat.right .info{text-align:right}
@@ -132,9 +132,9 @@ input,textarea{font-family:inherit}
 .bottombar .lbl{font-size:10px;color:var(--sub);margin-right:4px}
 
 .myinfo{display:flex;align-items:center;gap:8px;padding:0 12px 4px;position:relative;z-index:4}
-.myinfo .av{width:36px;height:36px;border-radius:50%;overflow:hidden;border:2px solid rgba(255,255,255,.25);position:relative}
-.myinfo .nm{font-size:13px;font-weight:700}
-.myinfo .cnt{font-size:11px;color:var(--gold)}
+.myinfo .av{width:30px;height:30px;border-radius:50%;overflow:hidden;border:2px solid rgba(255,255,255,.25);position:relative}
+.myinfo .nm{font-size:12px;font-weight:700}
+.myinfo .cnt{font-size:10px;color:var(--gold)}
 .myinfo .sp{flex:1}
 .myinfo .mult{font-size:11px;color:var(--gold);padding:3px 9px;border-radius:10px;background:rgba(0,0,0,.35);border:1px solid rgba(243,201,107,.35)}
 
@@ -165,13 +165,14 @@ input,textarea{font-family:inherit}
 .hand .pc{margin-left:var(--ov,-18px)}
 .hand .pc:first-child{margin-left:0}
 .hand .pc.sel{margin-left:calc(var(--ov,-18px) + 4px);margin-right:-4px}
-.pc.mini{--card-w:38px;--card-h:53px}
-.pc.mini .rk{font-size:11px;top:2px;left:3px}
-.pc.mini .su{font-size:8px;top:14px;left:3px}
-.pc.mini .ctr{font-size:14px}
-.pc.tiny{--card-w:30px;--card-h:42px}
-.pc.tiny .rk{font-size:9px;top:1px;left:2px}
+.pc.mini{--card-w:40px;--card-h:56px}
+.pc.mini .rk{font-size:12px;top:2px;left:3px}
+.pc.mini .su{font-size:9px;top:15px;left:3px}
+.pc.mini .ctr{font-size:15px}
+.pc.tiny{--card-w:32px;--card-h:45px}
+.pc.tiny .rk{font-size:10px;top:1px;left:2px}
 .pc.tiny .su{display:none}
+.pc.tiny .big{font-size:18px}
 .pc.tiny .ctr{font-size:11px}
 .pc.back{background:linear-gradient(135deg,#1b4d8f,#0f2f5c 60%,#1b4d8f);box-shadow:0 3px 8px rgba(0,0,0,.45),inset 0 0 0 2px rgba(255,255,255,.18)}
 .pc.back::after{content:"";position:absolute;inset:5px;border-radius:4px;border:1px solid rgba(255,255,255,.22);
@@ -217,13 +218,54 @@ input,textarea{font-family:inherit}
 @keyframes popin{from{opacity:0;transform:translateY(8px) scale(.96)}to{opacity:1;transform:none}}
 .msg.me{flex-direction:row-reverse}
 .msg .a{width:32px;height:32px;border-radius:50%;overflow:hidden;flex:0 0 auto}
-.bub{max-width:74%;padding:9px 12px;border-radius:16px;font-size:14px;line-height:1.5;position:relative;word-break:break-word;
+/* 气泡列：统一承载「昵称 + 气泡」，保证自己/左右分列不会串到一起 */
+.msg .bcol{display:flex;flex-direction:column;min-width:0;max-width:74%}
+.msg.me .bcol{align-items:flex-end}
+.msg .bcol .who{font-size:10px;color:var(--sub);margin:0 0 3px 2px;opacity:.8}
+.bub{max-width:100%;padding:9px 12px;border-radius:16px;font-size:14px;line-height:1.5;position:relative;word-break:break-word;
   background:rgba(255,255,255,.10);border-top-left-radius:5px}
 .msg.me .bub{background:linear-gradient(135deg,var(--jade),#129a72);color:#04281f;border-top-left-radius:16px;border-top-right-radius:5px}
 .bub.img,.bub.file{padding:4px}
 .bub img,.bub video{max-width:200px;max-height:240px;border-radius:12px;display:block}
 .bub .fname{font-size:11px;opacity:.85;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bub.sticker{background:none!important;padding:0}
+/* 聊天列表顶部：管理（批量删除会话）入口，不必靠长按 */
+.clist-hd{display:flex;align-items:center;justify-content:space-between;padding:calc(var(--safe-t) + 10px) 16px 6px}
+.clist-hd span{font-size:17px;font-weight:800}
+.clist-hd button{background:none;border:0;color:var(--jade);font-size:13px;padding:4px 6px;cursor:pointer}
+.slist-hd{display:flex;align-items:center;justify-content:space-between;padding:10px 16px 4px}
+.slist-hd span{font-size:12px;color:#5c6b66}
+.slist-hd button{background:none;border:0;color:var(--jade);font-size:12px;padding:4px 6px;cursor:pointer}
+/* 文件消息：真实类型图标 + 文件名 + 下载按钮 */
+.filebub{display:flex;align-items:center;gap:8px;padding:5px 6px;min-width:150px}
+.filebub .fic{font-size:26px;flex:0 0 auto}
+.filebub .fmid{flex:1 1 auto;min-width:0}
+.filebub .fname{font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.filebub .fdl{font-size:18px;text-decoration:none;color:inherit;padding:0 4px}
+.imgbad{font-size:11px;color:var(--sub);padding:6px 8px;border:1px dashed var(--line);border-radius:10px;cursor:pointer}
+/* 语音气泡旁的保存按钮 */
+.msave{font-size:14px;opacity:.65;margin-left:4px;cursor:pointer;padding:2px 3px}
+.msave:active{opacity:1;transform:scale(1.15)}
+/* 邀请卡片：聊天里一键加入房间 */
+.invcard{display:flex;align-items:center;gap:9px;min-width:200px;padding:2px}
+.invcard .ic{font-size:26px;flex:0 0 auto}
+.invcard .ib{flex:1 1 auto;min-width:0}
+.invcard .it{font-size:13px;font-weight:700}
+.invcard .id{font-size:10px;opacity:.8;margin-top:2px}
+.invcard .id b{letter-spacing:2px}
+.invcard .ij{flex:0 0 auto;background:var(--jade);color:#04281f;border:0;border-radius:12px;
+  padding:7px 12px;font-size:12px;font-weight:800;cursor:pointer}
+.msg.me .invcard .ij{background:#04281f;color:var(--jade)}
+/* 查看器：底部保存 / 关闭 */
+.viewer{position:absolute;inset:0;z-index:60;background:rgba(0,0,0,.92);display:flex;
+  flex-direction:column;align-items:center;justify-content:center;gap:12px}
+.viewer .x{position:absolute;top:calc(var(--safe-t) + 10px);right:14px;font-size:24px;color:#fff;
+  width:36px;height:36px;display:grid;place-items:center;cursor:pointer}
+.viewer .vbar{display:flex;gap:10px;position:absolute;bottom:calc(28px + var(--safe-b));left:0;right:0;justify-content:center}
+.viewer .vb{background:var(--jade);color:#04281f;border:0;border-radius:14px;padding:10px 18px;
+  font-size:14px;font-weight:700;cursor:pointer}
+.viewer .vb.ghost{background:rgba(255,255,255,.14);color:#fff}
+.viewer .vmsg{position:absolute;bottom:calc(78px + var(--safe-b));font-size:11px;color:var(--sub)}
 .bub.sticker svg{width:96px;height:96px;display:block}
 .bub.voice{display:flex;align-items:center;gap:8px;min-width:96px}
 .bub.voice .wave{display:flex;align-items:center;gap:2px;height:20px}
@@ -322,11 +364,11 @@ input,textarea{font-family:inherit}
 /* ---------- 三人对局顶部座位 ---------- */
 .topseats{display:flex;align-items:flex-start;gap:8px;padding:calc(var(--safe-t) + 8px) 10px 6px;position:relative;z-index:4}
 .topseats .ts{flex:1;min-width:0;display:flex;align-items:center;gap:7px;
-  padding:6px 8px;border-radius:14px;background:rgba(0,0,0,.26);border:1px solid var(--line)}
+  padding:2px 4px;border-radius:14px;background:none;border:0}
 .topseats .ts.right{flex-direction:row-reverse}
 .topseats .ts.right .ts-i{text-align:right}
-.topseats .ts .av{width:36px;height:36px;border-radius:50%;overflow:hidden;border:2px solid rgba(255,255,255,.25);flex:0 0 auto;position:relative}
-.topseats .ts.act{border-color:var(--gold);box-shadow:0 0 0 1px rgba(243,201,107,.35)}
+.topseats .ts .av{width:36px;height:36px;border-radius:50%;overflow:hidden;border:0;flex:0 0 auto;position:relative}
+.topseats .ts.act{box-shadow:0 0 0 2px rgba(243,201,107,.75)}
 .topseats .ts-i{min-width:0;flex:1}
 .topseats .ts .nm{font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .topseats .ts .cnt{font-size:10px;color:var(--gold);margin-top:2px}
@@ -539,20 +581,57 @@ body.land .page{padding-bottom:calc(54px + var(--safe-b))}
 
 
 /* ---------- 牌桌：左右座位 + 出牌贴头像 ---------- */
+/* 注意：这两个容器只做定位，不再给内部 .ts 加任何底色/边框（底色边框已全部去掉） */
 .seatleft,.seatright{position:absolute;top:calc(var(--safe-t) + 44px);width:96px;z-index:5;
   display:flex;flex-direction:column;align-items:center;gap:2px}
 .seatleft{left:4px}
 .seatright{right:4px}
-.seatleft .ts,.seatright .ts{flex-direction:column;text-align:center;gap:2px;
-  background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:12px;padding:5px 4px;width:100%}
-.seatleft .ts .ts-i,.seatright .ts .ts-i{text-align:center;min-width:0}
-.seatleft .ts .av,.seatright .ts .av{margin:0 auto}
+.seatleft .ts,.seatright .ts{flex-direction:row;text-align:left;gap:6px;
+  background:none;border:0;padding:0;width:auto}
+.seatleft .ts .ts-i,.seatright .ts .ts-i{text-align:left;min-width:0}
+.seatleft .ts .av,.seatright .ts .av{margin:0}
 .topseats{position:relative;z-index:6}
-.myplayed{min-height:34px;display:flex;align-items:center;justify-content:center;padding:0 8px}
-.pcards{display:flex;gap:2px;align-items:center;justify-content:center;flex-wrap:wrap}
+.myplayed{min-height:34px;display:flex;align-items:center;justify-content:center;padding:0 8px;overflow:hidden}
+.pcards{display:flex;gap:2px;align-items:center;justify-content:center;flex-wrap:wrap;max-width:100%}
 .pcards.center{min-height:30px}
 .pcards .pass,.pcards.pass{color:rgba(255,255,255,.16);font-size:11px}
-.pmine{margin-top:2px}
+.pmine{margin-top:2px;max-width:100%;overflow:hidden}
+/* 打出的牌叠着放（像真牌堆在一起），牌越多叠得越紧，绝不撑破屏幕 */
+.prow.stack{display:flex;flex-wrap:nowrap;justify-content:center;align-items:center;max-width:100%}
+.prow.stack .pc{margin-left:var(--ov,-14px);box-shadow:-3px 0 7px rgba(0,0,0,.42)}
+.prow.stack .pc:first-child{margin-left:0}
+.prow.stack .pc.sel,.prow.stack .pc:last-child{box-shadow:0 2px 6px rgba(0,0,0,.4)}
+.played .prow{max-width:100%}
+.btn.ghost.danger{color:#ff8a8a;border-color:rgba(255,90,90,.4)}
+.tipline{font-size:11px;color:var(--sub);padding:2px 16px 8px;line-height:1.5;margin-top:-4px}
+/* 对战页空态：仍然是牌桌的样子（上空位 / 中开局入口 / 下自己座位） */
+.etable{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  padding:calc(var(--safe-t) + 10px) 14px calc(10px + var(--safe-b));gap:8px}
+.etable .eseat{display:flex;flex-direction:column;align-items:center;gap:4px;opacity:.72;flex:0 0 auto}
+.etable .eseat .a{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:22px;
+  background:rgba(255,255,255,.08);border:1px dashed rgba(255,255,255,.28)}
+.etable .eseat .t{font-size:11px;color:var(--sub)}
+.etable .eseat.me{opacity:1}
+.etable .eseat.me .a{background:rgba(243,201,107,.16);border:1px solid rgba(243,201,107,.5);overflow:hidden}
+.etable .emid{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:6px;width:100%;max-width:420px;overflow-y:auto}
+.etable .elogo{font-size:40px;color:var(--gold);opacity:.5;line-height:1}
+.etable .etit{font-size:16px;font-weight:800;color:var(--gold)}
+.etable .esub{font-size:11px;color:var(--sub);text-align:center;line-height:1.5}
+.etable .emode{display:flex;gap:8px;width:100%;margin-top:2px}
+.etable .emode .em{flex:1;padding:8px 6px;border-radius:12px;text-align:center;cursor:pointer;
+  background:rgba(255,255,255,.05);border:1px solid var(--line);display:flex;flex-direction:column;gap:2px}
+.etable .emode .em b{font-size:13px}
+.etable .emode .em span{font-size:10px;color:var(--sub)}
+.etable .emode .em.on{background:rgba(243,201,107,.14);border-color:var(--gold)}
+.etable .emode .em.on b{color:var(--gold)}
+.etable .erow{display:flex;gap:8px;width:100%;align-items:center}
+.etable .erow .btn{flex:1;margin:0;padding:11px 8px;font-size:14px}
+.etable .erow .btn.ghost{flex:0 0 76px}
+.etable .erow input{flex:1 1 0;min-width:0;padding:11px;border-radius:12px;background:rgba(255,255,255,.08);
+  border:1px solid var(--line);color:var(--txt);font-size:15px;letter-spacing:3px;text-align:center;outline:none}
+.etable .eonline{font-size:11px;color:var(--sub)}
+.etable .eonline b{color:var(--gold);font-size:14px}
 
 /* 横屏（打牌时）：两家分列左右，中间让出牌区，整体压紧以适配矮屏 */
 @media (orientation:landscape){
@@ -565,20 +644,60 @@ body.land .page{padding-bottom:calc(54px + var(--safe-b))}
   body.land #page-play .topseats{padding:calc(var(--safe-t) + 3px) 118px 0}
   body.land #page-play .myinfo{padding:0 12px 1px}
   body.land #page-play .myinfo .av{width:28px;height:28px}
-  body.land #page-play .myplayed{min-height:28px;padding:0 100px}
+  body.land #page-play .myplayed{min-height:28px;padding:0 8px}
   body.land #page-play .handwrap{padding:0 4px}
   body.land #page-play .bidwrap{padding:3px 12px calc(3px + var(--safe-b));gap:7px}
   body.land #page-play .bidwrap .btn{padding:8px 4px;font-size:13px;border-radius:11px}
-  body.land #page-play .pmine .pcards{transform:scale(.72);transform-origin:center}
+  /* 出牌不再整体缩放（此前缩到 .72/.66 → 只有 25px 宽，根本看不清点数） */
 }
 @media (orientation:landscape) and (max-height:460px){
   body.land #page-play .seatleft,
   body.land #page-play .seatright{top:calc(var(--safe-t) + 28px);width:94px}
   body.land #page-play .mid{padding:0 100px}
   body.land #page-play .myplayed{min-height:26px}
-  body.land #page-play .pmine .pcards{transform:scale(.66)}
   body.land #page-play .myinfo{padding:0 10px 0}
   body.land #page-play .myinfo .av{width:26px;height:26px}
+}
+/* 矮屏（横屏高 ≤ 400px）：整体收紧纵向占用，保证手牌与按钮都在屏幕内 */
+@media (orientation:landscape) and (max-height:400px){
+  body.land #page-play .table{padding:0 4px}
+  body.land #page-play .topseats{padding:calc(var(--safe-t) + 2px) 104px 0}
+  body.land #page-play .tseat{padding:2px 6px 1px;gap:5px}
+  body.land #page-play .tseat .av{width:26px;height:26px}
+  body.land #page-play .tseat .nm{font-size:11px}
+  body.land #page-play .tseat .cnt{font-size:9px;margin-top:0}
+  body.land #page-play .mid{padding:0 96px;min-height:0}
+  body.land #page-play .played{min-height:26px;padding:0 6px}
+  body.land #page-play .bottombar{padding:0 96px;min-height:0}
+  body.land #page-play .myinfo{padding:0 8px 0;gap:5px}
+  body.land #page-play .myinfo .av{width:24px;height:24px}
+  body.land #page-play .myinfo .nm{font-size:11px}
+  body.land #page-play .myinfo .cnt{font-size:9px}
+  body.land #page-play .myinfo .mult{font-size:9px;padding:1px 6px}
+  body.land #page-play .myplayed{min-height:22px;padding:0 8px}
+  body.land #page-play .handwrap{padding:0 2px}
+  body.land #page-play .hand{min-height:calc(var(--card-h) + 4px);padding-top:4px}
+  body.land #page-play .acts{padding:3px 10px calc(4px + var(--safe-b));gap:7px}
+  body.land #page-play .acts .btn{padding:7px 4px;font-size:13px}
+  body.land #page-play .bidwrap{padding:2px 10px calc(3px + var(--safe-b));gap:6px}
+  body.land #page-play .bidwrap .btn{padding:6px 4px;font-size:12px}
+  body.land #page-play .seatleft,
+  body.land #page-play .seatright{top:calc(var(--safe-t) + 24px);width:88px}
+  /* 矮屏：出牌区统一用小号牌，给手牌腾出高度（否则叫分/结算时手牌会被顶出屏幕） */
+  body.land #page-play .pmine .pc,
+  body.land #page-play .myplayed .pc{--card-w:32px;--card-h:45px}
+  /* 叫分按钮区更紧凑：提示行与按钮都收一档 */
+  body.land #page-play .bidwrap{padding:2px 8px calc(3px + var(--safe-b));gap:5px}
+  body.land #page-play .bidwrap > div:not(.btn){font-size:10px;margin-bottom:1px;line-height:1.3}
+  body.land #page-play .bidwrap .btn{padding:5px 3px;font-size:12px;border-radius:10px}
+}
+/* 超矮屏（横屏高 ≤ 350px）：顶栏+底栏会吃掉近 1/4 屏高，这里让出手牌空间 */
+@media (orientation:landscape) and (max-height:350px){
+  body.land #topbar{display:none}
+  body.land .page{padding-bottom:calc(44px + var(--safe-b))}
+  body.land #tabbar .tab{padding:3px 0 4px;font-size:10px;gap:4px}
+  body.land #tabbar svg{width:16px;height:16px}
+  body.land #page-play .topseats{padding:calc(var(--safe-t) + 2px) 104px 0}
 }
 
 /* ---------- 好友空间：标题栏里的小圆点（位置开关，刻意做小做淡） ---------- */
@@ -686,3 +805,123 @@ body.force-land #app{
   background:rgba(255,255,255,.1);border:1px solid var(--line);color:var(--txt)}
 #boot-diag .dg-b.jade{background:linear-gradient(135deg,var(--jade),#12a37a);color:#04281f;font-weight:700}
 #boot-diag .dg-b:active{filter:brightness(1.15)}
+
+/* ==================================================================
+   牌桌改版（底牌置顶 + 左右分列 + 统一尺度）
+   目标：不同分辨率手机上，牌桌各元素的「相对大小和位置」保持一致。
+   做法：引入 --k 缩放系数（由 JS 按屏幕高宽算出，基准机型 844×390），
+        牌桌内所有尺寸都乘 --k，从而高分屏不会显得过小、低分屏不会过大。
+   ================================================================== */
+.hidden2{display:none !important}
+
+#page-play .dibar{
+  flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:calc(6px * var(--k,1));
+  padding:calc(4px * var(--k,1)) 10px calc(2px * var(--k,1));
+  position:relative;z-index:4;
+  padding-top:calc(var(--safe-t) + 4px)}
+#page-play .dibar .lbl{font-size:calc(10px * var(--k,1));color:var(--sub);margin-right:calc(4px * var(--k,1))}
+#page-play .dibar .bcards{display:flex;gap:calc(2px * var(--k,1))}
+
+#page-play .field{
+  flex:1 1 auto;min-height:0;display:flex;align-items:center;gap:calc(6px * var(--k,1));
+  padding:0 calc(6px * var(--k,1));position:relative;z-index:4}
+#page-play .seatleft,#page-play .seatright{
+  position:static;width:auto;flex:0 0 auto;max-width:52%;min-width:0;z-index:5;
+  display:flex;flex-direction:column;align-items:flex-start;gap:0}
+#page-play .seatright{align-items:flex-end}
+#page-play .mid{flex:1 1 auto;min-width:0;min-height:0;display:flex;align-items:center;justify-content:center}
+#page-play .played{min-height:0;padding:0}
+
+/* 一列 = 信息块 + 打出的牌；右侧列反向排列，使牌朝牌桌中间展开 */
+#page-play .seatcol{display:flex;align-items:center;gap:calc(6px * var(--k,1));min-width:0;max-width:100%}
+#page-play .seatcol.right{flex-direction:row-reverse}
+/* 信息块：不带底色和边框（干净地浮在牌桌上），仅用金色描边表示「轮到 TA」 */
+#page-play .seatcol .ts{
+  display:flex;align-items:center;gap:calc(6px * var(--k,1));
+  padding:calc(2px * var(--k,1)) calc(4px * var(--k,1));border-radius:calc(11px * var(--k,1));
+  background:none;border:0;min-width:0;flex:0 0 auto;transition:box-shadow .15s}
+#page-play .seatcol .ts.act{box-shadow:0 0 0 calc(2px * var(--k,1)) rgba(243,201,107,.75)}
+#page-play .seatcol .ts .av{
+  width:calc(26px * var(--k,1));height:calc(26px * var(--k,1));border-radius:50%;overflow:hidden;
+  border:0;flex:0 0 auto;position:relative}
+#page-play .seatcol .ts .ts-i{min-width:0}
+#page-play .seatcol .ts .nm{
+  font-size:calc(11px * var(--k,1));font-weight:700;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:calc(96px * var(--k,1))}
+#page-play .seatcol .ts .cnt{
+  font-size:calc(9px * var(--k,1));color:var(--gold);margin-top:calc(1px * var(--k,1));white-space:nowrap}
+#page-play .seatcol .ts.right .ts-i{text-align:right}
+#page-play .seatcol .ts .rl{font-size:calc(9px * var(--k,1));padding:0 calc(4px * var(--k,1));
+  border-radius:calc(8px * var(--k,1));margin-left:calc(4px * var(--k,1))}
+#page-play .seatcol .ts .clock{
+  width:calc(24px * var(--k,1));height:calc(24px * var(--k,1));border-radius:50%;
+  display:grid;place-items:center;font-size:calc(11px * var(--k,1));font-weight:700;flex:0 0 auto}
+#page-play .seatcol .ts .clock b{
+  width:calc(19px * var(--k,1));height:calc(19px * var(--k,1));border-radius:50%;
+  background:#0a2c22;display:grid;place-items:center;font-size:calc(9px * var(--k,1))}
+#page-play .seatcol .pmine{display:flex;align-items:center;min-width:0;max-width:100%;overflow:hidden}
+#page-play .seatcol .pmine .pcards{padding:0}
+
+/* 牌尺寸随 --k 缩放：高分屏不会变小、低分屏不会变大 */
+/* mini/tiny 只给基准尺寸，实际大小由下面 .pc 统一乘 --k */
+#page-play .pc.mini{--card-w:40px;--card-h:56px}
+#page-play .pc.tiny{--card-w:32px;--card-h:45px}
+#page-play .pc{width:calc(var(--card-w) * var(--k,1));height:calc(var(--card-h) * var(--k,1))}
+#page-play .pc .rk{font-size:calc(12px * var(--k,1));top:calc(2px * var(--k,1));left:calc(3px * var(--k,1))}
+#page-play .pc .su{font-size:calc(9px * var(--k,1));top:calc(15px * var(--k,1));left:calc(3px * var(--k,1))}
+#page-play .pc .ctr{font-size:calc(15px * var(--k,1))}
+#page-play .pc .big{font-size:calc(20px * var(--k,1))}
+#page-play .pc.mini .rk{font-size:calc(12px * var(--k,1))}
+#page-play .pc.mini .ctr{font-size:calc(15px * var(--k,1))}
+#page-play .pc.tiny .rk{font-size:calc(10px * var(--k,1))}
+#page-play .pc.tiny .ctr{font-size:calc(12px * var(--k,1))}
+#page-play .prow.stack .pc{margin-left:calc(var(--ov,-14px) * var(--k,1))}
+#page-play .hand{--card-w:calc(48px * var(--k,1));--card-h:calc(68px * var(--k,1))}
+
+/* 底部：我的信息（三人场）/ 操作按钮 / 叫分 */
+#page-play .myinfo{gap:calc(6px * var(--k,1));padding:0 calc(10px * var(--k,1)) calc(2px * var(--k,1))}
+#page-play .myinfo .av{width:calc(28px * var(--k,1));height:calc(28px * var(--k,1));border:0}
+#page-play .myinfo .nm{font-size:calc(11px * var(--k,1))}
+#page-play .myinfo .cnt{font-size:calc(9px * var(--k,1))}
+#page-play .myinfo .mult{font-size:calc(9px * var(--k,1));padding:calc(2px * var(--k,1)) calc(7px * var(--k,1));
+  border-radius:calc(10px * var(--k,1))}
+#page-play .myplayed{min-height:calc(22px * var(--k,1));padding:0 8px}
+#page-play .acts{gap:calc(8px * var(--k,1));padding:calc(5px * var(--k,1)) 10px calc(6px * var(--safe-b) + 6px)}
+#page-play .acts .btn{padding:calc(8px * var(--k,1)) calc(4px * var(--k,1));font-size:calc(13px * var(--k,1));
+  border-radius:calc(12px * var(--k,1))}
+#page-play .bidwrap{gap:calc(7px * var(--k,1));padding:calc(6px * var(--k,1)) 10px calc(8px + var(--safe-b))}
+#page-play .bidwrap .btn{padding:calc(8px * var(--k,1)) calc(4px * var(--k,1));font-size:calc(13px * var(--k,1))}
+#page-play .handwrap{padding:0 calc(4px * var(--k,1))}
+/* 牌桌中央：倍数 / 让牌数（两人场时「我」在右侧，底部无个人信息行） */
+#page-play .cinf{
+  font-size:calc(10px * var(--k,1));color:var(--gold);white-space:nowrap;
+  padding:calc(2px * var(--k,1)) calc(8px * var(--k,1));border-radius:calc(10px * var(--k,1));
+  background:rgba(0,0,0,.32);border:1px solid rgba(243,201,107,.28)}
+
+/* ==================================================================
+   竖屏（旋转过程中的短暂状态）：保持和横屏完全一致的排布结构 ——
+   底牌在最上、我在最下、左右两个玩家分列两侧，只做等比压缩，不改成上下两行。
+   游戏本身已锁定横屏，这里只是保证旋转瞬间不会错位。
+   ================================================================== */
+@media (orientation:portrait){
+  #page-play .field{padding:0 calc(4px * var(--k,1));gap:calc(4px * var(--k,1))}
+  #page-play .seatleft,#page-play .seatright{max-width:48%}
+  #page-play .seatcol{gap:calc(5px * var(--k,1))}
+  #page-play .seatcol .ts .nm{max-width:calc(78px * var(--k,1))}
+  #page-play .seatcol .pmine{overflow:hidden}
+  #page-play .prow.stack{max-width:100%;overflow:hidden}
+  #page-play .topseats{display:none}
+  #page-play .myplayed{min-height:0}
+}
+/* 空的一行不要占位 */
+#page-play .topseats:empty{display:none}
+
+/* 牌桌朝向切换按钮：默认横屏，点一下切竖屏 */
+.orientbtn{position:absolute;right:calc(10px + env(safe-area-inset-right,0px));
+  bottom:calc(52px + var(--safe-b));z-index:26;
+  padding:calc(5px * var(--k,1)) calc(10px * var(--k,1));border-radius:calc(20px * var(--k,1));
+  background:rgba(0,0,0,.42);border:1px solid rgba(255,255,255,.16);color:var(--txt);
+  font-size:calc(11px * var(--k,1));font-weight:700;cursor:pointer;
+  display:none;align-items:center;gap:calc(4px * var(--k,1))}
+#page-play.on .orientbtn{display:flex}
+.orientbtn:active{background:rgba(0,0,0,.66)}

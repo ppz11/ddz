@@ -1,7 +1,9 @@
 /* ===================== 主应用 ===================== */
 window.App = (function () {
   var me = null, page = 'home', rule = 'let46';
-  var settings = { sound: true, voice: true, bgm: true, vibe: true, disguise: true };
+  /* 隐私伪装默认关闭：开启后会话内容会被伪装成「邀请你开局」，
+     语音/图片/视频/文件将无法正常显示，只有需要防偷看时才手动打开 */
+  var settings = { sound: true, voice: true, bgm: true, vibe: true, disguise: false, v: 2 };
   var createCfg = { mode: 'duo', rule: 'let46' };
   var contacts = [], onlineUsers = [], allUsers = [], fakeOnline = 0, invited = new Set();
   var hist = [];
@@ -46,9 +48,18 @@ window.App = (function () {
       webLock(o === 'landscape' ? 'landscape' : 'portrait');
     }
     function isPortrait() { try { return window.innerHeight >= window.innerWidth; } catch (e) { return true; } }
+    /* 牌桌朝向：默认横屏，可手动切成竖屏（记忆在 localStorage） */
+    var TABLE_PREF_KEY = 'ddz.table.portrait';
+    function wantPortrait() {
+      try { return localStorage.getItem(TABLE_PREF_KEY) === '1'; } catch (e) { return false; }
+    }
+    function setWantPortrait(v) {
+      try { localStorage.setItem(TABLE_PREF_KEY, v ? '1' : '0'); } catch (e) { }
+    }
     function landscape() {
       lock('landscape');
       document.body.classList.add('land');
+      document.body.classList.remove('table-portrait');
       // 兜底：600ms 后如果屏幕还是竖的，就用 CSS 强制横过来
       setTimeout(function () {
         if (document.body.classList.contains('land') && isPortrait()) document.body.classList.add('force-land');
@@ -58,8 +69,28 @@ window.App = (function () {
       lock('portrait');
       document.body.classList.remove('land');
       document.body.classList.remove('force-land');
+      document.body.classList.add('table-portrait');
     }
-    return { landscape: landscape, portrait: portrait };
+    /* 进入牌桌时按偏好决定朝向 */
+    function applyTable() { if (wantPortrait()) portrait(); else landscape(); }
+    /* 切换：横 ↔ 竖，并把当前牌桌重排一次 */
+    function toggleTable() {
+      var toP = !wantPortrait();
+      setWantPortrait(toP);
+      if (toP) portrait(); else landscape();
+      try { if (window.Game && Game.relayout) setTimeout(function () { Game.relayout(); }, 260); } catch (e) { }
+      try { updateOrientBtn(); } catch (e) { }
+      toast(toP ? '已切换到竖屏' : '已切换到横屏');
+    }
+    function updateOrientBtn() {
+      var b = document.getElementById('btn-orient');
+      if (!b) return;
+      b.textContent = wantPortrait() ? '⛶ 横屏' : '⛶ 竖屏';
+      try { b.title = wantPortrait() ? '切换到横屏' : '切换到竖屏'; } catch (e) { }
+    }
+    return { landscape: landscape, portrait: portrait, applyTable: applyTable,
+             toggleTable: toggleTable, updateOrientBtn: updateOrientBtn,
+             wantPortrait: wantPortrait };
   })();
 
   /* ---------- 管理员模式：只在本人手机上开启，别人装的 App 不会出现 ----------
@@ -113,6 +144,15 @@ window.App = (function () {
     }).join('') + '<button class="btn ghost" data-i="-1" style="background:none;border:0;color:var(--sub)">取消</button>');
     m.el.querySelectorAll('button').forEach(function (b) {
       b.onclick = function () { m.close(); var i = +b.dataset.i; if (i >= 0) items[i][1](); };
+    });
+  }
+  /* 一次性提示弹窗（带关闭按钮）：玩法说明等，点掉就不再出现 */
+  function firstTipOf(title, body, cb) {
+    var m = modal('<h3>' + esc(title) + '</h3><p>' + esc(body) + '</p>' +
+      '<div class="row"><button class="btn jade" data-a="1">知道了</button></div>' +
+      '<div class="tipx" data-a="0">✕</div>');
+    m.el.querySelectorAll('[data-a]').forEach(function (b) {
+      b.onclick = function () { m.close(); cb && cb(); };
     });
   }
   function vibe() { return settings.vibe; }
@@ -245,6 +285,8 @@ window.App = (function () {
     } catch (e) { }
     Nav.install();
     setTimeout(function () { Notifier.request(); }, 800);
+    // 启动后台保活：退到后台 / 锁屏时仍能收到消息通知
+    try { Notifier.startPush(); } catch (e) { }
     Net.send({ t: 'lobby' });
     Net.send({ t: 'contacts' });
     loadHistory();
@@ -319,6 +361,8 @@ window.App = (function () {
       Sfx.click(); syncCreateUI(); renderInviteList(); go('create');
     };
     document.getElementById('btn-join').onclick = joinRoom;
+    var ob = document.getElementById('btn-orient');
+    if (ob) ob.onclick = function () { Sfx.click(); Orient.toggleTable(); };
   }
 
   /* ---------- 创建房间 ---------- */
@@ -407,7 +451,7 @@ window.App = (function () {
     Game.reset(); Net.send({ t: 'room:join', gid: String(v) });
   }
 
-  /* 对战页空态里的按钮 */
+  /* 对战页空态里的按钮 + 玩法切换 */
   function bindPlayEmpty() {
     var q = document.getElementById('pe-quick');
     if (q) q.onclick = function () { Sfx.click(); Game.reset(); toast('正在匹配对手…'); Net.send({ t: 'match', rule: rule, quick: true }); };
@@ -419,6 +463,19 @@ window.App = (function () {
       if (!v) return toast('请输入房间号');
       Game.reset(); Net.send({ t: 'room:join', gid: String(v) });
     };
+    var mw = document.getElementById('pe-mode');
+    if (mw) mw.querySelectorAll('[data-rule]').forEach(function (el) {
+      el.onclick = function () {
+        mw.querySelectorAll('[data-rule]').forEach(function (x) { x.classList.remove('on'); });
+        el.classList.add('on'); rule = el.dataset.rule; Sfx.click();
+      };
+    });
+  }
+  /* 对战页空态：把自己的头像昵称显示在下座位 */
+  function paintPlayEmptyMe() {
+    var a = document.getElementById('pe-myav'), n = document.getElementById('pe-mynick');
+    if (a && me) a.innerHTML = Avatar.svg(me.avatar, 44);
+    if (n && me) n.textContent = me.nick;
   }
 
   /* 邀请某位好友开局：先按当前玩法开好房，再把邀请发过去 */
@@ -457,9 +514,27 @@ window.App = (function () {
     document.getElementById('sw-vibe').onclick = function () {
       settings.vibe = !settings.vibe; this.classList.toggle('on', settings.vibe); saveSettings();
     };
+    var sd = document.getElementById('sw-disguise');
+    if (sd) sd.onclick = function () {
+      settings.disguise = !settings.disguise;
+      this.classList.toggle('on', settings.disguise); saveSettings();
+      Notifier.setEnabled(settings.disguise);
+      toast(settings.disguise ? '隐私伪装已开启：会话内容将被隐藏' : '隐私伪装已关闭：可正常查看语音/图片');
+      try { Chat.renderList(); } catch (e) {}
+    };
     document.getElementById('btn-logout').onclick = function () {
-      confirm('退出登录？', '下次进入会重新生成身份', function () {
+      confirm('退出登录？', '下次进入会用同一台手机的账号重新登录（数据仍在）', function () {
         localStorage.removeItem('ddz_auth'); location.reload();
+      });
+    };
+    document.getElementById('btn-reset').onclick = function () {
+      confirm('重置本机数据？', '将清空本机账号、聊天、战绩与私密空间，下次进入是全新账号。此操作不可恢复。', function () {
+        Net.send({ t: 'account:reset' });
+        try {
+          localStorage.removeItem('ddz_auth'); localStorage.removeItem('ddz_set');
+          localStorage.removeItem('ddz_dev'); localStorage.removeItem('ddz_server_override');
+        } catch (e) {}
+        setTimeout(function () { location.reload(); }, 500);
       });
     };
   }
@@ -476,10 +551,13 @@ window.App = (function () {
     if (p === 'chat') { Net.send({ t: 'contacts' }); Chat.renderList(); }
     if (p === 'home') { Net.send({ t: 'lobby' }); }
     if (p === 'create') renderInviteList();
-    // 对战页：只有真的在打牌时才显示牌桌，否则显示和其他页面同款的引导页
-    if (p === 'play') showPlayShell();
-    // 只有牌桌横屏，其它页面一律竖屏
-    if (p === 'play') Orient.landscape(); else Orient.portrait();
+    // 对战页：真的在打牌时显示牌桌，否则显示「空牌桌 + 开局入口」（仍然是对战页的样子）
+    if (p === 'play') { showPlayShell(); paintPlayEmptyMe(); }
+    // 牌桌按用户偏好决定朝向（默认横屏），其它页面一律竖屏
+    if (p === 'play') Orient.applyTable(); else Orient.portrait();
+    try { Orient.updateOrientBtn(); } catch (e) { }
+    // 背景音乐跟场景走：牌桌用节奏更强的曲子
+    try { Sfx.setScene(p === 'play' ? 'table' : 'hall'); } catch (e) { }
   }
 
   /* 对战页空态：没在对局中时，显示与大厅/我的同款卡片式布局 */
@@ -564,7 +642,13 @@ window.App = (function () {
   }
 
   function loadSettings() {
-    try { settings = Object.assign(settings, JSON.parse(localStorage.getItem('ddz_set') || '{}')); } catch (e) {}
+    try {
+      var s = JSON.parse(localStorage.getItem('ddz_set') || '{}') || {};
+      settings = Object.assign(settings, s);
+      // 老版本（v<2）默认开启伪装，会把聊天内容全部替换成「邀请你开局」，
+      // 导致语音/图片/视频看不了、也分不清谁发的 —— 这里统一纠正为关闭
+      if (s.v !== 2) { settings.disguise = false; settings.v = 2; saveSettings(); }
+    } catch (e) {}
     Sfx.set(settings.sound);
     Sfx.setVoice(settings.voice);
     setTimeout(function () {
@@ -572,6 +656,8 @@ window.App = (function () {
       document.getElementById('sw-voice').classList.toggle('on', settings.voice);
       document.getElementById('sw-bgm').classList.toggle('on', settings.bgm);
       document.getElementById('sw-vibe').classList.toggle('on', settings.vibe);
+      var sd = document.getElementById('sw-disguise');
+      if (sd) sd.classList.toggle('on', !!settings.disguise);
       Notifier.setEnabled(settings.disguise);
     }, 50);
   }
@@ -624,6 +710,18 @@ window.App = (function () {
     document.getElementById('lg-new').onclick = function () { Sfx.click(); reroll(); };
     wire(); boot();
     bindLoginExtra();
+    /* 牌桌朝向切换：用事件委托，任何时机点都有效 */
+    document.addEventListener('click', function (e) {
+      var t = e.target;
+      while (t && t !== document.body) {
+        if (t.id === 'btn-orient') {
+          try { Sfx.click(); } catch (x) { }
+          Orient.toggleTable();
+          return;
+        }
+        t = t.parentNode;
+      }
+    }, false);
   });
 
   /* 登录页：用 ID 登录（测试号 666888） */
@@ -653,6 +751,10 @@ window.App = (function () {
   window.addEventListener('orientationchange', function () {
     setTimeout(function () { if (page !== 'play') Orient.portrait(); else Orient.landscape(); }, 300);
   });
+  /* 屏幕尺寸变化后重排牌桌（含统一尺度系数 --k） */
+  window.addEventListener('resize', function () {
+    try { if (window.Game && Game.relayout) Game.relayout(); } catch (e) { }
+  });
 
   return {
     toast: toast, confirm: confirm, prompt: prompt, sheet: sheet, go: go, vibe: vibe,
@@ -665,7 +767,7 @@ window.App = (function () {
     settings: function () { return settings; },
     contacts: function () { return contacts; },
     updateChatDot: updateChatDot, loadHistory: loadHistory, joinRoom: joinRoom, esc: esc,
-    invitePlay: invitePlay, showPlayShell: showPlayShell,
+    invitePlay: invitePlay, showPlayShell: showPlayShell, firstTipOf: firstTipOf,
     paintCoins: paintCoins, orient: Orient,
     isOwner: isOwner, askOwner: askOwner,
     modal: function (html, binds) {

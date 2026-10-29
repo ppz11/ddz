@@ -44,6 +44,15 @@ window.Chat = (function () {
   function ruleText(r) {
     return r === 'trio54' ? '三人经典' : (r === 'let46' ? '让牌玩法' : '经典玩法');
   }
+  /* 文件类型图标：按后缀显示，不再一律是 📄 */
+  var ICON = {
+    pdf: '📕', doc: '📘', docx: '📘', xls: '📗', xlsx: '📗', ppt: '📙', pptx: '📙',
+    txt: '📃', zip: '🗜', rar: '🗜', '7z': '🗜',
+    mp3: '🎵', wav: '🎵', m4a: '🎵', flac: '🎵', ogg: '🎵',
+    mp4: '🎬', mov: '🎬', avi: '🎬', mkv: '🎬', webm: '🎬',
+    png: '🖼', jpg: '🖼', jpeg: '🖼', gif: '🖼', webp: '🖼', bmp: '🖼',
+    apk: '📦', exe: '⚙️'
+  };
   function renderList() {
     var box = document.getElementById('chat-list');
     if (!contacts.length) {
@@ -131,6 +140,12 @@ window.Chat = (function () {
     });
     paintConvBar();
     App.updateChatDot(Object.keys(unread).reduce(function (a, k) { return a + unread[k]; }, 0));
+    /* 顶部「管理」：一键进入多选删除，不必靠长按才发现 */
+    var mb = document.getElementById('chat-manage');
+    if (mb) {
+      mb.textContent = selMode === 'conv' ? '完成' : '管理';
+      mb.onclick = function () { if (selMode === 'conv') exitSel(); else enterConvSel(); };
+    }
   }
 
   function open(uid) {
@@ -143,6 +158,7 @@ window.Chat = (function () {
       '<div><div class="n">' + esc(c.nick || '玩家') + '</div><div class="s" id="th-st">' +
       (c.online ? '在线' : '离线') + '</div></div>' +
       '<div style="flex:1"></div>' +
+      '<div class="back" id="th-manage">管理</div>' +
       '<div class="back" id="th-call">📞</div>' +
       '<div class="back" id="th-vid">📹</div>' +
       '<div class="back" id="th-info">⋯</div></header>' +
@@ -159,6 +175,12 @@ window.Chat = (function () {
       '<input type="file" id="f-file" class="hidden">';
     document.getElementById('pages').appendChild(t);
     document.getElementById('th-back').onclick = close;
+    /* 会话内「管理」：一键进入消息多选删除；长按单条消息也能删除 */
+    var mg = document.getElementById('th-manage');
+    if (mg) mg.onclick = function () {
+      if (selMode === 'msg') exitSel();
+      else { selMode = 'msg'; selMsgs.clear(); renderMsgs(); App.toast('勾选要删除的消息'); }
+    };
     document.getElementById('th-info').onclick = function () { App.toast('UID：' + uid); };
     document.getElementById('th-call').onclick = function () { Call.start(uid, 'audio'); };
     document.getElementById('th-vid').onclick = function () { Call.start(uid, 'video'); };
@@ -198,27 +220,73 @@ window.Chat = (function () {
 
   function renderMsgs() {
     var box = document.getElementById('msgs'); if (!box) return;
-    var me = App.me().uid;
+    /* 用字符串比较，避免数字/字符串 uid 类型不一致时把自己发的消息错判成对方的
+       （此前会出现「我和对方的消息挤在同一列」） */
+    var me = String(App.me().uid || '');
     box.innerHTML = msgs.map(function (m) {
-      var who = m.from === me ? App.me() : (contacts.filter(function (c) { return c.uid === m.from; })[0] || {});
+      var isMe = String(m.from) === me;
+      var who = isMe ? App.me() : (contacts.filter(function (c) { return String(c.uid) === String(m.from); })[0] || {});
       var av = Avatar.svg(who.avatar, 32);
       var body = bubble(m);
       var pick = selMode === 'msg'
         ? '<div class="pick' + (selMsgs.has(String(m.id)) ? ' on' : '') + '" data-mpick="' + m.id + '"></div>'
         : '';
-      return '<div class="msg ' + (m.from === me ? 'me' : '') + (selMsgs.has(String(m.id)) ? ' picked' : '') + '" data-id="' + m.id + '">' +
-        pick + (m.from === me ? '' : '') +
-        '<div class="a">' + av + '</div><div class="bub ' + (m.kind || 'text') + '">' + body +
-        '<div class="time">' + fmt(m.ts) + '</div></div></div>';
+      // 对方的消息带昵称，一眼分得清是谁说的
+      var nm = (!isMe && who.nick) ? '<div class="who">' + esc(who.nick) + '</div>' : '';
+      return '<div class="msg ' + (isMe ? 'me' : '') + (selMsgs.has(String(m.id)) ? ' picked' : '') + '" data-id="' + m.id + '">' +
+        pick +
+        '<div class="a">' + av + '</div><div class="bcol">' + nm + '<div class="bub ' + (m.kind || 'text') + '">' + body +
+        '<div class="time">' + fmt(m.ts) + '</div></div></div></div>';
     }).join('');
+    box.querySelectorAll('[data-join]').forEach(function (b) {
+      b.onclick = function (e) {
+        e.stopPropagation();
+        var g = String(b.dataset.join || '').trim();
+        if (!g) return;
+        Net.send({ t: 'invite:join', gid: g });
+        Sfx.click();
+      };
+    });
     box.querySelectorAll('.bub img,.bub video').forEach(function (el) {
-      el.onclick = function () { view(el.src, el.tagName === 'VIDEO'); };
+      var nm = el.closest('.msg') ? (el.getAttribute('src') || '').split('/').pop() : '';
+      el.onclick = function () { view(el.src, el.tagName === 'VIDEO', nm); };
+      // 图片加载失败 → 显示可重试的占位，避免只剩一块空白
+      if (el.tagName === 'IMG') {
+        el.onerror = function () {
+          if (el.dataset.bad) return;
+          el.dataset.bad = '1';
+          var d = document.createElement('div');
+          d.className = 'imgbad';
+          d.textContent = '图片加载失败 · 点此重试';
+          d.onclick = function () { delete el.dataset.bad; el.style.display = ''; d.remove(); el.src = el.getAttribute('src') + (el.src.indexOf('?') >= 0 ? '&' : '?') + 'r=' + Date.now(); };
+          el.style.display = 'none';
+          if (el.parentNode) el.parentNode.insertBefore(d, el);
+        };
+      }
     });
     box.querySelectorAll('[data-play]').forEach(function (b) {
-      b.onclick = function () { playVoice(b.dataset.play, b); };
+      b.onclick = function (e) { e.stopPropagation(); playVoice(b.dataset.play, b); };
     });
-    box.querySelectorAll('[data-dl]').forEach(function (b) {
-      b.onclick = function () { window.open(b.dataset.dl, '_blank'); };
+    /* 图片 / 视频 / 语音 / 文件统一「保存到手机」 */
+    box.querySelectorAll('[data-save],[data-dl]').forEach(function (b) {
+      var a = b.tagName === 'A' ? b : null;
+      if (a) {
+        a.onclick = function (e) {
+          e.preventDefault(); e.stopPropagation();
+          saveToDevice(a.getAttribute('href'), a.getAttribute('download') || 'file');
+        };
+        return;
+      }
+      b.onclick = function (e) {
+        e.stopPropagation();
+        saveToDevice(b.dataset.save || b.dataset.dl, b.dataset.name || 'file');
+      };
+    });
+    /* 视频 / 图片长按也能保存 */
+    box.querySelectorAll('.bub video,.bub img').forEach(function (el) {
+      longPress(el, function () {
+        saveToDevice(el.src, (el.src || '').split('/').pop() || 'file');
+      });
     });
     box.querySelectorAll('[data-mpick]').forEach(function (b) {
       b.onclick = function (e) { e.stopPropagation(); toggleMsg(b.dataset.mpick); };
@@ -246,6 +314,8 @@ window.Chat = (function () {
       });
     });
     paintMsgBar();
+    var mg = document.getElementById('th-manage');
+    if (mg) mg.textContent = selMode === 'msg' ? '完成' : '管理';
   }
 
   function bubble(m) {
@@ -260,8 +330,26 @@ window.Chat = (function () {
       if (m.sticker.pack === 'emoji') return '<div style="font-size:44px;line-height:1.2">' + (Stickers.EMOJI[m.sticker.id] || '🙂') + '</div>';
       return svg;
     }
-    if (m.kind === 'image') return '<img src="' + Net.abs(m.url) + '" alt="图片">';
-    if (m.kind === 'video') return '<video src="' + Net.abs(m.url) + '" controls playsinline preload="metadata" style="width:200px"></video>';
+    /* 邀请卡片：点「加入房间」直接进牌桌 */
+    if (m.kind === 'invite') {
+      var g = String(m.gid || '');
+      return '<div class="invcard" data-gid="' + esc(g) + '">' +
+        '<div class="ic">🎮</div>' +
+        '<div class="ib"><div class="it">' + esc(m.nick || '好友') + ' 邀请你打牌</div>' +
+        '<div class="id">房间号 <b>' + esc(g) + '</b> · ' + esc(ruleText(m.rule)) + '</div></div>' +
+        '<button class="ij" data-join="' + esc(g) + '">加入房间</button></div>';
+    }
+    /* 图片：加载失败会给出「点此重试」的占位，不再是一片空白 */
+    if (m.kind === 'image') {
+      return '<img src="' + Net.abs(m.url) + '" alt="图片" loading="lazy" data-img="1">';
+    }
+    /* 视频：playsinline + 明确尺寸，避免 WebView 里全屏接管导致黑屏 */
+    if (m.kind === 'video') {
+      var vu = Net.abs(m.url);
+      return '<video src="' + vu + '" controls playsinline webkit-playsinline preload="metadata" ' +
+        'style="width:200px;max-width:100%;border-radius:10px;background:#000"></video>';
+    }
+    /* 语音：波形 + 时长 + 播放按钮（播放失败会明确提示） */
     if (m.kind === 'voice') {
       var w = '';
       var n = Math.min(18, Math.max(5, Math.round(m.dur || 1) * 2));
@@ -269,14 +357,22 @@ window.Chat = (function () {
         var h = 6 + (Math.abs(Math.sin(i * 1.7 + (m.id || '').length)) * 14);
         w += '<i style="height:' + h.toFixed(0) + 'px"></i>';
       }
+      var vu = Net.abs(m.url);
+      var vn = String(m.name || ('voice_' + (m.id || '') + '.m4a'));
       return '<div class="wave">' + w + '</div><span class="du">' + (m.dur || 0) + '″</span>' +
-        '<span data-play="' + Net.abs(m.url) + '" style="font-size:16px">▶</span>';
+        '<span data-play="' + vu + '" style="font-size:16px">▶</span>' +
+        '<span class="msave" data-save="' + vu + '" data-name="' + esc(vn) + '" title="保存">⬇</span>';
     }
+    /* 文件：显示真实类型图标与后缀，用 a 标签下载（WebView 里 window.open 常被拦） */
     if (m.kind === 'file') {
-      return '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px">' +
-        '<div style="font-size:26px">📄</div><div><div class="fname">' + esc(m.name) + '</div>' +
-        '<div style="font-size:10px;opacity:.7">' + size(m.size) + '</div></div>' +
-        '<div data-dl="' + Net.abs(m.url) + '" style="margin-left:6px;font-size:18px">⬇</div></div>';
+      var nm = String(m.name || '文件');
+      var ext = (nm.split('.').pop() || '').toLowerCase();
+      var ic = ICON[ext] || '📄';
+      return '<div class="filebub">' +
+        '<div class="fic">' + ic + '</div>' +
+        '<div class="fmid"><div class="fname">' + esc(nm) + '</div>' +
+        '<div style="font-size:10px;opacity:.7">' + (ext ? ext.toUpperCase() + ' · ' : '') + size(m.size) + '</div></div>' +
+        '<a class="fdl" href="' + Net.abs(m.url) + '" target="_blank" rel="noopener" download="' + esc(nm) + '">⬇</a></div>';
     }
     return esc(m.text || '');
   }
@@ -362,9 +458,17 @@ window.Chat = (function () {
   function playVoice(url, btn) {
     if (audioEl) { audioEl.pause(); audioEl = null; }
     audioEl = new Audio(url);
-    audioEl.play().catch(function () { App.toast('播放失败'); });
+    audioEl.preload = 'auto';
     btn.textContent = '⏸';
+    var reset = function (msg) {
+      btn.textContent = '▶';
+      audioEl = null;
+      if (msg) App.toast('语音播放失败：' + msg);
+    };
+    audioEl.onerror = function () { reset('音频无法加载（格式不支持或文件已失效）'); };
     audioEl.onended = function () { btn.textContent = '▶'; audioEl = null; };
+    var pr = audioEl.play();
+    if (pr && pr.catch) pr.catch(function (e) { reset((e && e.message) || '被浏览器拦截'); });
   }
 
   /* ---------------- 表情面板 ---------------- */
@@ -405,12 +509,49 @@ window.Chat = (function () {
       ['📎 发送文件', function () { document.getElementById('f-file').click(); }]]);
   }
 
-  function view(src, isVideo) {
+  /* ---------------- 媒体查看 / 保存 ----------------
+   * 查看器带「保存到手机」：原生桥接优先（安卓 DownloadManager 落到下载目录），
+   * 无原生时退回到浏览器下载。所有失败都有明确提示。 */
+  function view(src, isVideo, name) {
     var v = document.createElement('div');
     v.className = 'viewer';
-    v.innerHTML = '<div class="x">✕</div>' + (isVideo ? '<video src="' + src + '" controls autoplay playsinline></video>' : '<img src="' + src + '">');
-    v.querySelector('.x').onclick = function () { v.remove(); };
+    v.innerHTML =
+      '<div class="x">✕</div>' +
+      (isVideo
+        ? '<video src="' + src + '" controls autoplay playsinline webkit-playsinline style="max-width:96%;max-height:74%;background:#000"></video>'
+        : '<img src="' + src + '" style="max-width:96%;max-height:74%">') +
+      '<div class="vbar">' +
+      '<button class="vb" data-a="save">⬇ 保存到手机</button>' +
+      '<button class="vb ghost" data-a="close">关闭</button>' +
+      '</div>' +
+      '<div class="vmsg" id="vmsg"></div>';
+    var close = function () { v.remove(); };
+    v.querySelector('.x').onclick = close;
+    v.querySelector('[data-a="close"]').onclick = close;
+    v.querySelector('[data-a="save"]').onclick = function () { saveToDevice(src, name || (isVideo ? 'video.mp4' : 'image.jpg')); };
     document.getElementById('app').appendChild(v);
+  }
+  /* 保存到本机：安卓原生 → 浏览器下载 → 新窗口兜底 */
+  function saveToDevice(url, name) {
+    url = String(url || '');
+    if (!url) return App.toast('文件地址为空');
+    var u = url.indexOf('dl=1') >= 0 ? url : (url + (url.indexOf('?') >= 0 ? '&' : '?') + 'dl=1');
+    var fn = String(name || 'file').replace(/[\\/:*?"<>|]/g, '_');
+    if (window.DDZNative && typeof window.DDZNative.saveFile === 'function') {
+      var r = window.DDZNative.saveFile(u, fn);
+      App.toast(String(r).indexOf('ok') === 0 ? '已保存到下载目录' : ('保存失败：' + r));
+      return;
+    }
+    try {
+      var a = document.createElement('a');
+      a.href = u; a.download = fn; a.target = '_blank'; a.rel = 'noopener';
+      document.body.appendChild(a); a.click();
+      setTimeout(function () { a.remove(); }, 1500);
+      App.toast('已开始下载：' + fn);
+    } catch (e) {
+      try { window.open(u, '_blank'); App.toast('已在新窗口打开，长按可保存'); }
+      catch (x) { App.toast('保存失败'); }
+    }
   }
 
   function fmt(ts) {
@@ -421,12 +562,19 @@ window.Chat = (function () {
   }
   function size(b) { if (!b) return ''; var u = ['B', 'KB', 'MB', 'GB'], i = 0; while (b > 1024 && i < 3) { b /= 1024; i++; } return b.toFixed(i ? 1 : 0) + u[i]; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+  /* 长按：手指轻微抖动不打断（超过 10px 才算拖动取消），否则在手机上很难触发 */
   function longPress(el, fn) {
-    var t = null;
-    el.addEventListener('pointerdown', function () { t = setTimeout(fn, 550); });
+    var t = null, x0 = 0, y0 = 0;
+    el.addEventListener('pointerdown', function (e) {
+      x0 = e.clientX; y0 = e.clientY;
+      clearTimeout(t); t = setTimeout(fn, 550);
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (Math.abs(e.clientX - x0) > 10 || Math.abs(e.clientY - y0) > 10) clearTimeout(t);
+    });
     el.addEventListener('pointerup', function () { clearTimeout(t); });
-    el.addEventListener('pointermove', function () { clearTimeout(t); });
     el.addEventListener('pointercancel', function () { clearTimeout(t); });
+    el.addEventListener('pointerleave', function () { clearTimeout(t); });
   }
 
   /* ---------------- 多选删除 ---------------- */
@@ -523,5 +671,5 @@ window.Chat = (function () {
   }
 
   return { init: init, renderList: renderList, open: open, close: close, get cur() { return cur; }, sendFile: sendFile,
-    exitSel: exitSel, isSel: function () { return !!selMode; } };
+    view: view, exitSel: exitSel, isSel: function () { return !!selMode; } };
 })();

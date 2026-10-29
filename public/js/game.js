@@ -30,15 +30,44 @@ window.Game = (function () {
       '<div class="rk">' + c.r + '</div><div class="su">' + SUIT[c.s] + '</div>' +
       '<div class="big">' + SUIT[c.s] + '</div><div class="ctr" style="opacity:0"></div></div>';
   }
+  /* 打出的牌像真牌一样叠着放：牌越多叠得越紧，绝不撑破屏幕。
+     尺寸跟着屏幕高度走 —— 牌太小看不清点数，太大又会挤爆牌桌。 */
   function rowHTML(cards, cls) {
     if (!cards || !cards.length) return '';
-    var sz = cards.length > 12 ? 'tiny' : (cards.length > 7 ? 'mini' : (cls || 'mini'));
-    return '<div class="prow">' + cards.map(function (c) { return cardHTML(c, sz); }).join('') + '</div>';
+    var n = cards.length;
+    var vh = 0;
+    try { vh = window.innerHeight || 0; } catch (e) { }
+    if (!vh) vh = 640;
+    var sz;
+    if (vh < 380) sz = n > 6 ? 'tiny' : 'mini';        // 矮屏：牌多时用小号，避免挤爆
+    else sz = n > 14 ? 'tiny' : 'mini';
+    // 叠放步距：牌越多叠得越紧；矮屏再收紧一点
+    var ov = (sz === 'tiny') ? 20 : 15;
+    if (vh < 380) ov = Math.round(ov * 0.86);
+    return '<div class="prow stack" style="--ov:-' + ov + 'px">' +
+      cards.map(function (c) { return cardHTML(c, sz); }).join('') + '</div>';
   }
+  /* 手牌尺寸：同时受「宽度」和「高度」约束。
+     以前只按宽度算，卡片能到 74px 宽（高 105px），
+     在 360/320 高的矮屏上会把整手牌顶出屏幕底部 —— 这就是「牌溢出屏幕没法打牌」的根因。
+     现在按屏高反推一个上限，保证手牌区永远完整落在屏幕内。 */
   function fitHand(n) {
     var wrap = document.querySelector('.handwrap');
-    var avail = (wrap ? wrap.clientWidth : 640) - 8;
-    var w = Math.max(30, Math.min(74, (avail - 4) / (0.38 * n + 0.62)));
+    var cw = wrap ? wrap.clientWidth : 0;
+    // 首帧容器可能还没布局（宽度 0）→ 回退到窗口宽度，否则手牌会缩成最小尺寸
+    var avail = (cw > 40) ? (cw - 8) : ((window.innerWidth || 640) - 60);
+    var wByW = (avail - 4) / (0.38 * n + 0.62);
+    var vh = 0;
+    try { vh = window.innerHeight || 0; } catch (e) { }
+    if (!vh) vh = (document.documentElement && document.documentElement.clientHeight) || 640;
+    /* 用「手牌区顶边到屏幕底部」的真实剩余高度做上限：
+       叫分阶段按钮区更高、矮屏更挤，这里都能自动让出手牌的高度，绝不把牌顶出屏幕。 */
+    var r0 = wrap ? wrap.getBoundingClientRect() : null;
+    var top = r0 ? r0.top : 0;
+    var availH = (top > 8) ? (vh - top - 6) : (vh * 0.29);
+    var maxH = Math.max(50, Math.min(108, availH));
+    var wByH = (maxH - 14) / 1.42;
+    var w = Math.max(34, Math.min(74, wByW, wByH));
     var h = document.getElementById('hand');
     if (h) {
       h.style.setProperty('--card-w', Math.round(w) + 'px');
@@ -55,6 +84,7 @@ window.Game = (function () {
   function reset() {
     sel = {}; over = false; dealAnim = true; S = null; myRoom = null; gid = null;
     hintCycle = 0; lastHintKey = ''; tcMsgs = []; closeTableChat(true);
+    tipShownFor = '';
     clearInterval(timer);
     var rt = document.getElementById('rule-tip'); if (rt) rt.classList.add('hidden');
   }
@@ -100,9 +130,25 @@ window.Game = (function () {
     if (!m.phase || m.phase === 'wait') { renderWaiting(m); showRuleTip(m); return; }
   }
   function onGame(m) {
-    var fresh = !S;
+    var prevTurn = S ? S.turn : -1;
+    var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',')) : '';
     S = m; mySeat = m.seat; gid = m.gid; rule = m.rule;
     document.getElementById('mid-notice').classList.add('hidden');
+    /* 出牌 / 不出的提示音：对手的牌型还要语音播报 */
+    var nowLast = m.last ? (m.last.by + ':' + (m.last.cards || []).map(function (c) { return c.id; }).join(',')) : '';
+    if (nowLast && nowLast !== prevLast) {
+      var byMe = m.last.by === mySeat;
+      if ((m.last.cards || []).length) {
+        var big = m.last.info && (m.last.info.type === 'bomb' || m.last.info.type === 'rocket');
+        Sfx.cardDrop(big);
+        if (!byMe && m.last.info) Sfx.announce(m.last.info);   // 自己的牌在 play() 里已播报
+      } else if (!byMe) {
+        Sfx.pass();
+        if (App.settings().voice) Sfx.speak('不要');
+      }
+    }
+    // 轮到我出牌 → 明确提示音
+    if (m.phase === 'play' && m.turn === mySeat && prevTurn !== mySeat) Sfx.yourTurn();
     render();
     showRuleTip(m);
     if (m.phase === 'over' && !over) { over = true; showResult(m); }
@@ -113,15 +159,55 @@ window.Game = (function () {
     if (!over) { over = true; showResult(S); }
   }
 
-  /* 进入房间后顶部常驻本房间玩法提示 */
+  /* 玩法提示：进入房间时弹一次，点 ✕ 关掉后本局不再出现（不再每局常驻占位） */
+  var tipShownFor = '';
   function showRuleTip(m) {
     var el = document.getElementById('rule-tip'); if (!el) return;
+    var g = (m && m.gid) || gid || '';
+    // 同一个房间只提示一次；用户关掉后写入 tipShownFor，后续不再打扰
+    if (!g || tipShownFor === g) return;
+    tipShownFor = g;
     var r = (m && m.rule) || rule;
     var txt = r === 'trio54' ? '三人经典 · 54 张 · 叫分抢地主 · 农民一方出完即胜'
       : r === 'let46' ? '双人让牌 · 46 张 · 抢地主让牌 · 农民打剩到让牌数即胜'
         : '双人经典 · 37 张 · 叫分抢地主 · 先出完手牌者胜';
-    el.textContent = '本局玩法：' + txt;
-    el.classList.remove('hidden');
+    /* 首次进入房间用弹窗（带关闭按钮），看得清也好关 */
+    if (App.firstTipOf) {
+      App.firstTipOf('本局玩法', txt, function () { });
+    } else {
+      el.textContent = '本局玩法：' + txt;
+      el.classList.remove('hidden');
+    }
+    setTimeout(hideRuleTip, 6000);                   // 兜底：6 秒后自动收起
+  }
+  function hideRuleTip() {
+    var el = document.getElementById('rule-tip');
+    if (el) el.classList.add('hidden');
+  }
+
+  /* ---------------- 统一尺度 ----------------
+   * 牌桌里所有元素都乘 --k：基准机型 844×390（k=1）。
+   * 高分屏 k 变大、低分屏 k 变小，这样同一张牌在不同手机上
+   * 占屏幕的比例基本一致，不会「分辨率高的显得小、低的显得大」。 */
+  var BASE_H = 390, BASE_W = 844;
+  function setScale() {
+    var vh = 390, vw = 844;
+    try {
+      vh = window.innerHeight || document.documentElement.clientHeight || 390;
+      vw = window.innerWidth || document.documentElement.clientWidth || 844;
+    } catch (e) { }
+    var k;
+    if (vh > vw) {
+      /* 竖屏：宽度才是约束，按宽度定尺度（基准竖屏宽 390） */
+      k = vw / 390;
+      k = Math.max(0.85, Math.min(1.25, k));
+    } else {
+      /* 横屏：高度是主要约束、宽度次要修正 */
+      k = (vh / BASE_H) * 0.65 + (vw / BASE_W) * 0.35;
+      k = Math.max(0.78, Math.min(1.4, k));
+    }
+    try { document.documentElement.style.setProperty('--k', k.toFixed(3)); } catch (e) { }
+    return k;
   }
 
   /* ---------------- 渲染 ---------------- */
@@ -129,17 +215,25 @@ window.Game = (function () {
     if (!S || S.landlord < 0) return '';
     return i === S.landlord ? '<span class="rl">地主</span>' : '<span class="rl f">农民</span>';
   }
+  /* 昵称最多 8 个字：保证左右信息块宽度稳定，不会被超长昵称撑爆 */
+  function shortName(u, def) {
+    var s = (u && u.nick) ? String(u.nick) : (def || '玩家');
+    return s.length > 8 ? s.slice(0, 8) : s;
+  }
   function render() {
     if (!S) return;
+    setScale();
     var me = mySeat, n = S.n || 2;
     var meU = S.seats[me];
     var ls = S.lastSeat || [];
 
-    /* 某人打出的牌 —— 贴在 TA 的头像旁边 */
+    /* 某人打出的牌 */
     function playedOf(i) {
       var x = ls[i];
-      if (x) return '<div class="pmine"><div class="pcards">' + rowHTML(x.cards) + '</div></div>';
-      if (n === 2 && S.last && S.last.by === i && i !== me) {
+      if (x && x.cards && x.cards.length) {
+        return '<div class="pmine"><div class="pcards">' + rowHTML(x.cards) + '</div></div>';
+      }
+      if (S.last && S.last.by === i && i !== me) {
         return '<div class="pmine"><div class="pcards">' + rowHTML(S.last.cards) + '</div></div>';
       }
       return '<div class="pmine"><div class="pcards pass">—</div></div>';
@@ -154,41 +248,70 @@ window.Game = (function () {
       }
       var act = (S.phase === 'play' && S.turn === i) ? ' act' : '';
       return '<div class="ts' + act + (cls ? ' ' + cls : '') + '">' +
-        '<div class="av">' + (u ? Avatar.svg(u.avatar, 34) : '') + '</div>' +
-        '<div class="ts-i"><div class="nm">' + (u ? esc(u.nick) : '空位') + roleTag(i) + '</div>' +
+        '<div class="av">' + (u ? Avatar.svg(u.avatar, 26) : '') + '</div>' +
+        '<div class="ts-i"><div class="nm">' + (u ? esc(shortName(u, '空位')) : '空位') + roleTag(i) + '</div>' +
         '<div class="cnt">' + needTxt + '</div></div>' +
         (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
         '</div>';
+    }
+    /* 我在右侧时的信息块（两人场用） */
+    function mySeatHTML() {
+      var cnt = S.counts[me];
+      var act = (S.phase === 'play' && S.turn === me) ? ' act' : '';
+      return '<div class="ts me' + act + '">' +
+        '<div class="av">' + Avatar.svg(meU && meU.avatar, 26) + '</div>' +
+        '<div class="ts-i"><div class="nm">' + esc(shortName(meU, '我')) + roleTag(me) + '</div>' +
+        '<div class="cnt">剩 ' + cnt + ' 张</div></div>' +
+        (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
+        '</div>';
+    }
+    /* 一列 = 信息块 + 打出的牌。左侧：信息块在左、牌向右展开；
+       右侧：牌在左、信息块在右（都朝牌桌中间，不会顶到屏幕边缘）。 */
+    function colHTML(seatHtml, playedHtml, side) {
+      return '<div class="seatcol ' + side + '">' + seatHtml + playedHtml + '</div>';
+    }
+    function myPlayedHTML() {
+      var myRow = '';
+      if (ls[me] && ls[me].cards && ls[me].cards.length) myRow = rowHTML(ls[me].cards);
+      else if (S.last && S.last.by === me) myRow = rowHTML(S.last.cards);
+      return myRow || '';
     }
 
     var elL = document.getElementById('seat-left');
     var elR = document.getElementById('seat-right');
     var elT = document.getElementById('seat-top');
+    var elMy = document.getElementById('my-info');
+    var elMyP = document.getElementById('my-played');
+
     if (n === 3) {
-      // 三人：另外两家左右分开，各自出的牌贴在自己头像下
+      // 三人：另外两家分居左右，我在下方
       var lI = (me + 1) % 3, rI = (me + 2) % 3;
-      elL.innerHTML = seatHTML(lI, '') + playedOf(lI);
-      elR.innerHTML = seatHTML(rI, 'right') + playedOf(rI);
+      elL.innerHTML = colHTML(seatHTML(lI, ''), playedOf(lI), 'left');
+      elR.innerHTML = colHTML(seatHTML(rI, 'right'), playedOf(rI), 'right');
       elT.innerHTML = '';
+      elMy.classList.remove('hidden2');
+      elMyP.classList.remove('hidden2');
+      elMy.innerHTML =
+        '<div class="av">' + Avatar.svg(meU && meU.avatar, 28) + '</div>' +
+        '<div><div class="nm">' + esc(shortName(meU, '我')) + roleTag(me) + '</div>' +
+        '<div class="cnt">剩 ' + S.counts[me] + ' 张</div></div><div class="sp"></div>' +
+        '<div class="mult">×' + S.multiplier + (S.letCount ? ' · 让' + S.letCount : '') + '</div>';
+      var myRow3 = myPlayedHTML();
+      elMyP.innerHTML = '<div class="pcards center">' + (myRow3 || '<span class="pass">—</span>') + '</div>';
     } else {
-      // 两人：对手在正上方，出的牌贴在其头像下
+      // 两人：对手在最左，我在最右，各自的牌朝中间展开
       var oI = me === 0 ? 1 : 0;
-      elT.innerHTML = seatHTML(oI, '') + playedOf(oI);
-      elL.innerHTML = ''; elR.innerHTML = '';
+      elL.innerHTML = colHTML(seatHTML(oI, ''), playedOf(oI), 'left');
+      elR.innerHTML = colHTML(mySeatHTML(),
+        '<div class="pmine"><div class="pcards">' + (myPlayedHTML() || '<span class="pass">—</span>') + '</div></div>',
+        'right');
+      elT.innerHTML = '';
+      // 两人场「我」已经在右侧，隐藏底部那一行的个人信息
+      elMy.classList.add('hidden2');
+      elMyP.classList.add('hidden2');
+      elMy.innerHTML = '';
+      elMyP.innerHTML = '';
     }
-
-    document.getElementById('my-info').innerHTML =
-      '<div class="av">' + Avatar.svg(meU && meU.avatar, 34) + '</div>' +
-      '<div><div class="nm">' + esc(meU ? meU.nick : '我') + roleTag(me) + '</div>' +
-      '<div class="cnt">剩 ' + S.counts[me] + ' 张</div></div><div class="sp"></div>' +
-      '<div class="mult">×' + S.multiplier + (S.letCount ? ' · 让' + S.letCount : '') + '</div>';
-
-    // 自己出的牌：贴在自己头像上方
-    var myRow = '';
-    if (n === 3) { if (ls[me]) myRow = rowHTML(ls[me].cards); }
-    else if (S.last && S.last.by === me) myRow = rowHTML(S.last.cards);
-    document.getElementById('my-played').innerHTML =
-      '<div class="pcards center">' + (myRow || '<span class="pass">—</span>') + '</div>';
 
     var bb = document.getElementById('bottom-bar');
     bb.innerHTML = S.bottom && S.bottom.length
@@ -196,7 +319,9 @@ window.Game = (function () {
       : '<span class="lbl" style="opacity:.6">底牌未公开</span>';
 
     var mid = document.getElementById('played');
-    mid.innerHTML = '';
+    // 两人场「我」在右侧，底部没有个人信息行 → 倍数/让牌数改在牌桌中央显示
+    mid.innerHTML = (n === 3) ? '' :
+      '<div class="cinf">×' + S.multiplier + (S.letCount ? ' · 让 ' + S.letCount + ' 张' : '') + '</div>';
 
     renderHand();
     renderActions();
@@ -212,6 +337,11 @@ window.Game = (function () {
       return cardHTML(c, (sel[c.id] ? 'sel' : '') + (animate ? ' deal' : ''));
     }).join('');
     if (animate) wrap.querySelectorAll('.pc.deal').forEach(function (el, i) { el.style.animationDelay = (i * 22) + 'ms'; });
+    /* 首帧 handwrap 可能还没布局完（宽度 0），下一帧按真实尺寸再校准一次，
+       否则手牌会一直保持最小尺寸，看起来又小又挤。 */
+    try {
+      requestAnimationFrame(function () { if (S) fitHand(S.hand.length); });
+    } catch (e) { }
   }
 
   function renderWaiting(m) {
@@ -332,7 +462,8 @@ window.Game = (function () {
     if (!canPlay()) { Sfx.warn(); return toast('这手牌打不过上家'); }
     var cs = selectedCards();
     var info = DDZ.parse(cs);
-    // 出牌语音播报 + 牌型音效
+    // 出牌提示音（拍牌声） + 语音播报 + 牌型音效
+    Sfx.cardDrop(!!(info && (info.type === 'bomb' || info.type === 'rocket')));
     if (info) Sfx.announce(info);
     if (info && (info.type === 'bomb' || info.type === 'rocket')) shake();
     if (App.vibe() && navigator.vibrate) navigator.vibrate(12);
@@ -556,6 +687,7 @@ window.Game = (function () {
     play: play, pass: pass, hint: hint, bid: bid, leave: leave, resign: resign, rematch: rematch,
     backHome: backHome, addBot: addBot, fillAll: fillAll, kickBot: kickBot,
     onTableChat: onTableChat, closeTableChat: closeTableChat,
+    relayout: function () { try { setScale(); if (S) { fitHand(S.hand.length); render(); } } catch (e) { } },
     get state() { return S; }, get seat() { return mySeat; }, get gid() { return gid; }, get room() { return myRoom; }
   };
 })();

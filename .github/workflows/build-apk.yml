@@ -76,6 +76,15 @@ jobs:
             echo "✔ 已注入原生桥接（横竖屏 / 录音 / 权限）"
           else
             echo "✘ 找不到 android-src/capacitor/MainActivity.java"; exit 1
+          # 后台保活 + 桌面角标（零第三方依赖）
+          for f in DDZPushService.java BadgeUtil.java; do
+            if [ -f android-src/capacitor/$f ]; then
+              cp -f android-src/capacitor/$f android/app/src/main/java/com/yuanbao/ddz/$f
+              echo "✔ 已注入 $f"
+            else
+              echo "✘ 找不到 android-src/capacitor/$f"; exit 1
+            fi
+          done
           fi
           grep -q "DDZNative" "$MJ" || { echo "✘ DDZNative 注入失败"; exit 1; }
 
@@ -128,13 +137,36 @@ jobs:
       - name: 补齐录音与摄像头权限
         run: |
           MF=android/app/src/main/AndroidManifest.xml
-          for p in RECORD_AUDIO CAMERA MODIFY_AUDIO_SETTINGS; do
+          for p in RECORD_AUDIO CAMERA MODIFY_AUDIO_SETTINGS FOREGROUND_SERVICE POST_NOTIFICATIONS WAKE_LOCK VIBRATE; do
             if ! grep -q "android.permission.$p" "$MF"; then
               sed -i "0,/<uses-permission/s|<uses-permission |<uses-permission android:name=\"android.permission.$p\"/>\n    <uses-permission |" "$MF"
             fi
           done
           echo "--- 权限清单 ---"
           grep -o 'android:name="android.permission.[A-Z_]*"' "$MF" || true
+
+      - name: 注册后台保活服务
+        run: |
+          MF=android/app/src/main/AndroidManifest.xml
+          python3 - <<'PYEOF'
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p, encoding="utf-8").read()
+          if 'DDZPushService' not in s:
+              svc = ('        <service android:name=".DDZPushService"\n'
+                     '            android:enabled="true"\n'
+                     '            android:exported="false"\n'
+                     '            android:foregroundServiceType="dataSync" />\n')
+              idx = s.rfind('    </application>')
+              if idx < 0:
+                  print("✘ 找不到 </application>"); raise SystemExit(1)
+              s = s[:idx] + svc + s[idx:]
+              open(p, "w", encoding="utf-8").write(s)
+              print("✔ 已注册 DDZPushService")
+          else:
+              print("✔ DDZPushService 已存在")
+          PYEOF
+          grep -q 'DDZPushService' "$MF" && echo "✔ 服务已声明" || { echo "✘ 服务未声明"; exit 1; }
+          grep -q 'FOREGROUND_SERVICE' "$MF" && echo "✔ FOREGROUND_SERVICE 权限已加" || { echo "✘ 缺 FOREGROUND_SERVICE"; exit 1; }
 
       - name: 校验原生能力是否进入工程
         run: |
@@ -147,6 +179,10 @@ jobs:
           grep -q "RECORD_AUDIO" "$MF" || { echo "✘ 缺录音权限"; MISS=1; }
           grep -q "CAMERA" "$MF" || { echo "✘ 缺摄像头权限"; MISS=1; }
           grep -q 'screenOrientation="fullSensor"' "$MF" || { echo "✘ 屏幕方向未放开"; MISS=1; }
+          grep -q 'DDZPushService' "$MJ" || { echo "✘ 缺后台保活服务引用"; MISS=1; }
+          grep -q 'setBadge' "$MJ" || { echo "✘ 缺桌面角标"; MISS=1; }
+          [ -f android/app/src/main/java/com/yuanbao/ddz/DDZPushService.java ] || { echo "✘ 缺 DDZPushService.java"; MISS=1; }
+          [ -f android/app/src/main/java/com/yuanbao/ddz/BadgeUtil.java ] || { echo "✘ 缺 BadgeUtil.java"; MISS=1; }
           [ "$MISS" = "0" ] && echo "✔ 原生能力校验全部通过" || { echo "原生能力校验失败"; exit 1; }
 
       - name: 编译 APK
