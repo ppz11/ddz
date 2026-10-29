@@ -135,8 +135,10 @@ public class MainActivity extends BridgeActivity {
      * 表现就是「切到后台还在响」。
      * 这里在原生 onPause/onResume 里直接通知 JS 静音/恢复，
      * 比依赖 WebView 的 visibilitychange 可靠得多。 */
+    /* 注意：Capacitor 的 BridgeActivity 把 onPause/onResume 声明成 public，
+       这里的重写必须同样用 public —— 写成 protected 会因为「降低访问权限」直接编译失败。 */
     @Override
-    protected void onPause() {
+    public void onPause() {
         super.onPause();
         evalJs("(window.__ddzPause&&window.__ddzPause())");
         try {
@@ -146,7 +148,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onResume() {
+    public void onResume() {
         super.onResume();
         try {
             android.webkit.WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;
