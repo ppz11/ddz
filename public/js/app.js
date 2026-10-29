@@ -514,6 +514,14 @@ window.App = (function () {
     document.getElementById('sw-vibe').onclick = function () {
       settings.vibe = !settings.vibe; this.classList.toggle('on', settings.vibe); saveSettings();
     };
+    /* 内置测试助手：装 APK 之前先在浏览器里把聊天/语音/图片/视频/表情试一遍。
+       点这里会重新生成「聊天」和「好友空间」里各一个测试会话（发什么它回什么）。 */
+    var rt = document.getElementById('row-testconv');
+    if (rt) rt.onclick = function () {
+      Sfx.click();
+      Net.send({ t: 'test:reset' });
+      toast('测试会话已重新生成：聊天和好友空间各一个');
+    };
     var sd = document.getElementById('sw-disguise');
     if (sd) sd.onclick = function () {
       settings.disguise = !settings.disguise;

@@ -41,10 +41,12 @@ window.Game = (function () {
     var sz;
     if (vh < 380) sz = n > 6 ? 'tiny' : 'mini';        // 矮屏：牌多时用小号，避免挤爆
     else sz = n > 14 ? 'tiny' : 'mini';
-    // 叠放步距：牌越多叠得越紧；矮屏再收紧一点
-    var ov = (sz === 'tiny') ? 20 : 15;
-    if (vh < 380) ov = Math.round(ov * 0.86);
-    return '<div class="prow stack" style="--ov:-' + ov + 'px">' +
+    /* 叠放比例（相对牌宽）。
+       原来写死 15/20px：大屏牌宽 49px 时只压掉 15px，看着像「单张散开」；
+       小屏牌宽 27px 时又压掉大半张。不同屏幕观感完全不一致。
+       改成按比例：牌越多叠得越紧，任何分辨率下都是同一副「叠牌」的样子。 */
+    var ovr = n <= 2 ? 0.28 : n <= 5 ? 0.40 : n <= 9 ? 0.52 : n <= 14 ? 0.62 : 0.72;
+    return '<div class="prow stack" data-n="' + n + '" style="--ovr:-' + ovr + '">' +
       cards.map(function (c) { return cardHTML(c, sz); }).join('') + '</div>';
   }
   /* 手牌尺寸：同时受「宽度」和「高度」约束。
@@ -66,7 +68,13 @@ window.Game = (function () {
     var top = r0 ? r0.top : 0;
     var availH = (top > 8) ? (vh - top - 6) : (vh * 0.29);
     var maxH = Math.max(50, Math.min(108, availH));
-    var wByH = (maxH - 14) / 1.42;
+    /* 扣掉手牌区真实的上内边距（选中牌上抬需要空间），而不是写死 14 */
+    var padT = 14;
+    try {
+      var hd0 = document.getElementById('hand');
+      if (hd0) { var pv = parseFloat(getComputedStyle(hd0).paddingTop); if (pv > 0) padT = pv; }
+    } catch (e) { }
+    var wByH = (maxH - padT) / 1.42;
     var w = Math.max(34, Math.min(74, wByW, wByH));
     var h = document.getElementById('hand');
     if (h) {
@@ -129,6 +137,7 @@ window.Game = (function () {
     gid = m.gid; rule = m.rule;
     if (!m.phase || m.phase === 'wait') { renderWaiting(m); showRuleTip(m); return; }
   }
+  var prevBidTurn = -1;
   function onGame(m) {
     var prevTurn = S ? S.turn : -1;
     var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',')) : '';
@@ -149,6 +158,12 @@ window.Game = (function () {
     }
     // 轮到我出牌 → 明确提示音
     if (m.phase === 'play' && m.turn === mySeat && prevTurn !== mySeat) Sfx.yourTurn();
+    /* 叫分阶段轮到我 → 也要提示音（原来只有出牌阶段有，叫分时静悄悄） */
+    if (m.phase === 'bid') {
+      var nowBid = m.bidTurn;
+      if (nowBid === mySeat && prevBidTurn !== mySeat) Sfx.yourTurn();
+      prevBidTurn = nowBid;
+    }
     render();
     showRuleTip(m);
     if (m.phase === 'over' && !over) { over = true; showResult(m); }
@@ -200,11 +215,11 @@ window.Game = (function () {
     if (vh > vw) {
       /* 竖屏：宽度才是约束，按宽度定尺度（基准竖屏宽 390） */
       k = vw / 390;
-      k = Math.max(0.85, Math.min(1.25, k));
+      k = Math.max(0.85, Math.min(1.18, k));
     } else {
       /* 横屏：高度是主要约束、宽度次要修正 */
       k = (vh / BASE_H) * 0.65 + (vw / BASE_W) * 0.35;
-      k = Math.max(0.78, Math.min(1.4, k));
+      k = Math.max(0.78, Math.min(1.22, k));
     }
     try { document.documentElement.style.setProperty('--k', k.toFixed(3)); } catch (e) { }
     return k;
@@ -326,6 +341,46 @@ window.Game = (function () {
     renderHand();
     renderActions();
     startTimer();
+    fitPlayed();
+  }
+
+  /* 出牌区自适应：先按比例叠好，渲染后测量一次。
+     如果这一摞牌还是会超出可用宽度（牌多 + 屏幕窄），就继续加紧叠放，
+     直到完全放得下 —— 绝不让它把我的手牌顶出屏幕。
+     同时保证「横向一行、不换行」：上下铺开会占掉牌桌高度，手牌就被挤没了。 */
+  function fitPlayed() {
+    try {
+      var rows = document.querySelectorAll('#page-play .prow.stack');
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var host = row.parentNode;
+        if (!host) continue;
+        // 可用宽度：往上找有明确宽度的容器（pmine / pcards / seatcol），取最小的那个
+        var avail = 0, el = row;
+        for (var up = 0; up < 4 && el; up++) {
+          var w = el.clientWidth;
+          if (w > 30 && (!avail || w < avail)) avail = w;
+          el = el.parentNode;
+        }
+        if (!avail) avail = window.innerWidth || 640;
+        var pcs = row.querySelectorAll('.pc');
+        if (!pcs.length) continue;
+        var cw = pcs[0].getBoundingClientRect().width || 32;
+        var n = pcs.length;
+        if (n < 2) continue;
+        // 需要的总宽 = 牌宽 + (n-1) * 间距，间距 = 牌宽 * (1 - 重叠比例)
+        var ovr = parseFloat(row.style.getPropertyValue('--ovr')) || 0.5;
+        ovr = Math.abs(ovr);
+        var need = cw + (n - 1) * cw * (1 - ovr);
+        if (need <= avail) continue;                    // 放得下，保持原样
+        // 放不下 → 加大重叠（上限 0.86，再叠就看不清点数花色了）
+        var target = 1 - (avail - cw) / ((n - 1) * cw);
+        if (target > 0.86) target = 0.86;
+        if (target < ovr) target = ovr;                 // 只加紧，不放松
+        row.style.setProperty('--ovr', '-' + target.toFixed(3));
+        row.style.setProperty('--ov', '-' + Math.round(cw * target) + 'px');
+      }
+    } catch (e) { }
   }
 
   function renderHand() {
@@ -493,7 +548,12 @@ window.Game = (function () {
     var nm = DDZ.speak(h.info);
     if (nm) toast('建议：' + nm);
   }
-  function bid(act) { Sfx.click(); Net.send({ t: 'game:bid', act: act }); }
+  function bid(act) {
+    /* act: 0=不叫 1/2/3=分数；也可能是 'grab'(抢) / 'nograb'(不抢) */
+    var n = (act === 'grab') ? 3 : (act === 'nograb' ? 0 : (Number(act) || 0));
+    Sfx.bid(n);
+    Net.send({ t: 'game:bid', act: act });
+  }
   function resign() { App.confirm('确定认输吗？', '认输将直接判负', function () { Net.send({ t: 'game:resign' }); }); }
   function leave() { Net.send({ t: 'room:leave' }); App.go('home'); toast('已离开房间'); }
   function addBot() { Net.send({ t: 'room:joinbot', gid: gid }); }

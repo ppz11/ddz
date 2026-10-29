@@ -74,8 +74,10 @@ window.Rec = (function () {
         var blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
         if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
         stream = null; rec = null;
-        var dur = Math.round((Date.now() - t0) / 1000);
-        if (dur < 1 || blob.size < 200) return res(null);
+        /* 原来要求 dur>=1 秒，录短一点（"嗯""好"）就发不出去，
+           表现为「短语音发不了 / 听不了」。只要有内容就发，时长按 1 秒起算。 */
+        var dur = Math.round((Date.now() - t0) / 1000) || 1;
+        if (blob.size < 100) return res(null);
         var ext = (blob.type.indexOf('webm') >= 0) ? '.webm' : (blob.type.indexOf('ogg') >= 0 ? '.ogg' : '.m4a');
         var f = new File([blob], 'voice_' + Date.now() + ext, { type: blob.type });
         res({ file: f, dur: dur });

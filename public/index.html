@@ -134,7 +134,7 @@
         <div class="table">
           <!-- 底牌：统一放在牌桌最上方 -->
           <div class="dibar" id="bottom-bar"></div>
-          <!-- 左右两侧：对手 / 自己，出牌都朝牌桌中间展开 -->
+          <!-- 左右两侧：对手分列，出牌都朝牌桌中间展开 -->
           <div class="field">
             <div class="seatleft" id="seat-left"></div>
             <div class="mid">
@@ -144,10 +144,10 @@
             <div class="seatright" id="seat-right"></div>
           </div>
           <div class="topseats" id="seat-top"></div>
-          <div class="myinfo" id="my-info"></div>
           <div class="myplayed" id="my-played"></div>
-          <div id="action-zone"></div>
+          <div class="myinfo" id="my-info"></div>
           <div class="handwrap"><div class="hand" id="hand"></div></div>
+          <div id="action-zone"></div>
         </div>
         <button class="tablechat" id="btn-table-chat">💬</button>
         <button class="orientbtn" id="btn-orient">⛶ 竖屏</button>
@@ -237,6 +237,7 @@
         <div class="rowset">隐私伪装<button class="sw" id="sw-disguise"><i></i></button></div>
         <div class="tipline">开启后会话内容会伪装成「邀请你开局」，语音/图片/视频将不再显示</div>
         <div class="rowset">出牌震动<button class="sw on" id="sw-vibe"><i></i></button></div>
+        <div class="rowset" id="row-testconv" style="cursor:pointer">🧪 重新生成测试会话<span style="color:#5c6b66;font-size:11px">试用</span></div>
         <div style="height:16px"></div>
         <div style="margin:0 14px 10px"><button class="btn ghost" id="btn-logout">退出登录</button></div>
         <div style="margin:0 14px 20px"><button class="btn ghost danger" id="btn-reset">🧹 重置本机数据</button></div>

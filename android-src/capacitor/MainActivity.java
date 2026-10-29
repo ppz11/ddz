@@ -65,7 +65,9 @@ public class MainActivity extends BridgeActivity {
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                                     requestPermissions(new String[]{
                                             Manifest.permission.RECORD_AUDIO,
-                                            Manifest.permission.CAMERA
+                                            Manifest.permission.CAMERA,
+                                            Manifest.permission.ACCESS_FINE_LOCATION,
+                                            Manifest.permission.ACCESS_COARSE_LOCATION
                                     }, REQ_PERM);
                                 }
                                 request.grant(request.getResources());
@@ -100,10 +102,13 @@ public class MainActivity extends BridgeActivity {
             });
         }
 
+        /* 首次进入即一次性申请所需权限（含定位），避免后面用到才弹窗 */
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             requestPermissions(new String[]{
                     Manifest.permission.RECORD_AUDIO,
-                    Manifest.permission.CAMERA
+                    Manifest.permission.CAMERA,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
             }, REQ_PERM);
         }
     }
@@ -124,18 +129,95 @@ public class MainActivity extends BridgeActivity {
         } catch (Exception ignored) { }
     }
 
+    /* ---------------- 后台静音（可靠版） ----------------
+     * 我们为了让 App 退到后台还能收消息，起了一个前台服务保活。
+     * 副作用是 WebView 不会暂停，JS 里的 AudioContext 继续出声 ——
+     * 表现就是「切到后台还在响」。
+     * 这里在原生 onPause/onResume 里直接通知 JS 静音/恢复，
+     * 比依赖 WebView 的 visibilitychange 可靠得多。 */
+    @Override
+    protected void onPause() {
+        super.onPause();
+        evalJs("(window.__ddzPause&&window.__ddzPause())");
+        try {
+            android.webkit.WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;
+            if (wv != null) wv.onPause();
+        } catch (Throwable ignored) { }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        try {
+            android.webkit.WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;
+            if (wv != null) wv.onResume();
+        } catch (Throwable ignored) { }
+        evalJs("(window.__ddzResume&&window.__ddzResume())");
+    }
+
+    /* 兼容不同 Capacitor 版本：有的暴露 getBridge().getWebView()，
+       有的需要自己 findViewById；取不到就静默跳过（不影响编译和运行） */
+    private void evalJs(final String js) {
+        try {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        android.webkit.WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;
+                        if (wv == null) return;
+                        wv.evaluateJavascript(js, null);
+                    } catch (Throwable ignored) { }
+                }
+            });
+        } catch (Throwable ignored) { }
+    }
+
     @Override
     public void onStart() {
         super.onStart();
         applyWebViewSettings();
         // 回到前台：清掉桌面角标
         try { BadgeUtil.setBadge(this, 0); } catch (Throwable ignored) { }
+        // 首次打开：一次性申请定位 / 录音 / 相机 / 通知权限
+        ensurePerms();
         // 启动后台保活服务（前台服务，保证退到后台时 WebSocket 不被掐断）
         ensurePush();
     }
 
     /* 首次进入后启动保活服务；App 被杀由系统回收，这是 Android 机制 */
     private boolean pushStarted = false;
+
+    /* 首次打开 App 时一次性把需要的权限全要齐。
+       注意：定位权限不会由 WebView 主动发起（它不在 onPermissionRequest 的
+       resources 里），必须原生侧主动申请，否则用户永远看不到定位授权弹窗。 */
+    private boolean permsAsked = false;
+    private void ensurePerms() {
+        try {
+            if (permsAsked) return;
+            permsAsked = true;
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+            java.util.ArrayList<String> need = new java.util.ArrayList<String>();
+            String[] want = {
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.RECORD_AUDIO,
+                    Manifest.permission.CAMERA
+            };
+            for (String w : want) {
+                if (checkSelfPermission(w) != android.content.pm.PackageManager.PERMISSION_GRANTED) need.add(w);
+            }
+            if (Build.VERSION.SDK_INT >= 33) {   // 33 = Android 13
+                if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    need.add(android.Manifest.permission.POST_NOTIFICATIONS);
+                }
+            }
+            if (!need.isEmpty()) {
+                requestPermissions(need.toArray(new String[0]), REQ_PERM);
+            }
+        } catch (Throwable ignored) { }
+    }
+
     private void ensurePush() {
         try {
             if (pushStarted) return;

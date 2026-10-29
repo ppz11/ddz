@@ -121,6 +121,10 @@ function personOf(u) {
   if (p.locOn === undefined) p.locOn = false;
   if (p.loc === undefined) p.loc = null;
   if (typeof p.coins !== 'number') p.coins = randomCoins();
+  /* 兜底：老数据或手动构造的 person 可能缺这两个数组，
+     缺了会在下面 indexOf 时直接抛错（表现为服务端 500 / 列表拉不出来） */
+  if (!Array.isArray(p.uids)) p.uids = [];
+  if (!Array.isArray(p.devices)) p.devices = [];
   if (u.pid !== p.pid) { u.pid = p.pid; }
   if (u.device && p.devices.indexOf(u.device) < 0) p.devices.push(u.device);
   if (p.uids.indexOf(u.uid) < 0) p.uids.push(u.uid);
@@ -275,10 +279,33 @@ const server = http.createServer(async (req, res) => {
       let size = 0;
       try { size = fs.statSync(fp).size; } catch (e) { return json(res, 404, { err: '文件已失效' }); }
       let mime = rec.mime || 'application/octet-stream';
-      // 语音/视频统一按可播放类型返回，避免上传时记的 mime 五花八门导致播放不了
+      // 语音/视频统一按「后缀对应的真实容器类型」返回。
+      // 关键：m4a 是 AAC 装在 MP4 容器里，必须返回 audio/mp4；
+      //      之前统一成 audio/mpeg(MP3) 会让 Chromium 解码失败 → 语音听不了。
       const nm = String(rec.name || '').toLowerCase();
-      if (/\.(mp3|m4a|aac|wav|ogg|opus|flac|amr|3gp)$/.test(nm)) mime = mime.startsWith('audio/') ? mime : 'audio/mpeg';
-      if (/\.(mp4|mov|webm|mkv|avi|3gp|m4v)$/.test(nm)) mime = mime.startsWith('video/') ? mime : 'video/mp4';
+      const audioByExt = /\.(mp3)$/.test(nm) ? 'audio/mpeg'
+        : /\.(m4a|aac)$/.test(nm) ? 'audio/mp4'
+        : /\.(ogg|opus)$/.test(nm) ? 'audio/ogg'
+        : /\.(wav)$/.test(nm) ? 'audio/wav'
+        : /\.(amr)$/.test(nm) ? 'audio/amr'
+        : /\.(webm)$/.test(nm) ? 'audio/webm'
+        : /\.(3gp)$/.test(nm) ? 'audio/3gpp'
+        : '';
+      const videoByExt = /\.(mp4|m4v|mov)$/.test(nm) ? 'video/mp4'
+        : /\.(webm)$/.test(nm) ? 'video/webm'
+        : /\.(mkv)$/.test(nm) ? 'video/x-matroska'
+        : /\.(avi)$/.test(nm) ? 'video/x-msvideo'
+        : /\.(3gp)$/.test(nm) ? 'video/3gpp'
+        : '';
+      // webm / 3gp 既可能是音频也可能是视频 → 用上传时的 kind 来定
+      const kind = String((rec.meta && rec.meta.kind) || '');
+      const isVoice = (kind === 'voice');
+      const isVideo = (kind === 'video' || kind === 'image');
+      if (isVoice && audioByExt) mime = audioByExt;
+      else if (isVideo && videoByExt) mime = videoByExt;
+      else if (videoByExt && !audioByExt) mime = videoByExt;
+      else if (audioByExt) mime = audioByExt;
+      else if (videoByExt) mime = videoByExt;
       const dl = url.searchParams.get('dl') === '1';
       const disp = dl
         ? 'attachment; filename="' + String(rec.name || 'file').replace(/["]/g, '') + '"; filename*=UTF-8\'\'' + encodeURIComponent(rec.name || 'file')
@@ -652,6 +679,75 @@ function roomOf(uid) {
   }
   return null;
 }
+/* ==================================================================
+ *  内置「测试助手」（回声机器人）
+ *
+ *  用途：装 APK 之前，用手机/电脑浏览器就能把聊天、语音、图片、视频、
+ *        文件、表情、好友空间全试一遍，不用一遍遍打包安装。
+ *
+ *  行为：你发什么，它原样回一条同类消息（文字/图片/视频/语音/文件/表情）。
+ *        它不产生任何假账号，也不会出现在别人的列表里。
+ *
+ *  删除：长按会话删除即可；删掉后不再自动出现。
+ *        需要时点「我的 → 重新生成测试会话」即可恢复。
+ * ================================================================== */
+const ECHO_UID = 'u_echo_bot';
+const ECHO_PID = 'p_echo_bot';
+const ECHO_NICK = '\u{1F9EA} \u6d4b\u8bd5\u52a9\u624b';
+function echoAvatar() {
+  return { seed: 99001, style: 3, hue: 42, hue2: 58, face: 2, acc: 1, ring: 1 };
+}
+function ensureEcho() {
+  if (!db.persons) db.persons = {};
+  if (!db.users[ECHO_UID]) {
+    db.users[ECHO_UID] = {
+      uid: ECHO_UID, token: 'echo', device: '__echo__', createdAt: Date.now(),
+      lastLogin: Date.now(), cur: { nick: ECHO_NICK, avatar: echoAvatar() },
+      bot: true, echo: true, coins: 0
+    };
+  }
+  if (!db.persons[ECHO_PID]) {
+    db.persons[ECHO_PID] = {
+      pid: ECHO_PID, nick: ECHO_NICK, avatar: echoAvatar(),
+      devices: ['__echo__'], uids: [ECHO_UID], coins: 0, secretPin: null, locOn: false, echo: true
+    };
+  }
+  return db.users[ECHO_UID];
+}
+/* 用户是否把测试会话删掉了（删掉就不再自动出现，除非手动恢复）
+   注意：contactsOf 收到的参数可能是 uid 字符串，也可能是 user 对象，两种都要认 */
+function echoHiddenFor(u) {
+  const uu = (typeof u === 'string') ? db.users[u] : u;
+  return !!(uu && uu.echoHidden);
+}
+function echoRoomHiddenFor(pid) {
+  const p = db.persons[pid];
+  return !!(p && p.echoSecretHidden);
+}
+/* 回声：原样回一条同类消息（延迟一点点，看起来像对方在打字） */
+function echoReply(ws, u, msg, via) {
+  setTimeout(function () {
+    try {
+      const back = { id: mid(), from: via === 'secret' ? ECHO_UID : ECHO_UID, ts: Date.now(), read: false };
+      ['kind', 'text', 'url', 'name', 'size', 'dur', 'sticker'].forEach(function (k) {
+        if (msg[k] !== undefined) back[k] = msg[k];
+      });
+      if (via === 'secret') {
+        const me = personOf(u).pid;
+        const r = getSecretByRid(ridOf(me, ECHO_PID));
+        if (!r) return;
+        const full = Object.assign({}, back, { fromPid: ECHO_PID, fromName: ECHO_NICK, fromAvatar: echoAvatar() });
+        r.msgs.push(full); r.ts = Date.now(); store.save();
+        send(ws, { t: 'secret:msg', rid: r.rid, msg: full });
+      } else {
+        const full = Object.assign({}, back, { from: ECHO_UID, to: u.uid });
+        saveMsg(full);
+        send(ws, { t: 'chat', msg: full });
+      }
+    } catch (e) { }
+  }, 320);
+}
+
 function contactsOf(u) {
   const set = new Map();
   db.messages.forEach(m => {
@@ -666,16 +762,24 @@ function contactsOf(u) {
     if (k === u || !db.users[k] || db.users[k].bot || set.has(k)) return;
     set.set(k, Date.now());
   });
+  /* 测试助手：只要没被删掉就始终在列表最前面，方便装机前试功能 */
+  if (!echoHiddenFor(u)) {
+    try {
+      ensureEcho();
+      set.set(ECHO_UID, Date.now() + 1e13);
+    } catch (e) { }
+  }
   /* 聊天界面只显示「对方」：
      - 自己正在用的 ID 不出现在列表里
      - 当前真正在线的真人 ID 排最前，标在线
      - 历史用过但已离线的 ID 排后面，标离线 */
   const list = [...set.entries()]
-    .filter(([k]) => db.users[k] && k !== u && !db.users[k].bot)
+    .filter(([k]) => db.users[k] && k !== u && (!db.users[k].bot || k === ECHO_UID))
     .map(([k, ts]) => ({ u: db.users[k], ts, online: online.has(k), room: roomOf(k) }))
     .sort((a, b) => (b.online - a.online) || (b.ts - a.ts))
     .slice(0, 80)
-    .map(x => ({ ...pub(x.u), ts: x.ts, online: x.online, self: false, room: x.room }));
+    .map(x => ({ ...pub(x.u), ts: x.ts, online: x.online, self: false, room: x.room,
+      test: x.u.uid === ECHO_UID }));
   return list;
 }
 /* 好友空间：按真人身份（pid）建立一对一私密会话 */
@@ -711,6 +815,11 @@ function sHideRooms(pid, rids) {
 function mySecretRooms(u) {
   const me = personOf(u).pid;
   const sh = sHiddenFor(me);
+  /* 测试助手：只要没被删掉，好友空间里始终保留一个会话，方便装机前试功能 */
+  try {
+    ensureEcho();
+    if (!echoRoomHiddenFor(me) && !sh.rooms[String(ridOf(me, ECHO_PID))]) touchSecret(me, ECHO_PID);
+  } catch (e) { }
   return db.secretRooms.filter(r => {
     if ((r.pidMembers || r.members).indexOf(me) < 0) return false;
     if (sh.rooms[String(r.rid)]) {
@@ -726,7 +835,7 @@ function mySecretRooms(u) {
       const otherPid = ms.filter(x => x !== me)[0];
       const op = db.persons[otherPid];
       return {
-        rid: r.rid, otherPid, ts: r.ts,
+        rid: r.rid, otherPid, ts: r.ts, test: otherPid === ECHO_PID,
         other: op ? pubPerson(op) : { pid: otherPid, nick: '好友', avatar: null },
         last: (r.msgs || []).filter(x => !sMsgHidden(me, x.id)).slice(-1)[0] || null,
         unread: r.msgs.filter(m => m.fromPid !== me && !m.read && !sMsgHidden(me, m.id)).length
@@ -776,7 +885,7 @@ function pushPresence(u) {
     const o = m.from === u.uid ? m.to : (m.to === u.uid ? m.from : null);
     if (o) ids.add(o);
   });
-  db.secretRooms.forEach(r => { if (r.members.indexOf(u.uid) >= 0) r.members.forEach(k => { if (k !== u.uid) ids.add(k); }); });
+  db.secretRooms.forEach(r => { const ms = r.pidMembers || r.members || []; if (ms.indexOf(u.uid) >= 0) ms.forEach(k => { if (k !== u.uid) ids.add(k); }); });
   ids.forEach(id => {
     if (id === u.uid) return;
     sendTo(id, { t: 'presence', ts: Date.now() });
@@ -1023,6 +1132,8 @@ function handle(ws, st, m) {
       saveMsg(msg);
       send(ws, { t: 'chat', msg });
       const w = online.get(m.to); if (w) send(w, { t: 'chat', msg });
+      /* 发给「测试助手」→ 原样回一条，方便装机前在浏览器里试功能 */
+      if (m.to === ECHO_UID) echoReply(ws, u, msg, 'chat');
       break;
     }
     /* 单向删除：只把自己这边的这条消息隐藏，对方照旧能看到 */
@@ -1035,6 +1146,7 @@ function handle(ws, st, m) {
     /* 单向删除整个会话：只清空自己这侧 */
     case 'chat:delthread': {
       hideThread(u.uid, m.with);
+      if (m.with === ECHO_UID) { u.echoHidden = true; store.save(); }
       send(ws, { t: 'contacts', list: contactsOf(u.uid) });
       break;
     }
@@ -1055,11 +1167,30 @@ function handle(ws, st, m) {
       const uids = (Array.isArray(m.uids) ? m.uids : []).map(String).filter(Boolean);
       if (!uids.length) return;
       uids.forEach(k => hideThread(u.uid, k));
+      if (uids.indexOf(ECHO_UID) >= 0) { u.echoHidden = true; store.save(); }
       send(ws, { t: 'chat:threadsdeleted', uids, mine: true });
       send(ws, { t: 'contacts', list: contactsOf(u.uid) });
       break;
     }
     case 'contacts': send(ws, { t: 'contacts', list: contactsOf(u.uid) }); break;
+    /* 重新生成测试会话（聊天 + 好友空间各一个），用于装机前试功能 */
+    case 'test:reset': {
+      ensureEcho();
+      u.echoHidden = false;
+      const p = personOf(u);
+      p.echoSecretHidden = false;
+      hideThread(u.uid, ECHO_UID);          // 先清空旧的
+      const r = touchSecret(personOf(u).pid, ECHO_PID);
+      (r.msgs || []).forEach(x => { sHideMsgs(personOf(u).pid, [x.id]); });
+      /* 关键：把「整个会话被隐藏」的标记也清掉，否则刚恢复又被判成已隐藏 */
+      try { delete sHideOf(personOf(u).pid).rooms[String(r.rid)]; } catch (e) { }
+      // 只在自己这边清空，不动别人的
+      store.save();
+      send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      send(ws, { t: 'secret:ok', has: !!personOf(u).secretPin, rooms: mySecretRooms(u) });
+      send(ws, { t: 'toast', msg: '测试会话已重新生成' });
+      break;
+    }
     /* 重置本机账号：清掉这个 ID 的全部数据，并解除设备绑定。
        前端同时会换一个新的设备号，下次进入就是全新账号。 */
     case 'account:reset': {
@@ -1188,6 +1319,8 @@ function handle(ws, st, m) {
       ms.forEach(pid => {
         uidsOfPid(pid).forEach(k => { const w = online.get(k); if (w) send(w, { t: 'secret:msg', rid: r.rid, msg }); });
       });
+      /* 对方是「测试助手」→ 原样回一条 */
+      if (ms.indexOf(ECHO_PID) >= 0) echoReply(ws, u, m.msg || {}, 'secret');
       break;
     }
     /* 单向清空：只把我这边的记录隐藏，对方那边原封不动
@@ -1202,6 +1335,10 @@ function handle(ws, st, m) {
     }
     /* 单向：只从我自己的列表里移除，对方那边保留 */
     case 'secret:hide': {
+      const _rr = getSecretByRid(String(m.rid || ''));
+      if (_rr && (_rr.pidMembers || _rr.members || []).indexOf(ECHO_PID) >= 0) {
+        personOf(u).echoSecretHidden = true; store.save();
+      }
       sHideRooms(personOf(u).pid, [m.rid]);
       send(ws, { t: 'secret:ok', has: !!personOf(u).secretPin, rooms: mySecretRooms(u) });
       break;
@@ -1210,6 +1347,10 @@ function handle(ws, st, m) {
     case 'secret:hidebatch': {
       const rids = (Array.isArray(m.rids) ? m.rids : []).map(String).filter(Boolean);
       if (!rids.length) return;
+      if (rids.some(rid => {
+        const rr = getSecretByRid(String(rid));
+        return rr && (rr.pidMembers || rr.members || []).indexOf(ECHO_PID) >= 0;
+      })) { personOf(u).echoSecretHidden = true; store.save(); }
       sHideRooms(personOf(u).pid, rids);
       send(ws, { t: 'secret:ok', has: !!personOf(u).secretPin, rooms: mySecretRooms(u) });
       break;

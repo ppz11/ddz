@@ -223,20 +223,71 @@ window.Sfx = (function () {
     return oc.startRendering();
   }
 
+  /* ---------------- 实时节拍（BGM 兜底） ----------------
+   * 有些安卓 WebView 不支持 OfflineAudioContext，或渲染 8 小节耗时太久，
+   * 结果就是「打牌时完全没有背景音乐」。这里做一个不依赖离线渲染的
+   * 实时循环：按拍子直接发声，任何环境都能响。 */
+  var liveTimer = null, liveStep = 0, liveT0 = 0;
+  function liveTick() {
+    if (hidden || !bgmOn || !on) return;
+    var cfg = SCENE[scene] || SCENE.hall;
+    var s = liveStep % 8;                       // 一小节 8 个八分音符
+    var D = duckOn ? 0.3 : 1;                   // 炸弹/出牌时压低
+    // 底鼓
+    if (s === 0 || s === 4 || (scene === 'table' && s === 6)) {
+      tone(120, 0.14, 'sine', cfg.kick * 0.85 * D, 46);
+    }
+    // 踩镲
+    if (s % 2 === 1) noise(0.035, cfg.hat * 2.2 * D, 7000);
+    // 贝斯
+    if (s === 0 || s === 4) {
+      var root = (s === 0) ? 55 : 62;
+      tone(root, 0.22, 'sawtooth', cfg.bass * 0.5 * D, root);
+    }
+    // 主旋律（五声音阶，随机取一个音，不会跑调）
+    var MEL5 = [523, 587, 659, 784, 880, 1046];
+    if (s === 0 || s === 2 || s === 5) {
+      var f = MEL5[(liveStep * 3 + s) % MEL5.length];
+      tone(f, 0.16, 'triangle', cfg.mel * 0.9 * D);
+    }
+    liveStep++;
+  }
+  function startLiveBgm() {
+    if (liveTimer) return;
+    var cfg = SCENE[scene] || SCENE.hall;
+    var beat = 60000 / cfg.bpm / 2;             // 八分音符间隔
+    liveStep = 0;
+    liveTimer = setInterval(liveTick, beat);
+  }
+  function stopLiveBgm() {
+    if (liveTimer) { try { clearInterval(liveTimer); } catch (e) { } liveTimer = null; }
+  }
+
+  /* 渲染超时保护：离线渲染超过 3.5 秒还没完成，就直接上实时循环，
+     避免用户等半天都没声音（手机上很容易踩到）。 */
+  var renderPending = {};
   function startBgm() {
     if (!bgmOn || hidden) return;
     var c = ac(); if (!c) return;
-    if (bgmSrc) return;
+    if (bgmSrc || liveTimer) return;
     if (bgmBufs[scene]) { bgmBuf = bgmBufs[scene]; return playBuf(); }
+    /* 先起实时循环，保证立刻有声音；离线渲染完成后再换成更细腻的版本 */
+    startLiveBgm();
+    var myScene = scene;
     try {
       var pr = renderBgm(scene);
-      if (!pr || !pr.then) return;
+      if (!pr || !pr.then) return;              // 不支持离线渲染 → 一直用实时循环
+      var done = false;
       pr.then(function (buf) {
-        bgmBufs[scene] = buf;
+        done = true;
+        bgmBufs[myScene] = buf;
         if (!bgmOn || hidden) return;
-        // 渲染期间场景可能已切换，以当前 scene 为准
-        if (scene in bgmBufs) { bgmBuf = bgmBufs[scene]; playBuf(); }
-      }).catch(function () { });
+        if (scene !== myScene) return;          // 场景已切换，交给下次
+        stopLiveBgm();
+        bgmBuf = buf;
+        if (!bgmSrc) playBuf();
+      }).catch(function () { /* 渲染失败 → 保持实时循环 */ });
+      setTimeout(function () { if (!done && scene === myScene) { /* 继续用实时循环 */ } }, 3500);
     } catch (e) { }
   }
   /* 切换场景（大厅 / 牌桌）：牌桌换更快节奏的曲子，让打牌有「牌房」氛围 */
@@ -264,12 +315,15 @@ window.Sfx = (function () {
   }
   function stopBgm() {
     if (bgmSrc) { try { bgmSrc.stop(); } catch (e) { } bgmSrc = null; }
+    stopLiveBgm();
     bgmGain = null;
   }
+  var duckOn = false;
   function duck(on2) {                              // 出牌/炸弹时压低音乐
+    duckOn = !!on2;
     if (bgmGain) {
       var target = (SCENE[scene] || SCENE.hall).vol;
-      try { bgmGain.gain.value = on2 ? target * 0.3 : target; } catch (e) { }
+      try { bgmGain.gain.value = duckOn ? target * 0.3 : target; } catch (e) { }
     }
   }
   /* 出牌提示音：拍牌声 + 短促滑音，出牌/对手出牌都用它，耳朵能立刻分辨 */
@@ -299,6 +353,13 @@ window.Sfx = (function () {
       [660, 880, 1170].forEach(function (f, i) { tone(f, 0.1, 'triangle', 0.15, null, i * 0.075); });
     },
     pass: function () { tone(300, 0.13, 'sine', 0.13, 190); },
+    /* 叫分音效：叫分 / 抢地主 / 不叫 各一个，耳朵能立刻分辨 */
+    bid: function (n) {
+      if (n === 0) { tone(260, 0.16, 'sine', 0.14, 190); return; }   // 不叫：下行
+      var base = 520 + (n || 1) * 90;                                 // 分数越高音越高
+      [0, 1].forEach(function (i) { tone(base + i * 130, 0.11, 'triangle', 0.16, null, i * 0.08); });
+      if (n >= 3) tone(base + 300, 0.18, 'square', 0.1, null, 0.17);  // 3 分额外强调
+    },
     warn: function () { tone(240, 0.16, 'square', 0.1, 170); },
     bomb: bombSfx,
     rocket: rocketSfx,
@@ -314,7 +375,37 @@ window.Sfx = (function () {
     send: function () { tone(760, 0.08, 'triangle', 0.14, 1180); },
     tick: function () { tone(1400, 0.04, 'square', 0.07); },
     click: function () { tone(600, 0.05, 'triangle', 0.1); },
-    alarm: function () { tone(880, 0.1, 'square', 0.12); tone(660, 0.14, 'square', 0.12, null, 0.12); }
+    alarm: function () { tone(880, 0.1, 'square', 0.12); tone(660, 0.14, 'square', 0.12, null, 0.12); },
+    /* 供原生调用：App 真正退到后台时立刻静音（比 visibilitychange 可靠得多） */
+    pause: function () { toBackground(); },
+    resume: function () { toForeground(); }
   };
+
+  /* ---------- 全局音频解锁 ----------
+   * 安卓/iOS 都要求「用户手势之后」才能播声音。原来只在点登录那一下解锁，
+   * 之后如果 AudioContext 被系统挂起（退后台、来电），就再也不响了。
+   * 这里在任意一次触摸/点击时都尝试恢复，第一次成功之后就不再重复。 */
+  var unlocked = false;
+  function tryUnlock() {
+    try {
+      var c = ac();
+      if (c && c.state === 'suspended' && !hidden) c.resume();
+      if (!unlocked) { unlocked = true; if (bgmOn && on) startBgm(); }
+    } catch (e) { }
+  }
+  try {
+    ['touchstart', 'mousedown', 'pointerdown'].forEach(function (ev) {
+      document.addEventListener(ev, tryUnlock, { passive: true });
+    });
+    document.addEventListener('click', tryUnlock, true);
+  } catch (e) { }
+
+  /* 原生钩子：MainActivity 的 onPause/onResume 会调用这两个全局函数。
+     这是「切到后台还在响」最可靠的解法 —— WebView 里的
+     visibilitychange 在有前台服务保活时经常不触发。 */
+  try {
+    window.__ddzPause = function () { toBackground(); };
+    window.__ddzResume = function () { toForeground(); };
+  } catch (e) { }
   return S;
 })();

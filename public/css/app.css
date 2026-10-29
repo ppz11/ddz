@@ -138,7 +138,12 @@ input,textarea{font-family:inherit}
 .myinfo .sp{flex:1}
 .myinfo .mult{font-size:11px;color:var(--gold);padding:3px 9px;border-radius:10px;background:rgba(0,0,0,.35);border:1px solid rgba(243,201,107,.35)}
 
-.handwrap{padding:0 6px;position:relative;z-index:5;overflow:hidden;touch-action:none;flex:0 0 auto}
+/* 手牌容器：原来 overflow:hidden 会把「选中的牌」上移的部分裁掉
+   （.pc.sel 上移 10~16px，而 .hand 内边距只有 4px，牌就会只露一半）。
+   改成纵向可见、横向 clip（clip 不会像 hidden 那样强制另一轴变成 auto），
+   这样选中的牌完整露出，同时仍不会横向溢出到座位区。 */
+.handwrap{padding:0 6px;position:relative;z-index:5;touch-action:none;flex:0 0 auto;
+  overflow:visible;overflow-x:clip}
 #action-zone,.myinfo,.myplayed,.bottombar{flex:0 0 auto}
 .hand{display:flex;justify-content:center;touch-action:none;-webkit-user-select:none;min-height:calc(var(--card-h) + 16px);padding-top:16px;flex-wrap:nowrap}
 .acts{display:flex;gap:10px;padding:8px 12px calc(10px + var(--safe-b));position:relative;z-index:6}
@@ -595,10 +600,17 @@ body.land .page{padding-bottom:calc(54px + var(--safe-b))}
 .pcards{display:flex;gap:2px;align-items:center;justify-content:center;flex-wrap:wrap;max-width:100%}
 .pcards.center{min-height:30px}
 .pcards .pass,.pcards.pass{color:rgba(255,255,255,.16);font-size:11px}
-.pmine{margin-top:2px;max-width:100%;overflow:hidden}
+.pmine{margin-top:2px;max-width:100%}
 /* 打出的牌叠着放（像真牌堆在一起），牌越多叠得越紧，绝不撑破屏幕 */
+/* 打出的牌：横向一行、叠着放（像真牌堆在一起）。
+   关键两点：
+   1) flex-wrap:nowrap —— 绝不换行。一旦换行变成上下排列，
+      出牌区会占掉牌桌高度，直接把下面的手牌顶出屏幕（此前就是这么没的）。
+   2) 叠放间距按牌宽的「比例」算（--ovr），不是写死 px。
+      写死 15px 时，大屏牌宽 49px 只压掉一点点，看着就是「单张散开」；
+      小屏牌宽 27px 又压掉大半张。按比例后各分辨率观感一致。 */
 .prow.stack{display:flex;flex-wrap:nowrap;justify-content:center;align-items:center;max-width:100%}
-.prow.stack .pc{margin-left:var(--ov,-14px);box-shadow:-3px 0 7px rgba(0,0,0,.42)}
+.prow.stack .pc{margin-left:calc(var(--card-w,32px) * var(--ovr,-0.5));box-shadow:-3px 0 7px rgba(0,0,0,.42)}
 .prow.stack .pc:first-child{margin-left:0}
 .prow.stack .pc.sel,.prow.stack .pc:last-child{box-shadow:0 2px 6px rgba(0,0,0,.4)}
 .played .prow{max-width:100%}
@@ -676,7 +688,7 @@ body.land .page{padding-bottom:calc(54px + var(--safe-b))}
   body.land #page-play .myinfo .mult{font-size:9px;padding:1px 6px}
   body.land #page-play .myplayed{min-height:22px;padding:0 8px}
   body.land #page-play .handwrap{padding:0 2px}
-  body.land #page-play .hand{min-height:calc(var(--card-h) + 4px);padding-top:4px}
+  body.land #page-play .hand{min-height:calc(var(--card-h) + 14px);padding-top:14px}
   body.land #page-play .acts{padding:3px 10px calc(4px + var(--safe-b));gap:7px}
   body.land #page-play .acts .btn{padding:7px 4px;font-size:13px}
   body.land #page-play .bidwrap{padding:2px 10px calc(3px + var(--safe-b));gap:6px}
@@ -846,10 +858,10 @@ body.force-land #app{
   border:0;flex:0 0 auto;position:relative}
 #page-play .seatcol .ts .ts-i{min-width:0}
 #page-play .seatcol .ts .nm{
-  font-size:calc(11px * var(--k,1));font-weight:700;white-space:nowrap;overflow:hidden;
+  font-size:calc(10px * var(--k,1));font-weight:700;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;max-width:calc(96px * var(--k,1))}
 #page-play .seatcol .ts .cnt{
-  font-size:calc(9px * var(--k,1));color:var(--gold);margin-top:calc(1px * var(--k,1));white-space:nowrap}
+  font-size:calc(8.5px * var(--k,1));color:var(--gold);margin-top:calc(1px * var(--k,1));white-space:nowrap}
 #page-play .seatcol .ts.right .ts-i{text-align:right}
 #page-play .seatcol .ts .rl{font-size:calc(9px * var(--k,1));padding:0 calc(4px * var(--k,1));
   border-radius:calc(8px * var(--k,1));margin-left:calc(4px * var(--k,1))}
@@ -867,6 +879,9 @@ body.force-land #app{
 #page-play .pc.mini{--card-w:40px;--card-h:56px}
 #page-play .pc.tiny{--card-w:32px;--card-h:45px}
 #page-play .pc{width:calc(var(--card-w) * var(--k,1));height:calc(var(--card-h) * var(--k,1))}
+/* 出牌叠放间距同样乘 --k，保证「叠多少」随屏幕尺度一起变 */
+#page-play .prow.stack .pc{margin-left:calc(var(--card-w,32px) * var(--k,1) * var(--ovr,-0.5))}
+#page-play .prow.stack .pc:first-child{margin-left:0}
 #page-play .pc .rk{font-size:calc(12px * var(--k,1));top:calc(2px * var(--k,1));left:calc(3px * var(--k,1))}
 #page-play .pc .su{font-size:calc(9px * var(--k,1));top:calc(15px * var(--k,1));left:calc(3px * var(--k,1))}
 #page-play .pc .ctr{font-size:calc(15px * var(--k,1))}
@@ -876,21 +891,23 @@ body.force-land #app{
 #page-play .pc.tiny .rk{font-size:calc(10px * var(--k,1))}
 #page-play .pc.tiny .ctr{font-size:calc(12px * var(--k,1))}
 #page-play .prow.stack .pc{margin-left:calc(var(--ov,-14px) * var(--k,1))}
-#page-play .hand{--card-w:calc(48px * var(--k,1));--card-h:calc(68px * var(--k,1))}
+#page-play .hand{--card-w:calc(48px * var(--k,1));--card-h:calc(68px * var(--k,1));
+  padding-top:calc(14px * var(--k,1))!important;min-height:calc(var(--card-h) + 14px * var(--k,1))!important}
 
 /* 底部：我的信息（三人场）/ 操作按钮 / 叫分 */
-#page-play .myinfo{gap:calc(6px * var(--k,1));padding:0 calc(10px * var(--k,1)) calc(2px * var(--k,1))}
+#page-play .myinfo{gap:calc(5px * var(--k,1));padding:0 calc(10px * var(--k,1)) calc(1px * var(--k,1))}
 #page-play .myinfo .av{width:calc(28px * var(--k,1));height:calc(28px * var(--k,1));border:0}
-#page-play .myinfo .nm{font-size:calc(11px * var(--k,1))}
-#page-play .myinfo .cnt{font-size:calc(9px * var(--k,1))}
+#page-play .myinfo .nm{font-size:calc(10px * var(--k,1))}
+#page-play .myinfo .cnt{font-size:calc(8.5px * var(--k,1))}
 #page-play .myinfo .mult{font-size:calc(9px * var(--k,1));padding:calc(2px * var(--k,1)) calc(7px * var(--k,1));
   border-radius:calc(10px * var(--k,1))}
-#page-play .myplayed{min-height:calc(22px * var(--k,1));padding:0 8px}
-#page-play .acts{gap:calc(8px * var(--k,1));padding:calc(5px * var(--k,1)) 10px calc(6px * var(--safe-b) + 6px)}
-#page-play .acts .btn{padding:calc(8px * var(--k,1)) calc(4px * var(--k,1));font-size:calc(13px * var(--k,1));
-  border-radius:calc(12px * var(--k,1))}
-#page-play .bidwrap{gap:calc(7px * var(--k,1));padding:calc(6px * var(--k,1)) 10px calc(8px + var(--safe-b))}
-#page-play .bidwrap .btn{padding:calc(8px * var(--k,1)) calc(4px * var(--k,1));font-size:calc(13px * var(--k,1))}
+#page-play .myplayed{min-height:calc(18px * var(--k,1));padding:0 8px}
+#page-play .acts{gap:calc(6px * var(--k,1));padding:calc(2px * var(--k,1)) 10px calc(4px + var(--safe-b))}
+#page-play .acts .btn{padding:calc(5px * var(--k,1)) calc(4px * var(--k,1));font-size:calc(12px * var(--k,1));
+  border-radius:calc(10px * var(--k,1))}
+#page-play .bidwrap{gap:calc(6px * var(--k,1));padding:calc(2px * var(--k,1)) 10px calc(4px + var(--safe-b))}
+#page-play .bidwrap .btn{padding:calc(5px * var(--k,1)) calc(4px * var(--k,1));font-size:calc(12px * var(--k,1));
+  border-radius:calc(10px * var(--k,1))}
 #page-play .handwrap{padding:0 calc(4px * var(--k,1))}
 /* 牌桌中央：倍数 / 让牌数（两人场时「我」在右侧，底部无个人信息行） */
 #page-play .cinf{
@@ -925,3 +942,139 @@ body.force-land #app{
   display:none;align-items:center;gap:calc(4px * var(--k,1))}
 #page-play.on .orientbtn{display:flex}
 .orientbtn:active{background:rgba(0,0,0,.66)}
+
+/* ==================================================================
+   牌桌布局 · 最终覆盖（放最后生效）
+   修复：出牌区被 flex 挤压成 0 宽度 → 「有时完全看不到牌」
+   根因：.seatcol 里 .ts 是 flex:0 0 auto（不缩），.pmine 是 flex:0 1 auto
+        且 min-width:0，于是可无限收缩 → 被压成 0px，牌全部看不见。
+   ================================================================== */
+#page-play .field{
+  display:flex !important;align-items:center;justify-content:space-between;
+  gap:calc(6px * var(--k,1));padding:0 calc(6px * var(--k,1));
+  flex:1 1 auto;min-height:0;min-width:0}
+#page-play .seatleft,#page-play .seatright{
+  position:static !important;width:auto !important;
+  flex:0 1 auto !important;min-width:0;max-width:44%;
+  display:flex !important;flex-direction:column !important;
+  align-items:flex-start !important;gap:0;z-index:5}
+#page-play .seatright{align-items:flex-end !important}
+#page-play .seatcol{
+  display:flex !important;flex-direction:row;align-items:center;
+  gap:calc(6px * var(--k,1));min-width:0;width:100%}
+#page-play .seatcol.right{flex-direction:row-reverse}
+/* 信息块可收缩（昵称省略号），出牌区不收缩 —— 保证牌一定看得见 */
+#page-play .seatcol .ts{flex:0 1 auto !important;min-width:0;overflow:hidden}
+#page-play .seatcol .pmine{flex:0 0 auto !important;min-width:0;max-width:100%;overflow:hidden}
+#page-play .mid{flex:1 1 auto;min-width:0;display:flex;align-items:center;justify-content:center}
+
+/* 昵称字号调小、操作按钮区瘦身（用户反馈字太大、控件占位置太多） */
+#page-play .seatcol .ts .nm{font-size:calc(10px * var(--k,1));max-width:calc(70px * var(--k,1))}
+#page-play .seatcol .ts .cnt{font-size:calc(9px * var(--k,1))}
+#page-play .seatcol .ts .av{width:calc(22px * var(--k,1));height:calc(22px * var(--k,1))}
+#page-play .myinfo .nm{font-size:calc(10px * var(--k,1))}
+#page-play .myinfo .av{width:calc(24px * var(--k,1));height:calc(24px * var(--k,1))}
+#page-play .acts{gap:calc(6px * var(--k,1));padding:calc(3px * var(--k,1)) 10px calc(4px * var(--safe-b) + 3px)}
+#page-play .acts .btn{padding:calc(6px * var(--k,1)) calc(4px * var(--k,1));font-size:calc(12px * var(--k,1))}
+#page-play .bidwrap .btn{padding:calc(6px * var(--k,1)) calc(4px * var(--k,1));font-size:calc(12px * var(--k,1))}
+
+/* ==================================================================
+   牌桌 v10：网格分区，保证每块都有位置，不会再「看不到牌」
+   行序：底牌 / 对局区(左右对手) / 我出的牌 / 我的信息 / 手牌 / 按钮
+   用 grid + minmax(0,1fr)：对局区可被压缩，但其它区域永远保有自己的高度。
+   ================================================================== */
+#page-play .table{
+  display:grid;
+  grid-template-rows:auto minmax(0,1fr) auto auto auto auto;
+  height:100%;padding:0 4px}
+#page-play .dibar{grid-row:1}
+#page-play .field{grid-row:2;min-height:0}
+#page-play .topseats:empty{display:none}
+#page-play .myplayed{grid-row:4}
+#page-play .myinfo{grid-row:5}
+#page-play .handwrap{grid-row:6}
+#page-play #action-zone{grid-row:7;min-height:0}
+
+/* 出牌区：不换行，超宽时内部横向滚动，绝不撑到下一行「往下面显示」 */
+#page-play .pcards{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch}
+#page-play .pcards::-webkit-scrollbar{display:none}
+#page-play .seatcol .pmine{max-width:calc(46vw);overflow:hidden}
+#page-play .prow.stack{flex-wrap:nowrap}
+
+/* 对局区内部：左 | 中 | 右，两侧等分，中间自适应 */
+#page-play .field{display:flex;align-items:center;justify-content:space-between;
+  gap:calc(4px * var(--k,1))}
+#page-play .seatleft,#page-play .seatright{flex:0 1 auto;max-width:44%;min-width:0}
+#page-play .mid{flex:1 1 auto;min-width:0;display:flex;align-items:center;justify-content:center}
+
+/* 昵称 / 剩余牌数缩小，按钮收紧 */
+#page-play .seatcol .ts .nm{font-size:calc(10px * var(--k,1));
+  max-width:calc(78px * var(--k,1))}
+#page-play .seatcol .ts .cnt{font-size:calc(8.5px * var(--k,1))}
+#page-play .seatcol .ts .av{width:calc(24px * var(--k,1));height:calc(24px * var(--k,1))}
+#page-play .myinfo .nm{font-size:calc(10px * var(--k,1))}
+#page-play .myinfo .cnt{font-size:calc(8.5px * var(--k,1));margin-top:0}
+#page-play .myinfo .av{width:calc(24px * var(--k,1));height:calc(24px * var(--k,1))}
+#page-play .myinfo{padding:0 calc(8px * var(--k,1)) calc(1px * var(--k,1));gap:calc(5px * var(--k,1))}
+#page-play .acts{gap:calc(6px * var(--k,1));padding:calc(3px * var(--k,1)) 8px calc(6px * var(--safe-b) + 4px)}
+#page-play .acts .btn{padding:calc(6px * var(--k,1)) calc(3px * var(--k,1));
+  font-size:calc(12px * var(--k,1));border-radius:calc(10px * var(--k,1))}
+#page-play .bidwrap{gap:calc(5px * var(--k,1));padding:calc(4px * var(--k,1)) 8px calc(6px + var(--safe-b))}
+#page-play .bidwrap .btn{padding:calc(6px * var(--k,1)) calc(3px * var(--k,1));font-size:calc(12px * var(--k,1))}
+#page-play .myplayed{min-height:calc(18px * var(--k,1));padding:0 6px}
+/* 长按删除：禁掉系统「复制/选择」浮层，否则安卓上长按永远触发不了 */
+.msg,.citem,.sitem,.conv{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+
+/* 再收一档：昵称与操作按钮占的空间（用户反馈"太大"） */
+#page-play .seatcol .ts .nm{font-size:calc(9px * var(--k,1));max-width:calc(70px * var(--k,1))}
+#page-play .seatcol .ts .cnt{font-size:calc(8px * var(--k,1))}
+#page-play .seatcol .ts .av{width:calc(22px * var(--k,1));height:calc(22px * var(--k,1))}
+#page-play .myinfo .nm{font-size:calc(10px * var(--k,1))}
+#page-play .myinfo .cnt{font-size:calc(8px * var(--k,1))}
+#page-play .myinfo .av{width:calc(22px * var(--k,1));height:calc(22px * var(--k,1))}
+#page-play .acts .btn{padding:calc(4px * var(--k,1)) calc(2px * var(--k,1));
+  font-size:calc(12px * var(--k,1));border-radius:calc(9px * var(--k,1))}
+#page-play .bidwrap .btn{padding:calc(4px * var(--k,1)) calc(2px * var(--k,1));font-size:calc(12px * var(--k,1))}
+#page-play .acts{gap:calc(5px * var(--k,1));padding:calc(2px * var(--k,1)) 8px calc(4px * var(--safe-b) + 3px)}
+
+/* ==================================================================
+   统一压缩：牌桌按钮 + 昵称字号（放在最后，覆盖前面所有同名定义）
+   用户反馈：昵称字太大、"首出/提示/出牌"按钮占位太高
+   ================================================================== */
+#page-play .acts .btn,
+#page-play .bidwrap .btn,
+body.land #page-play .acts .btn,
+body.land #page-play .bidwrap .btn{
+  padding:calc(4px * var(--k,1)) calc(3px * var(--k,1)) !important;
+  font-size:calc(11px * var(--k,1)) !important;
+  border-radius:calc(9px * var(--k,1)) !important;
+  line-height:1.15 !important}
+#page-play .acts,
+body.land #page-play .acts{
+  gap:calc(5px * var(--k,1)) !important;
+  padding:calc(2px * var(--k,1)) 10px calc(3px + var(--safe-b)) !important}
+#page-play .bidwrap,
+body.land #page-play .bidwrap{
+  gap:calc(5px * var(--k,1)) !important;
+  padding:calc(2px * var(--k,1)) 10px calc(3px + var(--safe-b)) !important}
+
+/* 昵称 / 剩余牌数：再收一档 */
+#page-play .seatcol .ts .nm,
+body.land #page-play .seatcol .ts .nm{
+  font-size:calc(9.5px * var(--k,1)) !important;
+  max-width:calc(76px * var(--k,1)) !important}
+#page-play .seatcol .ts .cnt,
+body.land #page-play .seatcol .ts .cnt{
+  font-size:calc(8px * var(--k,1)) !important}
+#page-play .myinfo .nm,
+body.land #page-play .myinfo .nm{
+  font-size:calc(9.5px * var(--k,1)) !important}
+#page-play .myinfo .cnt,
+body.land #page-play .myinfo .cnt{
+  font-size:calc(8px * var(--k,1)) !important}
+
+/* 头像再小一点 */
+#page-play .seatcol .ts .av,
+body.land #page-play .seatcol .ts .av{
+  width:calc(24px * var(--k,1));height:calc(24px * var(--k,1))}

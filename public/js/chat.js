@@ -80,6 +80,8 @@ window.Chat = (function () {
       var state = c.online
         ? '<span class="st on">在线</span>'
         : '<span class="st off">离线</span>';
+      /* 内置测试助手：标出来，方便装机前试功能（发什么它回什么） */
+      if (c.test) state = '<span class="st on" style="background:#2b6cb0">🧪 测试</span>';
       var pick = selMode === 'conv'
         ? '<div class="pick' + (selConvs.has(c.uid) ? ' on' : '') + '" data-pick="' + c.uid + '"></div>'
         : '';
@@ -326,9 +328,15 @@ window.Chat = (function () {
         '<div class="time">' + fmt(m.ts) + '</div>';
     }
     if (m.kind === 'sticker') {
-      var svg = Stickers.html(m.sticker.pack, m.sticker.id);
-      if (m.sticker.pack === 'emoji') return '<div style="font-size:44px;line-height:1.2">' + (Stickers.EMOJI[m.sticker.id] || '🙂') + '</div>';
-      return svg;
+      /* 与隐私空间同样的问题：m.sticker 缺失时直接取 .pack 会抛错，
+         导致整条消息渲染不出来。这里做健壮降级。 */
+      var st = m.sticker || {};
+      var sid = (st.id == null ? '' : String(st.id));
+      try {
+        if (st.pack === 'emoji') return '<div style="font-size:44px;line-height:1.2">' + (Stickers.EMOJI[sid] || '🙂') + '</div>';
+        var svg = (typeof Stickers.html === 'function') ? Stickers.html(st.pack, sid) : '';
+        return svg || ('<div style="font-size:42px">' + (Stickers.EMOJI[sid] || '🙂') + '</div>');
+      } catch (e) { return '<div style="font-size:42px">🙂</div>'; }
     }
     /* 邀请卡片：点「加入房间」直接进牌桌 */
     if (m.kind === 'invite') {
@@ -455,20 +463,48 @@ window.Chat = (function () {
     var b = document.getElementById('recbar'); if (b) b.remove();
   }
   var audioEl = null;
+  /* 短语音播放：先尝试直接播；失败则把文件整段取回做成 Blob 再播。
+     短录音常因缺少时长头信息 / 服务端 Content-Type 不对而直接播失败，
+     走 Blob + 显式 MIME 可以绕过这类问题。 */
   function playVoice(url, btn) {
     if (audioEl) { audioEl.pause(); audioEl = null; }
-    audioEl = new Audio(url);
-    audioEl.preload = 'auto';
     btn.textContent = '⏸';
     var reset = function (msg) {
       btn.textContent = '▶';
       audioEl = null;
       if (msg) App.toast('语音播放失败：' + msg);
     };
-    audioEl.onerror = function () { reset('音频无法加载（格式不支持或文件已失效）'); };
-    audioEl.onended = function () { btn.textContent = '▶'; audioEl = null; };
-    var pr = audioEl.play();
-    if (pr && pr.catch) pr.catch(function (e) { reset((e && e.message) || '被浏览器拦截'); });
+    function attach(a) {
+      audioEl = a;
+      a.onerror = function () { reset('音频无法加载（格式不支持或文件已失效）'); };
+      a.onended = function () { btn.textContent = '▶'; audioEl = null; };
+      var pr = a.play();
+      if (pr && pr.catch) pr.catch(function (e) { blobFallback(); });
+    }
+    function blobFallback() {
+      try {
+        fetch(url).then(function (r) {
+          // 用服务端返回的真实 Content-Type，别再靠后缀猜
+          // （url 是 /api/file/xxx，根本没有后缀，之前全被猜成 webm）
+          var ct = (r.headers && r.headers.get ? r.headers.get('Content-Type') : '') || '';
+          return r.arrayBuffer().then(function (buf) { return { buf: buf, ct: ct }; });
+        }).then(function (o) {
+          var type = (o.ct || '').split(';')[0].trim();
+          if (!type || type === 'application/octet-stream') type = 'audio/mp4';
+          var b = new Blob([o.buf], { type: type });
+          var a = new Audio(URL.createObjectURL(b));
+          a.onended = function () { btn.textContent = '▶'; URL.revokeObjectURL(a.src); audioEl = null; };
+          a.onerror = function () { reset('格式不支持'); };
+          audioEl = a;
+          var p = a.play();
+          if (p && p.catch) p.catch(function (e) { reset((e && e.message) || '无法播放'); });
+        }).catch(function () { reset('下载失败'); });
+      } catch (e) { reset('无法播放'); }
+    }
+    var a0 = new Audio(url);
+    a0.preload = 'auto';
+    a0.onerror = function () { blobFallback(); };
+    attach(a0);
   }
 
   /* ---------------- 表情面板 ---------------- */
@@ -563,18 +599,22 @@ window.Chat = (function () {
   function size(b) { if (!b) return ''; var u = ['B', 'KB', 'MB', 'GB'], i = 0; while (b > 1024 && i < 3) { b /= 1024; i++; } return b.toFixed(i ? 1 : 0) + u[i]; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
   /* 长按：手指轻微抖动不打断（超过 10px 才算拖动取消），否则在手机上很难触发 */
+  /* 长按：安卓 WebView 默认会弹系统「复制/选择」菜单打断 JS 长按，
+     所以必须阻止 contextmenu；同时去掉过于敏感的 pointerleave
+     （手指轻微移动就会取消，导致手机上几乎触发不了）。 */
   function longPress(el, fn) {
     var t = null, x0 = 0, y0 = 0;
+    function clear() { if (t) { clearTimeout(t); t = null; } }
     el.addEventListener('pointerdown', function (e) {
       x0 = e.clientX; y0 = e.clientY;
-      clearTimeout(t); t = setTimeout(fn, 550);
+      clear(); t = setTimeout(fn, 500);
     });
     el.addEventListener('pointermove', function (e) {
-      if (Math.abs(e.clientX - x0) > 10 || Math.abs(e.clientY - y0) > 10) clearTimeout(t);
+      // 阈值 20px 太严：手指轻微抖动就取消，手机上几乎触发不了 → 放宽到 14px
+      if (Math.abs(e.clientX - x0) > 14 || Math.abs(e.clientY - y0) > 14) clear();
     });
-    el.addEventListener('pointerup', function () { clearTimeout(t); });
-    el.addEventListener('pointercancel', function () { clearTimeout(t); });
-    el.addEventListener('pointerleave', function () { clearTimeout(t); });
+    ['pointerup', 'pointercancel'].forEach(function (n) { el.addEventListener(n, clear); });
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   }
 
   /* ---------------- 多选删除 ---------------- */

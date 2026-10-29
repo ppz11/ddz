@@ -73,12 +73,44 @@ window.Secret = (function () {
     bindPanic();
   }
 
+  /* ---------- 交互保护（防误判切后台） ---------- */
+  var _iT = 0, _iLT = 0;
+  function markInteract() { _iT = Date.now(); }
+  function markInteractLong() { _iLT = Date.now(); _iT = Date.now(); }
+  function interactBusy() {
+    var now = Date.now();
+    return (now - _iT) < 2500 || (now - _iLT) < 30000;
+  }
+
   /* ---------- 紧急退出：锁屏 / 切后台 / 摇一摇 ----------
    * 关键：所有收起动作都在事件回调里「同步」完成，不做任何动画/延时，
    * 这样系统截屏与解锁后看到的画面已经是游戏主界面，不会出现收起过程。 */
   function bindPanic() {
-    function onHide() {
+    /* 关键修复：点「发送 / 选照片 / 选视频」时，软键盘或系统文件选择器
+       弹出会让窗口失焦(blur)或短暂 hidden —— 原来这里会立刻触发紧急退出，
+       表现就是「一点发送就直接退出应用」。
+       对策：1) 去掉 blur 直接退出的触发；
+             2) 输入框获得焦点、或刚点过文件选择时，短时间内不触发紧急退出。 */
+    /* 交互保护：短交互(打字/点按钮) 2.5s；长操作(系统文件选择器/录音) 30s。
+       选图片/视频会打开系统文件选择器，App 会短暂 hidden，
+       若保护窗口太短就会被误判成「切后台」→ 触发紧急退出(甚至最小化)，
+       表现就是「一点发送/选图就直接退出应用」。 */
+    try {
+      document.addEventListener('focusin', function (e) {
+        var t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) markInteract();
+      }, true);
+      document.addEventListener('click', function (e) {
+        var t = e.target;
+        if (t && t.tagName === 'INPUT' && t.type === 'file') markInteractLong();
+        else markInteract();
+      }, true);
+      document.addEventListener('touchstart', markInteract, { passive: true });
+    } catch (e) { }
+
+    function onHide(force) {
       if (!root) return;
+      if (!force && interactBusy()) return;      // 正在输入/选文件 → 不退出
       // 1) 同步隐藏：不改 DOM 结构，只置 visibility，确保本帧内渲染结果已是主界面
       try { root.style.visibility = 'hidden'; root.style.display = 'none'; } catch (e) { }
       // 2) 同步移除（含所有可能残留的节点）
@@ -86,12 +118,10 @@ window.Secret = (function () {
       // 3) 同步回到主界面
       try { App.go('home'); } catch (e) { }
       homeSafe = true;
-      // 4) 原生环境：把 App 最小化（推到后台）
-      try {
-        var AP = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
-        if (AP && AP.minimizeApp) AP.minimizeApp();
-        else if (window.DDZNative && DDZNative.minimizeApp) DDZNative.minimizeApp();
-      } catch (e) { }
+      /* 4) 不再调用 minimizeApp：
+         一旦被误触发（文件选择器/软键盘导致短暂 hidden），它会把整个 App
+         推到后台 —— 用户看到的就是「一点发送就退出应用」。
+         回到主界面 App.go('home') 已经足够，不需要再把 App 最小化。 */
     }
     function onShow() {
       // 解锁 / 切回前台：确保一定是主界面，且不残留好友空间
@@ -105,18 +135,22 @@ window.Secret = (function () {
       if (document.visibilityState === 'hidden') onHide();
       else onShow();
     });
-    window.addEventListener('pagehide', onHide);
-    window.addEventListener('blur', function () { setTimeout(onHide, 0); });
+    /* 不再监听 blur 触发退出：软键盘/文件选择器都会导致 blur */
     window.addEventListener('focus', onShow);
     // 部分 WebView 只派发 freeze / beforeunload，这里一并兜住
-    window.addEventListener('freeze', onHide);
-    window.addEventListener('beforeunload', onHide);
+    /* 注意：下面这些事件都会把「事件对象」作为第一个参数传进来。
+       如果直接写 addEventListener('pause', onHide)，事件对象会被当成
+       onHide(force) 的 force 参数 —— 对象是 truthy → 强制退出、绕过保护，
+       表现就是「一点发送 / 选照片就退出应用」。必须包一层再调用。 */
+    window.addEventListener('freeze', function () { onHide(); });
+    window.addEventListener('beforeunload', function () { onHide(); });
+    window.addEventListener('pagehide', function () { onHide(); });
     try {
       var AP = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
       if (AP && AP.addListener) {
         AP.addListener('appStateChange', function (st) { if (!st || !st.isActive) onHide(); else onShow(); });
-        AP.addListener('pause', onHide);
-        AP.addListener('resume', onShow);
+        AP.addListener('pause', function () { onHide(); });
+        AP.addListener('resume', function () { onShow(); });
       }
     } catch (e) { }
 
@@ -334,7 +368,8 @@ window.Secret = (function () {
           spick +
           '<div class="a">' + Avatar.svg(r.other && r.other.avatar, 42) + '</div>' +
           '<div style="flex:1;min-width:0"><div style="font-size:13px">' + esc(nm) +
-          '<span class="fix">固定身份</span></div>' +
+          (r.test ? '<span class="fix" style="background:#2b6cb0">🧪 测试</span>'
+                  : '<span class="fix">固定身份</span>') + '</div>' +
           '<div style="font-size:11px;color:#5c6b66;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(last) + '</div></div>' +
           locBtn +
           (r.unread ? '<div class="badge">' + r.unread + '</div>' : '') + '</div>';
@@ -543,11 +578,11 @@ window.Secret = (function () {
     b.querySelector('#s-clr').onclick = function () {
       App.confirm('清空该会话全部记录？', '不可恢复', function () { Net.send({ t: 'secret:clear', rid: curRid }); });
     };
-    b.querySelector('#s-send').onclick = sendText;
+    b.querySelector('#s-send').onclick = function () { markInteract(); sendText(); };
     b.querySelector('#s-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') sendText(); });
-    b.querySelector('#s-emo').onclick = toggleEmoji;
+    b.querySelector('#s-emo').onclick = function () { markInteract(); toggleEmoji(); };
     Rec.hold(b.querySelector('#s-voice'), function (r) {
-      App.toast('发送中…');
+      markInteractLong(); App.toast('发送中…');
       Net.upload(r.file, 'voice', r.dur).then(function (up) {
         if (up.err) return App.toast(up.err);
         send({ kind: 'voice', url: up.url, dur: r.dur, name: r.file.name, size: r.file.size });
@@ -555,9 +590,10 @@ window.Secret = (function () {
       }).catch(function () { App.toast('发送失败'); });
     });
     b.querySelector('#s-add').onclick = function () {
-      App.sheet([['🖼 图片', function () { document.getElementById('s-img').click(); }],
-        ['🎬 视频', function () { document.getElementById('s-vid').click(); }],
-        ['📎 文件', function () { document.getElementById('s-file').click(); }]]);
+      markInteract();
+      App.sheet([['🖼 图片', function () { markInteractLong(); document.getElementById('s-img').click(); }],
+        ['🎬 视频', function () { markInteractLong(); document.getElementById('s-vid').click(); }],
+        ['📎 文件', function () { markInteractLong(); document.getElementById('s-file').click(); }]]);
     };
     document.getElementById('s-img').onchange = function (e) { up(e.target.files[0], 'image'); };
     document.getElementById('s-vid').onchange = function (e) { up(e.target.files[0], 'video'); };
@@ -630,12 +666,19 @@ window.Secret = (function () {
       var who = mine ? (curMe || App.me()) : (curOther || {});
       var body = '';
       if (m.kind === 'sticker') {
-        if (m.sticker.pack === 'emoji') {
-          body = '<div style="font-size:42px;line-height:1.2">' + (Stickers.EMOJI[m.sticker.id] || '🙂') + '</div>';
-        } else {
-          var svg = Stickers.html(m.sticker.pack, m.sticker.id);
-          body = svg || ('<div style="font-size:40px">' + (Stickers.EMOJI[m.sticker.id] || '🙂') + '</div>');
-        }
+        /* 服务端若没把 sticker 字段透传回来，m.sticker 会是 undefined，
+           直接取 .pack 会抛错 → 整条消息渲染失败（表现：表情"显示不出来"）。
+           这里做健壮降级，保证任何情况都能渲染出一个表情。 */
+        var st = m.sticker || {};
+        var sid = (st.id == null ? '' : String(st.id));
+        try {
+          if (st.pack === 'emoji') {
+            body = '<div style="font-size:42px;line-height:1.2">' + (Stickers.EMOJI[sid] || '🙂') + '</div>';
+          } else {
+            var svg = (typeof Stickers.html === 'function') ? Stickers.html(st.pack, sid) : '';
+            body = svg || ('<div style="font-size:40px">' + (Stickers.EMOJI[sid] || '🙂') + '</div>');
+          }
+        } catch (e) { body = '<div style="font-size:40px">🙂</div>'; }
       } else if (m.kind === 'image') body = '<img src="' + Net.abs(m.url) + '" style="max-width:200px;border-radius:12px">';
       else if (m.kind === 'video') body = '<video src="' + Net.abs(m.url) + '" controls playsinline style="width:200px"></video>';
       else if (m.kind === 'voice') body = '<div style="display:flex;gap:6px;align-items:center">🔊 <span data-p="' + Net.abs(m.url) + '">▶ 语音 ' + (m.dur || 0) + '″</span></div>';
@@ -679,9 +722,34 @@ window.Secret = (function () {
       });
     });
     paintMsgSel();
-    box.querySelectorAll('[data-p]').forEach(function (e) { e.onclick = function () { new Audio(e.dataset.p).play(); }; });
+    box.querySelectorAll('[data-p]').forEach(function (e) { e.onclick = function () { playSAudio(e.dataset.p); }; });
     box.querySelectorAll('[data-d]').forEach(function (e) { e.onclick = function () { window.open(e.dataset.d, '_blank'); }; });
   }
+  var sAudio = null;
+  /* 语音播放：直接播失败时改用 Blob（短录音常见问题） */
+  function playSAudio(url) {
+    if (sAudio) { try { sAudio.pause(); } catch (e) { } sAudio = null; }
+    var a = new Audio(url);
+    a.onerror = function () {
+      try {
+        fetch(url).then(function (r) { return r.arrayBuffer(); }).then(function (buf) {
+          var type = 'audio/webm';
+          if (/\.m4a|mp4/i.test(url)) type = 'audio/mp4';
+          else if (/\.mp3/i.test(url)) type = 'audio/mpeg';
+          else if (/\.wav/i.test(url)) type = 'audio/wav';
+          var b = new Blob([buf], { type: type });
+          var a2 = new Audio(URL.createObjectURL(b));
+          sAudio = a2;
+          var p = a2.play();
+          if (p && p.catch) p.catch(function () { App.toast('语音播放失败'); });
+        });
+      } catch (e) { App.toast('语音播放失败'); }
+    };
+    sAudio = a;
+    var p = a.play();
+    if (p && p.catch) p.catch(function () { a.onerror(); });
+  }
+
   function send(obj) { Net.send({ t: 'secret:send', rid: curRid, msg: obj }); }
   function sendText() {
     var el = document.getElementById('s-input'); if (!el) return;
@@ -699,17 +767,21 @@ window.Secret = (function () {
   }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
   /* 长按：手指轻微抖动不打断（超过 10px 才算拖动取消），否则在手机上很难触发 */
+  /* 长按：安卓 WebView 默认会弹系统「复制/选择」菜单打断 JS 长按，
+     所以必须阻止 contextmenu；同时去掉过于敏感的 pointerleave
+     （手指轻微移动就会取消，导致手机上几乎触发不了）。 */
   function longPress(el, fn) {
-    var t = null, ms = arguments.length > 2 ? arguments[2] : 550;
-    var x0 = 0, y0 = 0;
+    var t = null, x0 = 0, y0 = 0;
+    function clear() { if (t) { clearTimeout(t); t = null; } }
     el.addEventListener('pointerdown', function (e) {
       x0 = e.clientX; y0 = e.clientY;
-      clearTimeout(t); t = setTimeout(fn, ms);
+      clear(); t = setTimeout(fn, 500);
     });
     el.addEventListener('pointermove', function (e) {
-      if (Math.abs(e.clientX - x0) > 10 || Math.abs(e.clientY - y0) > 10) clearTimeout(t);
+      if (Math.abs(e.clientX - x0) > 14 || Math.abs(e.clientY - y0) > 14) clear();
     });
-    ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (e) { el.addEventListener(e, function () { clearTimeout(t); }); });
+    ['pointerup', 'pointercancel'].forEach(function (n) { el.addEventListener(n, clear); });
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   }
     function withUser(pid) { if (!pid) return; Net.send({ t: 'secret:create', withPid: pid }); }
   function pullState() { Net.send({ t: 'loc:state' }); }

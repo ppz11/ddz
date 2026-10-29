@@ -141,6 +141,7 @@ jobs:
           p = "android/app/src/main/AndroidManifest.xml"
           s = open(p, encoding="utf-8").read()
           perms = ["RECORD_AUDIO", "CAMERA", "MODIFY_AUDIO_SETTINGS",
+                   "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION",
                    "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC",
                    "POST_NOTIFICATIONS", "WAKE_LOCK", "VIBRATE"]
           lines = []
@@ -163,7 +164,7 @@ jobs:
               print("   " + m2.group(1))
           PYEOF
           MF=android/app/src/main/AndroidManifest.xml
-          for p in RECORD_AUDIO CAMERA FOREGROUND_SERVICE; do
+          for p in RECORD_AUDIO CAMERA ACCESS_FINE_LOCATION FOREGROUND_SERVICE; do
             if grep -q "android.permission.$p" "$MF"; then echo "✔ $p 已声明";
             else echo "⚠ 未声明 $p（后台保活可能不生效）"; fi
           done
