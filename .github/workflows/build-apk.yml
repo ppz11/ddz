@@ -76,7 +76,8 @@ jobs:
             echo "✔ 已注入原生桥接（横竖屏 / 录音 / 权限）"
           else
             echo "✘ 找不到 android-src/capacitor/MainActivity.java"; exit 1
-          # 后台保活 + 桌面角标（零第三方依赖）
+          fi
+          # 后台保活 + 桌面角标（零第三方依赖，必须无条件执行）
           for f in DDZPushService.java BadgeUtil.java; do
             if [ -f android-src/capacitor/$f ]; then
               cp -f android-src/capacitor/$f android/app/src/main/java/com/yuanbao/ddz/$f
@@ -85,7 +86,6 @@ jobs:
               echo "✘ 找不到 android-src/capacitor/$f"; exit 1
             fi
           done
-          fi
           grep -q "DDZNative" "$MJ" || { echo "✘ DDZNative 注入失败"; exit 1; }
 
       # ---- 明文访问 + 方向策略 ----
@@ -137,7 +137,7 @@ jobs:
       - name: 补齐录音与摄像头权限
         run: |
           MF=android/app/src/main/AndroidManifest.xml
-          for p in RECORD_AUDIO CAMERA MODIFY_AUDIO_SETTINGS FOREGROUND_SERVICE POST_NOTIFICATIONS WAKE_LOCK VIBRATE; do
+          for p in RECORD_AUDIO CAMERA MODIFY_AUDIO_SETTINGS FOREGROUND_SERVICE FOREGROUND_SERVICE_DATA_SYNC POST_NOTIFICATIONS WAKE_LOCK VIBRATE; do
             if ! grep -q "android.permission.$p" "$MF"; then
               sed -i "0,/<uses-permission/s|<uses-permission |<uses-permission android:name=\"android.permission.$p\"/>\n    <uses-permission |" "$MF"
             fi
