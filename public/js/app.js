@@ -522,14 +522,6 @@ window.App = (function () {
       Net.send({ t: 'test:reset' });
       toast('测试会话已重新生成：聊天和好友空间各一个');
     };
-    var sd = document.getElementById('sw-disguise');
-    if (sd) sd.onclick = function () {
-      settings.disguise = !settings.disguise;
-      this.classList.toggle('on', settings.disguise); saveSettings();
-      Notifier.setEnabled(settings.disguise);
-      toast(settings.disguise ? '隐私伪装已开启：会话内容将被隐藏' : '隐私伪装已关闭：可正常查看语音/图片');
-      try { Chat.renderList(); } catch (e) {}
-    };
     document.getElementById('btn-logout').onclick = function () {
       confirm('退出登录？', '下次进入会用同一台手机的账号重新登录（数据仍在）', function () {
         localStorage.removeItem('ddz_auth'); location.reload();
@@ -590,6 +582,7 @@ window.App = (function () {
       hist = (r && r.list) || []; renderHistory();
     }).catch(function () {});
   }
+  var histOpen = false;   // 战绩是否展开（默认只显示第一条）
   function ruleName(r) {
     return r === 'trio54' ? '三人经典' : (r === 'let46' ? '让牌玩法' : '经典玩法');
   }
@@ -613,18 +606,28 @@ window.App = (function () {
     if (typeof me.coins === 'number') paintCoins(me.coins);
     var box = document.getElementById('rec-list');
     if (!mine.length) { box.innerHTML = '<div class="empty">还没有对局记录</div>'; return; }
-    box.innerHTML = mine.slice(0, 60).map(function (g) {
-      var d = new Date(g.ts);
-      var t = (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    /* 默认只显示第一条，点右侧 ▾ 再展开全部。
+       战绩会一直累积，全铺开会顶掉下面的设置按钮，点不到。 */
+    var open = histOpen;
+    var shown = open ? mine.slice(0, 60) : mine.slice(0, 1);
+    var rowHTML = function (g, idx) {
       var role = g.landlord === g.mySeat ? '地主' : '农民';
+      var more = (idx === 0 && mine.length > 1)
+        ? '<div class="more' + (open ? ' on' : '') + '" id="rec-more" title="展开/收起">' +
+          (open ? '收起 ▲' : '展开 ▼ (' + mine.length + ')') + '</div>'
+        : '';
       return '<div class="rec" data-g="' + g.gid + '">' +
         '<div class="rs"><b style="color:' + (g.isWin ? 'var(--gold)' : 'var(--sub)') + '">' + (g.isWin ? '胜' : '负') + '</b>' +
         '<span>' + role + '</span></div>' +
-        '<div class="rb"><div class="t">' + t + ' · ' + ruleName(g.rule) + '</div>' +
+        '<div class="rb"><div class="t">' + ruleName(g.rule) + '</div>' +
         '<div class="m">倍数 ×' + (g.multiplier || 1) + (g.bombCount ? ' · 炸弹' + g.bombCount : '') +
         (g.spring ? ' · 春天' : '') + (g.antiSpring ? ' · 反春天' : '') + '</div></div>' +
+        more +
         '<div class="del">✕</div></div>';
-    }).join('');
+    };
+    box.innerHTML = shown.map(rowHTML).join('');
+    var mb = document.getElementById('rec-more');
+    if (mb) mb.onclick = function () { histOpen = !histOpen; renderHistory(); };
     box.querySelectorAll('.del').forEach(function (b) {
       b.onclick = function () {
         var gid = b.parentNode.dataset.g;
@@ -664,9 +667,10 @@ window.App = (function () {
       document.getElementById('sw-voice').classList.toggle('on', settings.voice);
       document.getElementById('sw-bgm').classList.toggle('on', settings.bgm);
       document.getElementById('sw-vibe').classList.toggle('on', settings.vibe);
-      var sd = document.getElementById('sw-disguise');
-      if (sd) sd.classList.toggle('on', !!settings.disguise);
-      Notifier.setEnabled(settings.disguise);
+      /* 隐私伪装开关已从「我的」页移除（它会把语音/图片全部藏掉，容易误开）。
+         这里强制关掉，老用户升级后自动纠正，保证媒体能正常显示。 */
+      if (settings.disguise) { settings.disguise = false; saveSettings(); }
+      Notifier.setEnabled(false);
     }, 50);
   }
   function saveSettings() { try { localStorage.setItem('ddz_set', JSON.stringify(settings)); } catch (e) {} }
@@ -689,6 +693,8 @@ window.App = (function () {
     Net.on('contacts', function (m) { contacts = m.list || []; });
     Net.on('room', function (m) { Game.onRoom(m); if (m.you !== undefined) go('play'); });
     Net.on('game', function (m) { Game.onGame(m); go('play'); });
+    /* 牌桌短语音：对方按住说话时，我的麦克风按钮上出现声波提示 */
+    Net.on('table:speaking', function (m) { try { Game.onSpeaking(m); } catch (e) { } });
     Net.on('err', function (m) { toast(m.msg || '出错了'); });
     Net.on('toast', function (m) { toast(m.msg); });
     Net.on('matching', function () { });

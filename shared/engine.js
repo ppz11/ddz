@@ -288,6 +288,7 @@
       rule: rule, seats: n, hands: hands, bottom: bottom, dead: dead, deadCount: dead.length,
       openCard: openCard, firstBidder: openSeat,
       phase: 'bid', bid: null, landlord: -1, bidTurn: openSeat, bidSeq: [],
+      doubleSeats: [], doubleIdx: 0, doubled: [],
       grabCount: 0, letCount: rule === 'let46' ? 1 : 0, multiplier: 1,
       turn: -1, last: null, lastSeat: [], passFlag: 0, bidPasses: 0,
       playedCount: [], bombCount: 0, spring: false, antiSpring: false,
@@ -307,7 +308,23 @@
       if (act.type === 'bid') {
         if (!g.bid || act.score > g.bid.score) g.bid = { score: act.score, by: seat };
         g.bidSeq.push({ seat: seat, act: 'bid', score: act.score });
-        if (act.score >= 3) return finishBid(g);
+        if (act.score >= 3) {
+          /* 叫满 3 分直接定地主，叫分就提前结束了。
+             规则：此时「还没轮到叫分」的人有权选择是否加倍（他们没机会表达过意见）；
+             「已经叫过分」的人没有这个权力。
+             所以 eligible = 从头到尾没在 bidSeq 里出现过的座位。 */
+          var acted = {};
+          g.bidSeq.forEach(function (b) { acted[b.seat] = 1; });
+          g.doubleSeats = [];
+          for (var di = 0; di < n; di++) if (!acted[di]) g.doubleSeats.push(di);
+          var fr = finishBid(g);
+          if (fr.err) return fr;
+          if (g.doubleSeats.length) {
+            g.phase = 'double'; g.doubleIdx = 0; g.doubled = [];
+            return { ok: true, needDouble: true };
+          }
+          return fr;
+        }
       } else {
         g.bidSeq.push({ seat: seat, act: 'pass' });
       }
@@ -343,6 +360,26 @@
     }
     g.bidSeq.push({ seat: seat, act: 'pass' });
     return finishBid(g);
+  }
+
+  /* ---------------- 加倍 ----------------
+   * 触发条件：有人叫 3 分直接当上地主，叫分提前结束。
+   * 只有「没轮到叫分」的人能选加倍；加倍则总倍数 ×2。 */
+  function applyDouble(g, seat, yes) {
+    if (g.phase !== 'double') return { err: '当前不是加倍阶段' };
+    var q = g.doubleSeats || [];
+    if (!q.length) { g.phase = 'play'; return { ok: true, started: true }; }
+    if (q[g.doubleIdx] !== seat) return { err: '还没轮到你加倍' };
+    if (yes) { g.multiplier = (g.multiplier || 1) * 2; (g.doubled = g.doubled || []).push(seat); }
+    g.doubleIdx++;
+    if (g.doubleIdx >= q.length) { g.phase = 'play'; return { ok: true, started: true }; }
+    return { ok: true };
+  }
+  /* 加倍阶段当前该谁决定 */
+  function doubleTurn(g) {
+    if (g.phase !== 'double') return -1;
+    var q = g.doubleSeats || [];
+    return (g.doubleIdx < q.length) ? q[g.doubleIdx] : -1;
   }
 
   function finishBid(g) {
@@ -387,6 +424,9 @@
       g.passFlag = 0;
     } else {
       g.passFlag++;
+      /* 记录这一家「过」：牌桌上要在他出牌的位置写上「过」，
+         否则别人只知道他没出牌，看不出是主动过还是还没轮到。 */
+      g.lastSeat[seat] = { by: seat, pass: true };
       if (g.passFlag >= g.seats - 1) { g.last = null; g.lastSeat = g.lastSeat.map(function () { return null; }); g.passFlag = 0; }
     }
     // 胜负
@@ -441,6 +481,7 @@
     parse: parse, beats: beats, allMoves: allMoves, hint: hint, hintOptions: hintOptions,
     moveCost: moveCost, speak: speak, rankName: rankName, hasMove: hasMove,
     newGame: newGame, applyBid: applyBid, applyPlay: applyPlay, finishBid: finishBid,
+    applyDouble: applyDouble, doubleTurn: doubleTurn,
     farmerTarget: farmerTarget, seatCount: seatCount
   };
 });

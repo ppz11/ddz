@@ -116,7 +116,8 @@ input,textarea{font-family:inherit}
 .tseat .nm{font-size:12px;font-weight:700}
 .tseat .cnt{font-size:10px;color:var(--gold);margin-top:1px}
 .tseat .rl{font-size:10px;padding:1px 6px;border-radius:8px;background:var(--red);color:#fff;margin-left:5px}
-.tseat .rl.f{background:var(--jade);color:#04281f}
+.tseat .rl.f,.tseat .rl.farmer{background:linear-gradient(180deg,#7fd6a0,#3f9c6c);color:#04281f}
+.tseat .rl.lord{background:linear-gradient(180deg,#f3c96b,#c9962f);color:#3a2600}
 .tseat.right .info{text-align:right}
 .tseat .clock{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;
   background:conic-gradient(var(--gold) var(--p,0%),rgba(255,255,255,.14) 0);position:relative}
@@ -192,13 +193,132 @@ input,textarea{font-family:inherit}
 /* ---------- 结算 ---------- */
 .result{position:absolute;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;
   background:rgba(2,12,9,.78);backdrop-filter:blur(6px);animation:fadein .25s both}
-.result .box{width:82%;max-width:330px;padding:22px;border-radius:22px;text-align:center;
+.result .box{width:78%;max-width:300px;max-height:86vh;padding:14px 16px;border-radius:18px;text-align:center;
+  display:flex;flex-direction:column;overflow:hidden;
   background:linear-gradient(180deg,#12503e,#0a2c22);border:1px solid rgba(243,201,107,.4);box-shadow:0 24px 60px rgba(0,0,0,.6)}
-.result .big{font-size:34px;font-weight:800;letter-spacing:3px;margin-bottom:2px}
+.result .big{font-size:26px;font-weight:800;letter-spacing:2px;margin-bottom:2px;flex:0 0 auto}
 .result .big.win{color:var(--gold);text-shadow:0 0 24px rgba(243,201,107,.5)}
 .result .big.lose{color:var(--sub)}
-.result .meta{font-size:12px;color:var(--sub);line-height:1.9;margin:10px 0 16px}
+/* 元信息区单独滚动，内容再多也不会把弹窗顶出屏幕 */
+.result .meta{font-size:11px;color:var(--sub);line-height:1.65;margin:8px 0 12px;
+  flex:0 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.result .row{flex:0 0 auto}
+/* ---------- 表情包：大图模式 / 动态表情 ---------- */
+.ep-add.on{background:var(--gold);color:#3a2600;border-color:transparent}
+/* 大图模式：格子从 5 列变 3 列，表情看得更清楚 */
+.emoji-panel .grid.big,.s-emoji .grid.big,.sk-grid.big{grid-template-columns:repeat(3,1fr);gap:9px}
+.emoji-panel .grid.big button,.s-emoji .grid.big button{font-size:34px}
+.sk-grid.big .stk{padding:5px}
+/* 动态表情角标：一眼看出这张是动图 */
+.sk-grid .stk{position:relative}
+.sk-grid .stk .gif{position:absolute;right:2px;bottom:2px;font-size:8px;font-weight:800;
+  padding:0 3px;border-radius:4px;background:rgba(0,0,0,.62);color:#ffe08a;letter-spacing:.3px}
+/* 长按预览大图 */
+.stk-preview{position:fixed;inset:0;z-index:120;display:grid;place-items:center;
+  background:rgba(0,0,0,.86);backdrop-filter:blur(3px);animation:fadein .16s both}
+.stk-preview img{max-width:86vw;max-height:78vh;object-fit:contain;border-radius:12px}
+/* 好友列表 */
+.fr-list{max-height:52vh;overflow-y:auto;-webkit-overflow-scrolling:touch;margin:0 -4px}
+.fr-item{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:12px;
+  margin-bottom:5px;background:rgba(255,255,255,.06);cursor:pointer}
+.fr-item:active{background:rgba(255,255,255,.12)}
+.fr-item .a{width:36px;height:36px;border-radius:50%;overflow:hidden;flex:0 0 auto;
+  background:rgba(255,255,255,.08);display:grid;place-items:center}
+.fr-item .a img,.fr-item .a svg{width:100%;height:100%;object-fit:cover;display:block}
+.fr-item .m{flex:1;min-width:0}
+.fr-item .n{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fr-item .u{font-size:10px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fr-item .st{font-size:10px;padding:1px 6px;border-radius:8px;flex:0 0 auto;
+  background:rgba(120,200,140,.22);color:#9fe8b4}
+.fr-item.off .st{background:rgba(255,255,255,.08);color:var(--sub)}
+.fr-item .del{flex:0 0 auto;font-size:11px;padding:2px 7px;border-radius:8px;
+  background:rgba(255,255,255,.10);border:1px solid var(--line);color:var(--sub);cursor:pointer}
+.fr-empty{text-align:center;color:var(--sub);font-size:12px;padding:20px 0}
+/* ---------- 表情包导入 ---------- */
+.ep-bar{display:flex;padding:0 0 6px}
+.ep-add{background:rgba(243,201,107,.14);border:1px solid rgba(243,201,107,.35);color:var(--gold);
+  font-size:11px;font-weight:700;padding:4px 10px;border-radius:14px;cursor:pointer}
+.ep-add:active{background:rgba(243,201,107,.28)}
+/* 已导入的包：缩略图 + 名称 + 设为默认/删除 */
+.spk{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:10px;
+  margin-bottom:4px;background:rgba(255,255,255,.06);cursor:pointer}
+.spk.on{background:rgba(243,201,107,.16);box-shadow:inset 0 0 0 1px rgba(243,201,107,.4)}
+.spk .th{width:32px;height:32px;border-radius:6px;overflow:hidden;flex:0 0 auto;background:rgba(0,0,0,.2)}
+.spk .th img{width:100%;height:100%;object-fit:contain;display:block}
+.spk .nm{flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.spk .op{flex:0 0 auto;display:flex;gap:5px}
+.spk .op button{font-size:10px;padding:2px 6px;border-radius:7px;background:rgba(255,255,255,.10);
+  border:1px solid var(--line);color:var(--txt);cursor:pointer}
+.spk.on .op button[data-a="def"]{background:var(--gold);color:#3a2600;border-color:transparent}
+/* 表情格：图片自适应，不拉伸变形 */
+.sk-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.sk-grid .stk{aspect-ratio:1;border-radius:8px;background:rgba(255,255,255,.05);
+  border:1px solid transparent;display:grid;place-items:center;cursor:pointer;padding:3px}
+.sk-grid .stk:active{background:rgba(243,201,107,.18);border-color:rgba(243,201,107,.4)}
+.sk-grid .stk img{max-width:100%;max-height:100%;object-fit:contain;display:block}
+/* 牌桌短语音按钮：放在聊天按钮上方，两者垂直分开，不会误触 */
+.tablevoice{position:absolute;right:10px;bottom:calc(126px + var(--safe-b) + 8px);z-index:8;
+  width:42px;height:42px;border-radius:50%;font-size:18px;background:rgba(0,0,0,.42);
+  border:1px solid var(--line);backdrop-filter:blur(6px);display:none;place-items:center;
+  color:var(--txt);cursor:pointer;-webkit-tap-highlight-color:transparent}
+#page-play.on .tablevoice{display:grid}
+.tablevoice:active{background:rgba(0,0,0,.66);transform:scale(.94)}
+body.land .tablevoice{bottom:calc(108px + var(--safe-b) + 8px)}
+/* 对方正在说话：按钮变金边 + 三道声波依次跳动，声音响起前先有提示 */
+.tablevoice.speaking{border-color:var(--gold);background:rgba(243,201,107,.20);
+  box-shadow:0 0 0 2px rgba(243,201,107,.28),0 0 14px rgba(243,201,107,.45)}
+.tablevoice.speaking::after{content:"";position:absolute;right:-6px;top:50%;transform:translateY(-50%);
+  width:14px;height:14px;border-radius:50%;background:var(--gold);opacity:.85;
+  animation:waveDot 1s ease-in-out infinite}
+@keyframes waveDot{0%,100%{transform:translateY(-50%) scale(.7);opacity:.5}
+  50%{transform:translateY(-50%) scale(1.15);opacity:1}}
+/* 邀请好友选择框：条目可点选，选中后右侧出现对勾 */
+#invite-picker .invite-list{margin:0 -4px}
+#invite-picker .iu{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:12px;
+  margin-bottom:5px;background:rgba(255,255,255,.06);cursor:pointer;transition:.14s}
+#invite-picker .iu.off{opacity:.5}
+#invite-picker .iu:active{background:rgba(255,255,255,.12)}
+#invite-picker .iu.sel{background:rgba(243,201,107,.16);box-shadow:inset 0 0 0 1px rgba(243,201,107,.45)}
+#invite-picker .iu .a{width:34px;height:34px;border-radius:50%;overflow:hidden;flex:0 0 auto;
+  background:rgba(255,255,255,.08);display:grid;place-items:center;font-size:16px}
+#invite-picker .iu .n{flex:1;min-width:0;font-size:13px;font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#invite-picker .iu .tag{flex:0 0 auto;font-size:10px;padding:1px 6px;border-radius:8px;
+  background:rgba(120,200,140,.22);color:#9fe8b4}
+#invite-picker .iu.off .tag{background:rgba(255,255,255,.08);color:var(--sub)}
+#invite-picker .iu .ck{flex:0 0 auto;width:18px;height:18px;border-radius:50%;
+  border:1.5px solid rgba(255,255,255,.25)}
+#invite-picker .iu.sel .ck{background:var(--gold);border-color:var(--gold);
+  background-image:linear-gradient(45deg,transparent 45%,#0a2c22 45%,#0a2c22 55%,transparent 55%)}
+/* 「过」字：行楷 + 轻微倾斜 + 墨迹描边，写得洒脱飘逸一点，
+   比原来一个「—」更能一眼看出这家是主动过牌 */
+.pcards.passed{display:flex;align-items:center;justify-content:center;min-height:calc(var(--card-h,.9) * .62)}
+.pass-word{
+  font-family:"STXingkai","华文行楷","Xingkai SC","KaiTi","STKaiti","楷体","Kaiti SC",cursive,serif;
+  font-size:calc(var(--card-w,40px) * .52);font-weight:400;line-height:1;
+  color:#f7e7bd;transform:rotate(-8deg);display:inline-block;
+  letter-spacing:calc(var(--card-w,40px) * .02);
+  text-shadow:0 0 calc(var(--card-w,40px) * .10) rgba(243,201,107,.55),
+              0 calc(var(--card-w,40px) * .03) calc(var(--card-w,40px) * .05) rgba(0,0,0,.45);
+  opacity:.95;animation:passIn .28s ease both}
+@keyframes passIn{
+  from{opacity:0;transform:rotate(-8deg) scale(.6)}
+  to{opacity:.95;transform:rotate(-8deg) scale(1)}}
+/* 底牌旁的「叫了几分 / 是否加倍」标签 */
+.btag{display:inline-flex;align-items:center;font-size:9.5px;font-weight:700;margin-left:5px;
+  padding:1px 6px;border-radius:8px;background:rgba(243,201,107,.16);color:var(--gold);
+  border:1px solid rgba(243,201,107,.32);white-space:nowrap}
+.btag.dbl{background:linear-gradient(180deg,#f3c96b,#c9962f);color:#3a2600;border-color:transparent}
+.btag.nod{background:rgba(255,255,255,.07);color:var(--sub);border-color:rgba(255,255,255,.14)}
+/* 加倍按钮行 */
+.row2{display:flex;gap:8px;margin-top:5px}
+.row2 .btn{flex:1}
 .result .row{display:flex;gap:10px}
+/* 身份徽标：地主金冠 / 农民麦穗。带底色的一块，牌桌上扫一眼就能分清谁是谁 */
+.rl{display:inline-flex;align-items:center;gap:2px;font-size:10px;font-weight:800;
+  padding:1px 6px;border-radius:8px;margin-left:4px;line-height:1.5;white-space:nowrap;vertical-align:middle}
+.rl.lord{background:linear-gradient(180deg,#f3c96b,#c9962f);color:#3a2600;box-shadow:0 0 8px rgba(243,201,107,.45)}
+.rl.farmer{background:rgba(120,200,140,.22);color:#9fe8b4;border:1px solid rgba(120,200,140,.45)}
 
 /* ---------- 聊天 ---------- */
 .clist{padding:8px 10px}
@@ -325,6 +445,11 @@ input,textarea{font-family:inherit}
 .rec .rb .t{font-size:12px;color:var(--sub)}
 .rec .rb .m{font-size:12px;margin-top:2px}
 .rec .del{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:rgba(229,72,77,.16);color:#ff9aa0;flex:0 0 auto}
+/* 战绩展开/收起：默认只显示一条，点它可以展开全部 */
+.rec .more{flex:0 0 auto;font-size:10px;padding:4px 7px;border-radius:9px;cursor:pointer;
+  background:rgba(255,255,255,.10);border:1px solid var(--line);color:var(--sub);white-space:nowrap}
+.rec .more:active{background:rgba(255,255,255,.18)}
+.rec .more.on{background:rgba(255,255,255,.16);color:#eaf5f0}
 .rowset{display:flex;align-items:center;justify-content:space-between;padding:13px 14px;border-radius:14px;
   background:rgba(255,255,255,.05);margin:0 14px 8px;font-size:14px}
 .sw{width:44px;height:26px;border-radius:13px;background:rgba(255,255,255,.18);position:relative;transition:.2s;flex:0 0 auto}
@@ -378,7 +503,8 @@ input,textarea{font-family:inherit}
 .topseats .ts .nm{font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .topseats .ts .cnt{font-size:10px;color:var(--gold);margin-top:2px}
 .ts .rl{font-size:9px;padding:1px 5px;border-radius:7px;background:var(--red);color:#fff;margin-left:4px;vertical-align:1px}
-.ts .rl.f{background:var(--jade);color:#04281f}
+.ts .rl.f,.ts .rl.farmer{background:linear-gradient(180deg,#7fd6a0,#3f9c6c);color:#04281f}
+.ts .rl.lord{background:linear-gradient(180deg,#f3c96b,#c9962f);color:#3a2600}
 .topseats .ts .clock{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;flex:0 0 auto;
   background:conic-gradient(var(--gold) 60%,rgba(255,255,255,.14) 0)}
 .topseats .ts .clock b{width:20px;height:20px;border-radius:50%;background:#0a2c22;display:grid;place-items:center;font-size:10px}
@@ -422,24 +548,35 @@ input,textarea{font-family:inherit}
 /* ---------- 精致版大王 / 小王 ---------- */
 .pc.joker{background:linear-gradient(160deg,#fffdf6,#f6efe2 60%,#efe3cc);
   box-shadow:0 3px 9px rgba(0,0,0,.5),inset 0 0 0 1px rgba(0,0,0,.10),inset 0 0 12px rgba(201,154,58,.20)}
+.pc.joker.red{background:linear-gradient(160deg,#fffaf3,#f9ece0 60%,#f0dfc8)}
+.pc.joker.black{background:linear-gradient(160deg,#fbfcff,#eef1f8 60%,#e2e7f2)}
 .pc.joker::before{content:"";position:absolute;inset:3px;border-radius:5px;border:1px solid rgba(201,154,58,.45);pointer-events:none}
 .pc.joker::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.45;
   background:repeating-linear-gradient(45deg,rgba(201,154,58,.12) 0 2px,transparent 2px 5px)}
-.pc.joker .jk-full{display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding-top:1px;font-weight:900;line-height:1}
-.pc.joker .jk-crown{font-size:calc(var(--card-w) * .30);line-height:1;opacity:.95;
-  filter:drop-shadow(0 1px 1px rgba(0,0,0,.22))}
-.pc.joker .jk-char{font-size:calc(var(--card-w) * .30);line-height:1;letter-spacing:-1px;
-  text-shadow:0 1px 0 rgba(255,255,255,.85),0 1px 2px rgba(0,0,0,.18);margin-top:1px}
-.pc.joker .jk-char span{font-size:calc(var(--card-w) * .22);margin-left:1px}
-.pc.joker .jk-star{font-size:calc(var(--card-w) * .22);line-height:1;margin-top:1px;opacity:.9}
-.pc.joker .jk-en{font-size:calc(var(--card-w) * .13);letter-spacing:.6px;opacity:.62;margin-top:1px;font-weight:800}
-.pc.joker.red .jk-crown,.pc.joker.red .jk-char,.pc.joker.red .jk-star,.pc.joker.red .jk-en{color:#d62b34}
+.pc.joker .jk-full{position:relative;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:0;font-weight:900;line-height:1;width:100%;height:100%}
+/* 手绘皇冠：宽度按牌宽缩放，任何分辨率下比例一致 */
+.pc.joker .jk-crown{width:calc(var(--card-w) * .52);height:auto;display:block;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.28));margin-bottom:calc(var(--card-w) * .02)}
+/* 中间的「王」字：主视觉，带描边和浮雕感 */
+.pc.joker .jk-w{font-size:calc(var(--card-w) * .46);line-height:1;letter-spacing:0;
+  text-shadow:0 1px 0 rgba(255,255,255,.9),0 1px 2px rgba(0,0,0,.22);
+  -webkit-text-stroke:calc(var(--card-w) * .012) currentColor}
+.pc.joker .jk-en{font-size:calc(var(--card-w) * .115);letter-spacing:.7px;opacity:.6;
+  margin-top:calc(var(--card-w) * .03);font-weight:800}
+/* 左上角标：大字「大」/「小」，一眼分清大王小王 */
+.pc.joker .jk-corner{position:absolute;top:calc(var(--card-w) * .06);left:calc(var(--card-w) * .10);
+  font-size:calc(var(--card-w) * .21);line-height:1;font-weight:900;opacity:.92}
+/* 大王：金红; 小王：墨蓝 */
+.pc.joker.red .jk-w,.pc.joker.red .jk-corner,.pc.joker.red .jk-en{color:#d0272f}
+.pc.joker.black .jk-w,.pc.joker.black .jk-corner,.pc.joker.black .jk-en{color:#1e3a5f}
 .pc.joker.b-red{color:#d62b34}
-.pc.joker.black .jk-crown,.pc.joker.black .jk-char,.pc.joker.black .jk-star,.pc.joker.black .jk-en{color:#1f2937}
-/* 小尺寸王牌（出牌区 / 底牌） */
-.pc.joker .ctr .jk{font-size:calc(var(--card-w) * .40);font-weight:900;line-height:1;
-  text-shadow:0 1px 0 rgba(255,255,255,.8)}
+/* 小尺寸王牌（出牌区 / 底牌）：皇冠换成小角标，保证小到看不清时也能分辨 */
+.pc.joker .jk-mini{position:relative;display:flex;align-items:center;justify-content:center;
+  width:100%;height:100%;font-weight:900;line-height:1}
+.pc.joker .jk-mini .jk-w{font-size:calc(var(--card-w) * .42)}
+.pc.joker .jk-mini .jk-tag{position:absolute;top:calc(var(--card-w) * .04);left:calc(var(--card-w) * .08);
+  font-size:calc(var(--card-w) * .20);opacity:.92}
 
 /* ---------- 邀请在线好友列表 ---------- */
 .invite-list{display:flex;flex-direction:column;gap:8px;max-height:220px;overflow-y:auto;padding:2px}
@@ -457,6 +594,9 @@ input,textarea{font-family:inherit}
 
 /* ---------- 聊天列表里的房间状态 + 直接加入 ---------- */
 .croom{display:flex;align-items:center;gap:8px;margin-top:6px}
+/* 身份徽标配色统一：地主=金冠，农民=麦穗绿（不论出现在牌桌/列表/房间） */
+.rl.lord{background:linear-gradient(180deg,#f3c96b,#c9962f);color:#3a2600;font-weight:800}
+.rl.farmer,.rl.f{background:linear-gradient(180deg,#7fd6a0,#3f9c6c);color:#04281f;font-weight:800}
 .croom .rl{font-size:10px;padding:2px 7px;border-radius:8px;background:rgba(243,201,107,.14);
   color:var(--gold);border:1px solid rgba(243,201,107,.25)}
 .croom .rl.dim{background:rgba(255,255,255,.06);color:var(--sub);border-color:var(--line)}
@@ -830,7 +970,10 @@ body.force-land #app{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:calc(6px * var(--k,1));
   padding:calc(4px * var(--k,1)) 10px calc(2px * var(--k,1));
   position:relative;z-index:4;
-  padding-top:calc(var(--safe-t) + 4px)}
+  padding-top:calc(var(--safe-t) + 4px);
+  /* 右上角要放竖屏按钮，底牌区右边留出空位 */
+  padding-right:calc(56px + env(safe-area-inset-right,0px));
+  min-width:0;overflow:hidden}
 #page-play .dibar .lbl{font-size:calc(10px * var(--k,1));color:var(--sub);margin-right:calc(4px * var(--k,1))}
 #page-play .dibar .bcards{display:flex;gap:calc(2px * var(--k,1))}
 
@@ -865,6 +1008,10 @@ body.force-land #app{
 #page-play .seatcol .ts.right .ts-i{text-align:right}
 #page-play .seatcol .ts .rl{font-size:calc(9px * var(--k,1));padding:0 calc(4px * var(--k,1));
   border-radius:calc(8px * var(--k,1));margin-left:calc(4px * var(--k,1))}
+/* 牌桌身份徽标：地主金底黑字 + 皇冠，农民绿底 —— 一眼分清谁是谁 */
+#page-play .rl.lord{background:linear-gradient(180deg,#f3c96b,#c9962f);color:#3a2600;
+  font-weight:800;box-shadow:0 0 calc(7px * var(--k,1)) rgba(243,201,107,.5);white-space:nowrap}
+#page-play .rl.farmer{background:linear-gradient(180deg,#7fd6a0,#3f9c6c);color:#04281f;font-weight:800;white-space:nowrap}
 #page-play .seatcol .ts .clock{
   width:calc(24px * var(--k,1));height:calc(24px * var(--k,1));border-radius:50%;
   display:grid;place-items:center;font-size:calc(11px * var(--k,1));font-weight:700;flex:0 0 auto}
@@ -934,8 +1081,9 @@ body.force-land #app{
 #page-play .topseats:empty{display:none}
 
 /* 牌桌朝向切换按钮：默认横屏，点一下切竖屏 */
+/* 竖屏按钮放右上角：原来在右下角，和聊天按钮（tablechat）几乎贴在一起，容易误触 */
 .orientbtn{position:absolute;right:calc(10px + env(safe-area-inset-right,0px));
-  bottom:calc(52px + var(--safe-b));z-index:26;
+  top:calc(6px + var(--safe-t));z-index:26;
   padding:calc(5px * var(--k,1)) calc(10px * var(--k,1));border-radius:calc(20px * var(--k,1));
   background:rgba(0,0,0,.42);border:1px solid rgba(255,255,255,.16);color:var(--txt);
   font-size:calc(11px * var(--k,1));font-weight:700;cursor:pointer;
@@ -985,15 +1133,22 @@ body.force-land #app{
    ================================================================== */
 #page-play .table{
   display:grid;
+  /* 列宽必须锁死成 minmax(0,1fr)：
+     默认的 auto 列会被最宽的子项撑开 —— 底牌区为了给右上角竖屏按钮留位
+     加了 56px 右内边距，结果整列被撑得比屏幕还宽，手牌跟着溢出屏幕。 */
+  grid-template-columns:minmax(0,1fr);
   grid-template-rows:auto minmax(0,1fr) auto auto auto auto;
-  height:100%;padding:0 4px}
+  height:100%;padding:0 4px;overflow:hidden}
 #page-play .dibar{grid-row:1}
 #page-play .field{grid-row:2;min-height:0}
 #page-play .topseats:empty{display:none}
+/* 行顺序：底牌(1) 对局区(2) 顶部座位(3) 我出的牌(4) 叫分/出牌提示(5) 我的头像昵称(6) 我的手牌(7)
+   以前提示在最后一行（手牌下面），叫分/出牌时视线要来回跳；
+   现在提示紧贴手牌上方，头像昵称夹在提示和手牌之间，离手牌最近。 */
 #page-play .myplayed{grid-row:4}
-#page-play .myinfo{grid-row:5}
-#page-play .handwrap{grid-row:6}
-#page-play #action-zone{grid-row:7;min-height:0}
+#page-play #action-zone{grid-row:5;min-height:0}
+#page-play .myinfo{grid-row:6}
+#page-play .handwrap{grid-row:7}
 
 /* 出牌区：不换行，超宽时内部横向滚动，绝不撑到下一行「往下面显示」 */
 #page-play .pcards{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;

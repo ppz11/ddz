@@ -94,8 +94,341 @@ window.Stickers = (function () {
     if (kind === 'emoji') return null;         // 交给文本渲染
     return svgOf(PACK_FACE.concat(PACK_OBJ).filter(function (x) { return x.id === id; })[0] || PACK_FACE[0]);
   }
+  /* ===================== 用户导入的表情包 =====================
+   * 支持两种来源：
+   *   1) 直接选多张图片 → 自动打包成一组
+   *   2) 上传 JSON 配置 → 网上下载的通用表情包格式
+   *      { "name":"包名", "items":[ {"name":"笑","url":"https://..."} ] }
+   *      也兼容 "stickers" / "list" 作为 items 的别名
+   * 导入后存 localStorage，并把新包设为默认，方便马上使用。
+   * ============================================================ */
+  var LS_KEY = 'ddz_sticker_packs', LS_DEF = 'ddz_sticker_default', LS_BIG = 'ddz_sticker_big';
+  var USER_PACKS = [];
+  var DEFAULT_PACK = '';
+
+  var BIG = false;
+  function isBig() { return BIG; }
+  function setBig(v) { BIG = !!v; try { localStorage.setItem(LS_BIG, BIG ? '1' : '0'); } catch (e) { } }
+
+  function loadPacks() {
+    try {
+      USER_PACKS = JSON.parse(localStorage.getItem(LS_KEY) || '[]') || [];
+    } catch (e) { USER_PACKS = []; }
+    try { BIG = localStorage.getItem(LS_BIG) === '1'; } catch (e) { BIG = false; }
+    try { DEFAULT_PACK = localStorage.getItem(LS_DEF) || ''; } catch (e) { DEFAULT_PACK = ''; }
+    if (DEFAULT_PACK && !packById(DEFAULT_PACK)) DEFAULT_PACK = '';
+    if (!DEFAULT_PACK && USER_PACKS.length) DEFAULT_PACK = USER_PACKS[0].id;
+  }
+  function savePacks() {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(USER_PACKS));
+      localStorage.setItem(LS_DEF, DEFAULT_PACK || '');
+    } catch (e) { }
+  }
+  function packById(id) {
+    for (var i = 0; i < USER_PACKS.length; i++) if (USER_PACKS[i].id === id) return USER_PACKS[i];
+    return null;
+  }
+  function newId() { return 'up' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+  /* 新增一包，并把它设为默认（用户要求：新增的作为默认表情包） */
+  function addPack(name, items, cb) {
+    items = (items || []).filter(Boolean);
+    if (!items.length) { cb && cb('没有可用的表情'); return null; }
+    var pk = { id: newId(), name: String(name || '我的表情').slice(0, 20), items: items, ts: Date.now() };
+    USER_PACKS.push(pk);
+    DEFAULT_PACK = pk.id;                 // 新增即默认
+    savePacks();
+    cb && cb(null, pk);
+    return pk;
+  }
+  function removePack(id) {
+    USER_PACKS = USER_PACKS.filter(function (x) { return x.id !== id; });
+    if (DEFAULT_PACK === id) DEFAULT_PACK = USER_PACKS.length ? USER_PACKS[0].id : '';
+    savePacks();
+  }
+  function setDefault(id) { DEFAULT_PACK = id; savePacks(); }
+
+  /* ---------- 动态表情识别 ----------
+   * GIF / APNG / 动态 WebP 一律不压缩：canvas 绘制只会留下第一帧，动图会变死图。
+   * 判断方式直接读文件字节，不依赖浏览器解码。 */
+  function isAnimated(file, buf, cb) {
+    var t = String(file.type || '').toLowerCase();
+    var nm = String(file.name || '').toLowerCase();
+    if (t === 'image/gif' || /\.gif$/.test(nm)) return cb(true);
+    if (t === 'image/apng') return cb(true);
+    var fr = new FileReader();
+    fr.onload = function () {
+      var b = new Uint8Array(fr.result || new ArrayBuffer(0));
+      if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50) {
+        for (var i = 8; i + 4 <= b.length - 4; i++) {
+          var tag = String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
+          if (tag === 'IDAT') break;
+          if (tag === 'acTL') return cb(true);
+        }
+        return cb(false);
+      }
+      var head = '';
+      for (var j = 0; j < Math.min(b.length, 64); j++) head += String.fromCharCode(b[j]);
+      if (head.indexOf('RIFF') === 0 && head.indexOf('WEBP') === 8) {
+        var all = '';
+        for (var k = 0; k < Math.min(b.length, 4096); k++) all += String.fromCharCode(b[k]);
+        return cb(all.indexOf('ANIM') >= 0 || all.indexOf('ANMF') >= 0);
+      }
+      cb(false);
+    };
+    fr.onerror = function () { cb(false); };
+    fr.readAsArrayBuffer(file.slice(0, 4096));
+  }
+  /* 动图原样存：只做体积上限保护，绝不走 canvas */
+  var ANIM_MAX = 2.5 * 1024 * 1024;
+  function keepOriginal(file, cb) {
+    if (file.size > ANIM_MAX) { cb(null, '动图超过 2.5MB，请换小一点的'); return; }
+    var fr = new FileReader();
+    fr.onload = function () { cb(String(fr.result), null); };
+    fr.onerror = function () { cb(null, '读取失败'); };
+    fr.readAsDataURL(file);
+  }
+
+  /* 图片压缩到 160px 再存，避免 localStorage 被几十张大图撑爆 */
+  function shrink(file, max, cb) {
+    max = max || 160;
+    var fr = new FileReader();
+    fr.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        var sc = Math.min(1, max / Math.max(img.width, img.height));
+        var w = Math.max(1, Math.round(img.width * sc)), h = Math.max(1, Math.round(img.height * sc));
+        var cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        try { cb(cv.toDataURL('image/png')); } catch (e) { cb(null); }
+      };
+      img.onerror = function () { cb(null); };
+      img.src = fr.result;
+    };
+    fr.onerror = function () { cb(null); };
+    fr.readAsDataURL(file);
+  }
+
+  /* 从一组图片文件建包：动图原样保留，静图压缩 */
+  function fromFiles(files, cb) {
+    var list = Array.prototype.slice.call(files || []).filter(function (f) {
+      return f && (/^image\//.test(f.type) || /\.(gif|png|webp|jpg|jpeg)$/i.test(f.name || ''));
+    });
+    if (!list.length) { cb && cb('请选择图片文件'); return; }
+    var items = [], done = 0, animCnt = 0, note = '';
+    list.forEach(function (f, i) {
+      var nm = (f.name || '').replace(/\.[^.]+$/, '').slice(0, 12);
+      isAnimated(f, null, function (anim) {
+        var finish = function (url, err) {
+          done++;
+          if (url) {
+            items.push({ id: 'i' + i, name: nm, url: url, anim: !!anim,
+                         mime: (f.type || (anim ? 'image/gif' : 'image/png')) });
+            if (anim) animCnt++;
+          } else if (err) note = err;
+          if (done === list.length) {
+            items.sort(function (a, b) { return a.id > b.id ? 1 : -1; });
+            var pn = list.length > 1 ? ('导入表情(' + items.length + ')') : (items[0] && items[0].name);
+            addPack(pn, items, function (e, pk) {
+              cb && cb(note || e, pk, animCnt);
+            });
+          }
+        };
+        if (anim) keepOriginal(f, finish);
+        else shrink(f, 160, function (u) { finish(u, u ? null : '图片读取失败'); });
+      });
+    });
+  }
+
+  /* 从 JSON 配置建包：兼容几种常见写法 */
+  function fromJSON(text, cb) {
+    var o = null;
+    try { o = JSON.parse(text); } catch (e) { cb && cb('不是合法的 JSON 文件'); return; }
+    if (!o || typeof o !== 'object') { cb && cb('配置内容为空'); return; }
+    var name = o.name || o.title || o.pack || '导入表情';
+    var raw = o.items || o.stickers || o.list || o.emojis || (Array.isArray(o) ? o : null);
+    if (!Array.isArray(raw)) { cb && cb('配置里没有表情列表'); return; }
+    var items = [];
+    raw.forEach(function (x, i) {
+      if (typeof x === 'string') {
+        items.push({ id: 'j' + i, name: '', url: x, anim: /^data:image\/gif|\.gif(\?|$)/i.test(x) });
+        return;
+      }
+      if (x && (x.url || x.src || x.image || x.file)) {
+        var u = x.url || x.src || x.image || x.file;
+        items.push({ id: x.id || ('j' + i), name: x.name || x.title || '', url: u,
+                     anim: (x.anim !== undefined ? !!x.anim : /^data:image\/(gif|apng)|\.gif(\?|$)/i.test(u)) });
+      }
+    });
+    if (!items.length) { cb && cb('没解析出任何表情'); return; }
+    addPack(name, items, cb);
+  }
+
+  /* 取某一包里某个表情的可显示内容 */
+  function packItemHTML(id, idx) {
+    var pk = packById(id); if (!pk) return '';
+    var it = pk.items[idx]; if (!it) return '';
+    return '<img src="' + it.url + '" alt="' + (it.name || '') + '">';
+  }
+  /* 整包预览（用于面板列表） */
+  function packThumb(id) {
+    var pk = packById(id); if (!pk || !pk.items.length) return '';
+    return '<img src="' + pk.items[0].url + '">';
+  }
+
+  /* dataURL → File，便于走上传接口把表情发给对方 */
+  function dataURLtoFile(url, name, mime) {
+    try {
+      var a = url.split(',');
+      mime = mime || (a[0].match(/:(.*?);/) || [])[1] || 'image/png';
+      var bin = atob(a[1] || ''), arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return new File([arr], name || 'sticker.png', { type: mime });
+    } catch (e) { return null; }
+  }
+
+  /* 导入界面：选图片 / 上传 JSON，并管理已导入的包 */
+  function openImport(onPick) {
+    var box = document.createElement('div');
+    box.className = 'modal'; box.id = 'stk-import';
+    function packsHTML() {
+      if (!USER_PACKS.length) return '<div style="text-align:center;color:var(--sub);font-size:12px;padding:10px 0">还没有导入的表情包</div>';
+      return USER_PACKS.map(function (pk) {
+        var on = (pk.id === DEFAULT_PACK) ? ' on' : '';
+        return '<div class="spk' + on + '" data-id="' + pk.id + '">' +
+          '<div class="th"><img src="' + pk.items[0].url + '"></div>' +
+          '<div class="nm">' + (pk.name || '我的表情') + '（' + pk.items.length + '）</div>' +
+          '<div class="op"><button data-a="def">设为默认</button><button data-a="del">删除</button></div></div>';
+      }).join('');
+    }
+    function gridHTML() {
+      var pk = packById(DEFAULT_PACK);
+      if (!pk) return '<div style="text-align:center;color:var(--sub);font-size:12px;padding:14px 0">先导入一个表情包</div>';
+      return pk.items.map(function (it, i) {
+        return '<button class="stk" data-i="' + i + '">' +
+          '<img src="' + it.url + '" alt="' + (it.name || '') + '">' +
+          (it.anim ? '<span class="gif">GIF</span>' : '') + '</button>';
+      }).join('');
+    }
+    box.innerHTML = '<div class="box" style="max-width:340px">' +
+      '<h3>表情包</h3>' +
+      '<p style="margin-bottom:8px">导入后自动设为默认<br>' +
+      '<span style="font-size:11px;opacity:.75">支持多选图片，或上传 JSON 配置</span></p>' +
+      '<div class="row" style="margin-bottom:10px">' +
+      '<button class="btn" id="sk-img">选图片</button>' +
+      '<button class="btn" id="sk-json">上传配置</button>' +
+      '<button class="btn' + (BIG ? ' jade' : '') + '" id="sk-big">大图</button></div>' +
+      '<div class="spk-list" id="sk-list" style="max-height:22vh;overflow-y:auto;-webkit-overflow-scrolling:touch">' +
+      packsHTML() + '</div>' +
+      '<div class="sk-grid" id="sk-grid" style="margin-top:10px;max-height:34vh;overflow-y:auto;-webkit-overflow-scrolling:touch">' +
+      gridHTML() + '</div>' +
+      '<div class="row" style="margin-top:12px"><button class="btn ghost" id="sk-close">关闭</button></div></div>';
+    document.body.appendChild(box);
+
+    /* 挂在弹窗内部并给固定 id：挂到 body 上会和聊天页的图片选择框撞车，
+       导致选了图却导入不进去。 */
+    var fi = document.createElement('input');
+    fi.type = 'file'; fi.accept = 'image/*'; fi.multiple = true; fi.style.display = 'none';
+    fi.id = 'sk-fi';
+    var fj = document.createElement('input');
+    fj.type = 'file'; fj.accept = '.json,application/json'; fj.style.display = 'none';
+    fj.id = 'sk-fj';
+    box.appendChild(fi); box.appendChild(fj);
+
+    fi.onchange = function () {
+      fromFiles(fi.files, function (err, pk) {
+        fi.value = '';
+        if (err) { (window.App && App.toast) ? App.toast(err) : 0; return; }
+        refresh();
+        (window.App && App.toast) && App.toast('已导入，并设为默认');
+      });
+    };
+    fj.onchange = function () {
+      var f = fj.files && fj.files[0]; if (!f) return;
+      var fr = new FileReader();
+      fr.onload = function () {
+        fj.value = '';
+        fromJSON(String(fr.result), function (err, pk) {
+          if (err) { (window.App && App.toast) ? App.toast(err) : 0; return; }
+          refresh();
+          (window.App && App.toast) && App.toast('已导入，并设为默认');
+        });
+      };
+      fr.readAsText(f);
+    };
+
+    function refresh() {
+      var l = box.querySelector('#sk-list'); if (l) l.innerHTML = packsHTML();
+      var g = box.querySelector('#sk-grid'); if (g) { g.innerHTML = gridHTML(); g.classList.toggle('big', BIG); }
+      bindList(); bindGrid();
+    }
+    var skRefresh = refresh;
+    function bindList() {
+      box.querySelectorAll('.spk').forEach(function (el) {
+        el.querySelectorAll('.op button').forEach(function (b) {
+          b.onclick = function (e) {
+            e.stopPropagation();
+            var id = el.dataset.id;
+            if (b.dataset.a === 'def') { setDefault(id); refresh(); }
+            else { removePack(id); refresh(); }
+          };
+        });
+        el.onclick = function () { setDefault(el.dataset.id); refresh(); };
+      });
+    }
+    function bindGrid() {
+      box.querySelectorAll('.stk').forEach(function (b) {
+        var tm = null, moved = false;
+        var fire = function () {
+          var pk = packById(DEFAULT_PACK); if (!pk) return;
+          var it = pk.items[+b.dataset.i]; if (!it) return;
+          onPick && onPick(dataURLtoFile(it.url, (it.name || 'sticker') + (it.anim ? '.gif' : '.png'), it.mime), pk, it);
+          close();
+        };
+        b.onclick = function () { if (moved) { moved = false; return; } fire(); };
+        /* 长按 → 大图预览：先看清楚再决定发不发 */
+        b.addEventListener('touchstart', function () {
+          moved = false; tm = setTimeout(function () { moved = true; preview(b.querySelector('img').src); }, 420);
+        }, { passive: true });
+        b.addEventListener('touchend', function () { clearTimeout(tm); }, { passive: true });
+        b.addEventListener('touchmove', function () { clearTimeout(tm); }, { passive: true });
+        b.addEventListener('contextmenu', function (e) { e.preventDefault(); preview(b.querySelector('img').src); });
+      });
+    }
+    /* 大图预览浮层：点任意处关闭 */
+    function preview(src) {
+      var ov = document.createElement('div');
+      ov.className = 'stk-preview';
+      ov.innerHTML = '<img src="' + src + '">';
+      ov.onclick = function () { ov.remove(); };
+      document.body.appendChild(ov);
+    }
+    function close() { box.remove(); }
+    box.querySelector('#sk-big').onclick = function () {
+      setBig(!BIG);
+      box.querySelector('#sk-big').className = 'btn' + (BIG ? ' jade' : '');
+      skRefresh();
+    };
+    box.querySelector('#sk-img').onclick = function () { fi.click(); };
+    box.querySelector('#sk-json').onclick = function () { fj.click(); };
+    box.querySelector('#sk-close').onclick = close;
+    box.onclick = function (e) { if (e.target === box) close(); };
+    bindList(); bindGrid();
+  }
+
+  loadPacks();
+
   return {
     PACK_FACE: PACK_FACE, PACK_OBJ: PACK_OBJ, EMOJI: EMOJI,
-    svgOf: svgOf, render: render, html: html
+    svgOf: svgOf, render: render, html: html,
+    /* 导入相关 */
+    get packs() { return USER_PACKS; },
+    get defaultId() { return DEFAULT_PACK; },
+    addPack: addPack, removePack: removePack, setDefault: setDefault,
+    fromFiles: fromFiles, fromJSON: fromJSON, packById: packById,
+    packItemHTML: packItemHTML, packThumb: packThumb, reload: loadPacks,
+    openImport: openImport, dataURLtoFile: dataURLtoFile,
+    isBig: isBig, setBig: setBig
   };
 })();

@@ -145,11 +145,15 @@
           </div>
           <div class="topseats" id="seat-top"></div>
           <div class="myplayed" id="my-played"></div>
+          <!-- 顺序：叫分/出牌提示 → 我的头像昵称 → 我的手牌。
+               以前按钮在最底下，头像昵称离手牌很远，且提示被压在牌下方看不见。 -->
+          <div id="action-zone"></div>
           <div class="myinfo" id="my-info"></div>
           <div class="handwrap"><div class="hand" id="hand"></div></div>
-          <div id="action-zone"></div>
         </div>
         <button class="tablechat" id="btn-table-chat">💬</button>
+        <!-- 牌桌短语音：按住说话，松手自动发送，对方自动播放 -->
+        <button class="tablevoice" id="btn-table-voice">🎤</button>
         <button class="orientbtn" id="btn-orient">⛶ 竖屏</button>
         <div class="ruletip hidden" id="rule-tip"></div>
         <div class="tchat hidden" id="tchat"></div>
@@ -196,7 +200,6 @@
         <div class="setbox">
           <div class="set-hd">邀请在线好友</div>
           <div class="invite-list" id="invite-list"><div class="empty">正在获取在线玩家…</div></div>
-          <div class="tip-line">没有真人加入时，系统会自动邀请在线玩家上桌，牌桌上完全看不出区别</div>
         </div>
 
         <div style="margin:4px 14px 20px">
@@ -207,7 +210,9 @@
 
       <!-- 聊天 -->
       <section class="page" id="page-chat">
-        <div class="clist-hd"><span>消息</span><button id="chat-manage">管理</button></div>
+        <div class="clist-hd"><span>消息</span>
+          <button id="chat-friends">👥 好友</button>
+          <button id="chat-manage">管理</button></div>
         <div class="clist" id="chat-list"></div>
       </section>
 
@@ -234,8 +239,6 @@
         <div class="rowset">音效<button class="sw on" id="sw-sound"><i></i></button></div>
         <div class="rowset">出牌语音播报<button class="sw on" id="sw-voice"><i></i></button></div>
         <div class="rowset">背景音乐<button class="sw on" id="sw-bgm"><i></i></button></div>
-        <div class="rowset">隐私伪装<button class="sw" id="sw-disguise"><i></i></button></div>
-        <div class="tipline">开启后会话内容会伪装成「邀请你开局」，语音/图片/视频将不再显示</div>
         <div class="rowset">出牌震动<button class="sw on" id="sw-vibe"><i></i></button></div>
         <div class="rowset" id="row-testconv" style="cursor:pointer">🧪 重新生成测试会话<span style="color:#5c6b66;font-size:11px">试用</span></div>
         <div style="height:16px"></div>

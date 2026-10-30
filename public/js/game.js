@@ -6,17 +6,38 @@ window.Game = (function () {
   var tcMsgs = [], tcOpen = false, tcRec = null, tcChunks = [], tcStream = null, tcStart = 0, tcCancel = false;
 
   var SUIT = { S: '♠', H: '♥', C: '♣', D: '♦' };
+  /* 服务端广播的真人玩家名单（lobby.all），供「邀请在线好友」选择框使用。
+     以前「邀请在线玩家」直接补一个机器人，真人根本没被通知到。 */
+  var roster = [];
 
-  /* 大王小王：精致版（皇冠 + 五角星 + 描边大字） */
+  /* 大王小王：手绘 SVG 皇冠 + 角标 + 描边大字。
+     原来用 ♛♕ 字符，不同手机上字体渲染差异很大（有的显示成方块），看着就丑。
+     改成内联 SVG，任何手机都是同一个精致造型。 */
+  var CROWN_SVG =
+    '<svg class="jk-crown" viewBox="0 0 24 18" aria-hidden="true">' +
+    '<defs><linearGradient id="ckg" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0" stop-color="#ffe9a8"/><stop offset="1" stop-color="#c9962f"/>' +
+    '</linearGradient></defs>' +
+    '<path d="M2.2 15.5 L3.6 5.2 L7.6 10.2 L12 2.6 L16.4 10.2 L20.4 5.2 L21.8 15.5 Z" ' +
+    'fill="url(#ckg)" stroke="#8a6318" stroke-width="0.7" stroke-linejoin="round"/>' +
+    '<rect x="1.6" y="15.2" width="20.8" height="2.1" rx="0.9" fill="url(#ckg)" stroke="#8a6318" stroke-width="0.7"/>' +
+    '<circle cx="12" cy="1.2" r="1.1" fill="#ffe9a8" stroke="#8a6318" stroke-width="0.5"/>' +
+    '<circle cx="3.6" cy="4.2" r="1" fill="#ffe9a8" stroke="#8a6318" stroke-width="0.5"/>' +
+    '<circle cx="20.4" cy="4.2" r="1" fill="#ffe9a8" stroke="#8a6318" stroke-width="0.5"/>' +
+    '</svg>';
   function jokerInner(c, small) {
     var big = c.joker === 'big';
+    var tag = big ? '大' : '小';
     if (small) {
-      return '<div class="ctr"><div class="jk' + (big ? ' b' : '') + '">' + (big ? '大' : '小') + '</div></div>';
+      /* 小尺寸（出牌区 / 底牌）：皇冠 + 一个「王」字 + 左上角标 */
+      return '<div class="ctr jk-mini' + (big ? ' b' : '') + '">' +
+        '<span class="jk-tag">' + tag + '</span>' +
+        '<span class="jk-w">王</span></div>';
     }
     return '<div class="ctr jk-full' + (big ? ' b' : '') + '">' +
-      '<div class="jk-crown">' + (big ? '♛' : '♕') + '</div>' +
-      '<div class="jk-char">' + (big ? '大' : '小') + '<span>王</span></div>' +
-      '<div class="jk-star">★</div>' +
+      '<span class="jk-corner">' + tag + '</span>' +
+      CROWN_SVG +
+      '<div class="jk-w">王</div>' +
       '<div class="jk-en">JOKER</div></div>';
   }
   function cardHTML(c, cls) {
@@ -67,7 +88,9 @@ window.Game = (function () {
     var r0 = wrap ? wrap.getBoundingClientRect() : null;
     var top = r0 ? r0.top : 0;
     var availH = (top > 8) ? (vh - top - 6) : (vh * 0.29);
-    var maxH = Math.max(50, Math.min(108, availH));
+    /* 手牌放大：原来上限 108 偏小，选牌时手指容易点错。
+       提到 124，同时 w 上限 74→84；仍受 availH 约束，不会溢出屏幕。 */
+    var maxH = Math.max(56, Math.min(124, availH));
     /* 扣掉手牌区真实的上内边距（选中牌上抬需要空间），而不是写死 14 */
     var padT = 14;
     try {
@@ -75,17 +98,71 @@ window.Game = (function () {
       if (hd0) { var pv = parseFloat(getComputedStyle(hd0).paddingTop); if (pv > 0) padT = pv; }
     } catch (e) { }
     var wByH = (maxH - padT) / 1.42;
-    var w = Math.max(34, Math.min(74, wByW, wByH));
+    var w = Math.max(36, Math.min(84, wByW, wByH));
     var h = document.getElementById('hand');
-    if (h) {
-      h.style.setProperty('--card-w', Math.round(w) + 'px');
-      h.style.setProperty('--card-h', Math.round(w * 1.42) + 'px');
-      h.style.setProperty('--ov', '-' + Math.round(w * 0.62) + 'px');
+    function apply(w0) {
+      if (!h) return;
+      h.style.setProperty('--card-w', Math.round(w0) + 'px');
+      h.style.setProperty('--card-h', Math.round(w0 * 1.42) + 'px');
+      h.style.setProperty('--ov', '-' + Math.round(w0 * 0.62) + 'px');
     }
+    apply(w);
+    /* 渲染后再量一次：上面是估算，遇到窄屏 / 牌特别多时会偏大。
+       实测内容超出容器就按比例收回，保证最后一张牌一定完整露出来
+       —— 手牌放大后这道校准更不能少。 */
+    requestAnimationFrame(function () {
+      var hd = document.getElementById('hand');
+      if (!hd) return;
+      var need = hd.scrollWidth, have = hd.clientWidth;
+      if (have > 20 && need > have + 2) {
+        apply(Math.max(34, Math.floor(w * have / need) - 1));
+      }
+    });
+  }
+
+  /* ---------- 牌桌短语音：按住说话，松手自动发送 ----------
+     按住期间会广播「正在说话」，对方麦克风按钮上出现声波提示，
+     这样忽然听到声音不会觉得突兀。 */
+  var speaking = false;
+  function bindTableVoice() {
+    var btn = document.getElementById('btn-table-voice');
+    if (!btn || !window.Rec) return;
+    function flag(on) {
+      if (speaking === on) return;
+      speaking = on;
+      Net.send({ t: 'table:speaking', gid: gid, on: on });
+    }
+    window.Rec.hold(btn, function (r) {
+      flag(false);
+      Net.upload(r.file, 'voice', r.dur).then(function (up) {
+        if (up && up.err) { toast(up.err); return; }
+        Net.send({ t: 'room:chat', msg: { kind: 'voice', url: up.url, dur: r.dur, name: r.file.name, size: r.file.size } });
+        Sfx.send();
+      }).catch(function () { toast('发送失败'); });
+    });
+    /* hold 内部只绑了 up/down，这里再挂一层用来广播状态 */
+    function down() { flag(true); }
+    function up() { flag(false); }
+    btn.addEventListener('touchstart', down, { passive: true });
+    btn.addEventListener('touchend', up, { passive: true });
+    btn.addEventListener('touchcancel', up, { passive: true });
+    btn.addEventListener('mousedown', down);
+    btn.addEventListener('mouseup', up);
+  }
+  /* 收到别人的「正在说话」：在自己的麦克风按钮上显示声波 */
+  function onSpeaking(m) {
+    var btn = document.getElementById('btn-table-voice');
+    if (!btn) return;
+    if (m.on) btn.classList.add('speaking'); else btn.classList.remove('speaking');
   }
 
   function init() {
     bindHand();
+    bindTableVoice();
+    /* 保存真人名单：选择框要列出这些玩家 */
+    try {
+      Net.on('lobby', function (m) { roster = m.all || m.users || []; });
+    } catch (e) { }
     var b = document.getElementById('btn-table-chat');
     if (b) b.onclick = toggleTableChat;
   }
@@ -153,7 +230,7 @@ window.Game = (function () {
         if (!byMe && m.last.info) Sfx.announce(m.last.info);   // 自己的牌在 play() 里已播报
       } else if (!byMe) {
         Sfx.pass();
-        if (App.settings().voice) Sfx.speak('不要');
+        if (App.settings().voice) Sfx.speak('过');
       }
     }
     // 轮到我出牌 → 明确提示音
@@ -226,9 +303,14 @@ window.Game = (function () {
   }
 
   /* ---------------- 渲染 ---------------- */
+  /* 身份徽标：地主用皇冠、农民用麦穗。
+     以前只有「地主/农民」四个小字，混在昵称后面根本分辨不出来，
+     现在是带底色的一块，一眼能看到谁是谁。 */
   function roleTag(i) {
     if (!S || S.landlord < 0) return '';
-    return i === S.landlord ? '<span class="rl">地主</span>' : '<span class="rl f">农民</span>';
+    return i === S.landlord
+      ? '<span class="rl lord" title="地主">👑 地主</span>'
+      : '<span class="rl farmer" title="农民">🌾 农民</span>';
   }
   /* 昵称最多 8 个字：保证左右信息块宽度稳定，不会被超长昵称撑爆 */
   function shortName(u, def) {
@@ -247,6 +329,10 @@ window.Game = (function () {
       var x = ls[i];
       if (x && x.cards && x.cards.length) {
         return '<div class="pmine"><div class="pcards">' + rowHTML(x.cards) + '</div></div>';
+      }
+      /* 这一家主动「过」：用行楷写一个洒脱的「过」字，比干巴巴一个「—」清楚得多 */
+      if (x && x.pass) {
+        return '<div class="pmine"><div class="pcards passed"><span class="pass-word">过</span></div></div>';
       }
       if (S.last && S.last.by === i && i !== me) {
         return '<div class="pmine"><div class="pcards">' + rowHTML(S.last.cards) + '</div></div>';
@@ -300,7 +386,12 @@ window.Game = (function () {
 
     if (n === 3) {
       // 三人：另外两家分居左右，我在下方
-      var lI = (me + 1) % 3, rI = (me + 2) % 3;
+      /* 出牌转圈方向：引擎是 turn = (seat + 1) % n，即「我 → 下家 → 下下家 → 我」。
+         以前把 (me+1) 显示在左边，于是变成「我 → 左 → 右 → 我」，
+         轮到的是「右家出完才到我」，方向看着是反的。
+         这里把 (me+1) 放到右边：我 → 右 → 左 → 我，
+         正好符合「左上方的人出完就该我出」。 */
+      var lI = (me + 2) % 3, rI = (me + 1) % 3;
       elL.innerHTML = colHTML(seatHTML(lI, ''), playedOf(lI), 'left');
       elR.innerHTML = colHTML(seatHTML(rI, 'right'), playedOf(rI), 'right');
       elT.innerHTML = '';
@@ -328,10 +419,21 @@ window.Game = (function () {
       elMyP.innerHTML = '';
     }
 
+    /* 底牌区：除了三张底牌，还要显示「最终叫了几分」和「是否加倍」。
+       以前只有底牌，打牌过程中完全看不到这局是多少分、有没有人加倍。 */
     var bb = document.getElementById('bottom-bar');
-    bb.innerHTML = S.bottom && S.bottom.length
+    var bidTxt = '';
+    if (S.landlord >= 0) {
+      var score = (S.bid && S.bid.score) || 0;
+      if (S.rule === 'let46') bidTxt = '<span class="btag">让 ' + (S.letCount || 0) + ' 张</span>';
+      else if (score) bidTxt = '<span class="btag">叫 ' + score + ' 分</span>';
+      else bidTxt = '<span class="btag">抢地主</span>';
+      if (S.doubled && S.doubled.length) bidTxt += '<span class="btag dbl">已加倍 ×' + S.multiplier + '</span>';
+      else if (S.phase === 'play' || S.phase === 'over') bidTxt += '<span class="btag nod">未加倍 ×' + S.multiplier + '</span>';
+    }
+    bb.innerHTML = (S.bottom && S.bottom.length
       ? '<span class="lbl">底牌</span><div class="bcards">' + S.bottom.map(function (c) { return cardHTML(c, 'tiny'); }).join('') + '</div>'
-      : '<span class="lbl" style="opacity:.6">底牌未公开</span>';
+      : '<span class="lbl" style="opacity:.6">底牌未公开</span>') + bidTxt;
 
     var mid = document.getElementById('played');
     // 两人场「我」在右侧，底部没有个人信息行 → 倍数/让牌数改在牌桌中央显示
@@ -462,6 +564,7 @@ window.Game = (function () {
     var nt = document.getElementById('mid-notice');
     nt.classList.add('hidden');
     if (S.phase === 'bid') { z.innerHTML = bidHTML(); startBidTimer(); return; }
+    if (S.phase === 'double') { z.innerHTML = doubleHTML(); bindDouble(); return; }
     if (S.phase === 'over') { z.innerHTML = ''; return; }
     if (S.turn !== mySeat) {
       z.innerHTML = '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.6">等待' +
@@ -475,6 +578,35 @@ window.Game = (function () {
       '<button class="btn ghost" id="btn-hint" onclick="Game.hint()">提示</button>' +
       '<button class="btn" id="btn-play" onclick="Game.play()">出牌</button></div>';
     updateActions();
+  }
+
+  /* 加倍阶段：只有「没轮到叫分」的人会看到这个界面。
+     已经叫过分的玩家没有加倍权（服务端引擎双重校验）。 */
+  function doubleHTML() {
+    var mine = (S.doubleTurn === mySeat);
+    var who = S.seats[S.doubleTurn];
+    var bidScore = (S.bid && S.bid.score) || 1;
+    if (!mine) {
+      return '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.7">等待 ' +
+        esc(who ? who.nick : '对手') + ' 决定是否加倍…</div></div>';
+    }
+    return '<div class="bidwrap"><div style="font-size:11px;color:var(--sub);text-align:center;line-height:1.4">' +
+      '地主叫 ' + bidScore + ' 分定庄，你没轮到叫分<br>可以选择是否加倍（当前 ×' + S.multiplier + '）</div>' +
+      '<div class="row2">' +
+      '<button class="btn ghost" id="btn-dno">不加倍</button>' +
+      '<button class="btn jade" id="btn-dyes">加倍 ×2</button></div></div>';
+  }
+  function doDouble(yes) {
+    if (!S || S.phase !== 'double') return;
+    Sfx.click();
+    if (App.settings().voice) Sfx.speak(yes ? '加倍' : '不加倍');
+    Net.send({ t: 'game:double', yes: !!yes });
+  }
+  function bindDouble() {
+    var a = document.getElementById('btn-dyes');
+    var b = document.getElementById('btn-dno');
+    if (a) a.onclick = function () { doDouble(true); };
+    if (b) b.onclick = function () { doDouble(false); };
   }
 
   function bidHTML() {
@@ -529,7 +661,7 @@ window.Game = (function () {
     var need = (S.last && S.last.by !== mySeat) ? S.last.info : null;
     if (!need) { toast('你是先手，必须出牌'); return; }
     Sfx.pass();
-    if (App.settings().voice) Sfx.speak('不要');
+    if (App.settings().voice) Sfx.speak('过');
     sel = {};
     Net.send({ t: 'game:play', ids: [] });
   }
@@ -552,11 +684,77 @@ window.Game = (function () {
     /* act: 0=不叫 1/2/3=分数；也可能是 'grab'(抢) / 'nograb'(不抢) */
     var n = (act === 'grab') ? 3 : (act === 'nograb' ? 0 : (Number(act) || 0));
     Sfx.bid(n);
+    /* 叫分语音播报：以前只有音效没有语音，光听声音不知道叫了几分 */
+    if (App.settings().voice) {
+      var txt = (act === 'grab') ? '抢地主' : (act === 'nograb' ? '不抢' : (n ? ('叫' + n + '分') : '不叫'));
+      Sfx.speak(txt);
+    }
     Net.send({ t: 'game:bid', act: act });
   }
   function resign() { App.confirm('确定认输吗？', '认输将直接判负', function () { Net.send({ t: 'game:resign' }); }); }
   function leave() { Net.send({ t: 'room:leave' }); App.go('home'); toast('已离开房间'); }
-  function addBot() { Net.send({ t: 'room:joinbot', gid: gid }); }
+  /* 邀请在线好友：弹出选择框，列出真人玩家（在线的排前面），可多选。
+     「全部邀请」仍然默认补机器人（fillAll 行为不变）。 */
+  function addBot() { openInvitePicker(); }
+
+  function openInvitePicker() {
+    Net.send({ t: 'lobby' });                       // 先刷新名单
+    var list = roster.filter(function (x) { return x && x.uid; });
+    var free = 0;
+    if (myRoom) free = myRoom.seats.filter(function (x) { return !x; }).length
+                     + myRoom.seats.filter(function (x) { return x && x.bot; }).length;
+    if (!free) free = 1;
+    var picked = {};
+    var box = document.createElement('div');
+    box.className = 'modal';
+    box.id = 'invite-picker';
+    function rowHTMLOf(u) {
+      var on = !!u.online;
+      return '<div class="iu' + (on ? '' : ' off') + '" data-uid="' + u.uid + '">' +
+        '<div class="a">' + (u.avatar && u.avatar.face != null ? '' : '🙂') + '</div>' +
+        '<div class="n">' + esc(u.nick || '玩家') + '</div>' +
+        '<div class="tag">' + (on ? '在线' : '离线') + '</div>' +
+        '<div class="ck"></div></div>';
+    }
+    var body = list.length
+      ? list.map(rowHTMLOf).join('')
+      : '<div style="text-align:center;color:var(--sub);font-size:12px;padding:18px 0">' +
+        '暂无其他真人玩家<br><span style="font-size:11px;opacity:.7">可以先用「全部邀请」凑机器人开局</span></div>';
+    box.innerHTML = '<div class="box" style="max-width:340px">' +
+      '<h3>邀请在线好友</h3>' +
+      '<p style="margin-bottom:8px">选择要邀请的真人玩家（可多选，最多 ' + free + ' 位）<br>' +
+      '<span style="font-size:11px;opacity:.75">离线的也会收到邀请卡片，上线后可直接进入</span></p>' +
+      '<div class="invite-list" id="ip-list" style="max-height:46vh;overflow-y:auto;-webkit-overflow-scrolling:touch">' +
+      body + '</div>' +
+      '<div class="row" style="margin-top:12px">' +
+      '<button class="btn ghost" id="ip-cancel">取消</button>' +
+      '<button class="btn" id="ip-bot">全部邀请</button>' +
+      '<button class="btn jade" id="ip-ok">邀请</button></div></div>';
+    document.body.appendChild(box);
+
+    function close() { box.remove(); }
+    box.querySelector('#ip-cancel').onclick = close;
+    box.querySelector('#ip-bot').onclick = function () { close(); fillAll(); };
+    box.querySelector('#ip-ok').onclick = function () {
+      var uids = Object.keys(picked);
+      close();
+      if (!uids.length) { toast('还没有选择好友'); return; }
+      Net.send({ t: 'room:invitemany', gid: gid, tos: uids });
+      toast('已发出 ' + uids.length + ' 条邀请');
+    };
+    box.querySelectorAll('.iu').forEach(function (el) {
+      el.onclick = function () {
+        var uid = el.dataset.uid;
+        if (picked[uid]) { delete picked[uid]; el.classList.remove('sel'); }
+        else {
+          if (Object.keys(picked).length >= free) { toast('最多邀请 ' + free + ' 位'); return; }
+          picked[uid] = 1; el.classList.add('sel');
+        }
+        Sfx.click();
+      };
+    });
+    box.onclick = function (e) { if (e.target === box) close(); };
+  }
   function fillAll() {
     var n = myRoom ? myRoom.n : 2;
     var filled = myRoom ? myRoom.seats.filter(Boolean).length : 1;
@@ -681,11 +879,32 @@ window.Game = (function () {
     var v = el.value.trim(); if (!v) return;
     el.value = ''; tcSend({ kind: 'text', text: v }); Sfx.send();
   }
+  /* 自动播放收到的短语音：牌桌上不用再手动点播放 */
+  var voiceQueue = [], voicePlaying = false;
+  function autoPlayVoice(url) {
+    if (!url) return;
+    voiceQueue.push(url);
+    pumpVoice();
+  }
+  function pumpVoice() {
+    if (voicePlaying || !voiceQueue.length) return;
+    var url = voiceQueue.shift();
+    voicePlaying = true;
+    var a = null;
+    try { a = new Audio(Net.abs(url)); } catch (e) { voicePlaying = false; return; }
+    a.onended = function () { voicePlaying = false; pumpVoice(); };
+    a.onerror = function () { voicePlaying = false; pumpVoice(); };
+    var p = a.play();
+    if (p && p.catch) p.catch(function () { voicePlaying = false; pumpVoice(); });
+  }
+
   function onTableChat(m) {
     tcMsgs.push(m.msg); if (tcMsgs.length > 200) tcMsgs.shift();
     var badge = document.getElementById('btn-table-chat');
     if (badge && !tcOpen) { badge.classList.add('new'); setTimeout(function () { badge.classList.remove('new'); }, 2600); }
     renderTcMsgs(); Sfx.msg();
+    /* 语音消息直接播出来 —— 打牌时腾不出手去点播放 */
+    if (m.msg && m.msg.kind === 'voice' && m.msg.url) autoPlayVoice(m.msg.url);
   }
   /* 短语音（按住说话，松开发送，最长 15 秒）—— 原生录音优先 */
   function bindTcVoice(btn) {
@@ -746,7 +965,7 @@ window.Game = (function () {
     init: init, onRoom: onRoom, onGame: onGame, onResult: onResult, reset: reset,
     play: play, pass: pass, hint: hint, bid: bid, leave: leave, resign: resign, rematch: rematch,
     backHome: backHome, addBot: addBot, fillAll: fillAll, kickBot: kickBot,
-    onTableChat: onTableChat, closeTableChat: closeTableChat,
+    onTableChat: onTableChat, closeTableChat: closeTableChat, onSpeaking: onSpeaking,
     relayout: function () { try { setScale(); if (S) { fitHand(S.hand.length); render(); } } catch (e) { } },
     get state() { return S; }, get seat() { return mySeat; }, get gid() { return gid; }, get room() { return myRoom; }
   };

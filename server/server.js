@@ -18,7 +18,23 @@ const ADS = require('../shared/ads.js');
 const PORT = process.env.PORT || 8080;
 const PUBLIC = path.join(__dirname, '..', 'public');
 const SHARED = path.join(__dirname, '..', 'shared');
-const MAX_UPLOAD = 28 * 1024 * 1024;
+/* 把任意文件名压成 header 安全的 ASCII 形式。
+   - 非 ASCII（中文/emoji 等）→ '_'
+   - 引号、反斜杠、控制字符 → '_'（防 header 注入）
+   - 保留后缀，下载时仍是可用的文件名 */
+function asciiName(nm) {
+  var s = String(nm || 'file');
+  var dot = s.lastIndexOf('.');
+  var stem = dot > 0 ? s.slice(0, dot) : s;
+  var ext = dot > 0 ? s.slice(dot) : '';
+  stem = stem.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_').replace(/^[. ]+|[. ]+$/g, '');
+  ext = ext.replace(/[^\x20-\x7E]/g, '').replace(/["\\]/g, '');
+  if (stem.length > 60) stem = stem.slice(0, 60);
+  if (!stem) stem = 'file';
+  return stem + ext;
+}
+
+const MAX_UPLOAD = 300 * 1024 * 1024;
 
 /* ============================================================
  *  TURN 中继（语音 / 视频通话跨网络必备）
@@ -264,7 +280,7 @@ const server = http.createServer(async (req, res) => {
       const b = JSON.parse((await body(req)).toString() || '{}');
       if (!b.data) return json(res, 400, { err: 'empty' });
       const buf = Buffer.from(b.data, 'base64');
-      if (buf.length > MAX_UPLOAD) return json(res, 413, { err: '文件太大（上限 28MB）' });
+      if (buf.length > MAX_UPLOAD) return json(res, 413, { err: '文件太大（上限 300MB）' });
       const rec = store.putUpload(b.name || 'file', b.mime || 'application/octet-stream', buf, { kind: b.kind, dur: b.dur });
       return json(res, 200, { id: rec.id, url: '/api/file/' + rec.id, name: rec.name, size: rec.size, mime: rec.mime });
     }
@@ -297,19 +313,36 @@ const server = http.createServer(async (req, res) => {
         : /\.(avi)$/.test(nm) ? 'video/x-msvideo'
         : /\.(3gp)$/.test(nm) ? 'video/3gpp'
         : '';
+      /* 图片同样要按后缀兜底。
+         真机（尤其是相机拍完直接发、或从相册拿到的文件）常有 type 为空的情况，
+         上传时记下来的 mime 就是 application/octet-stream ——
+         WebView 收到这个类型会直接拒绝渲染 <img>，表现就是「图片加载失败」。 */
+      const imageByExt = /\.(png)$/.test(nm) ? 'image/png'
+        : /\.(jpe?g)$/.test(nm) ? 'image/jpeg'
+        : /\.(gif)$/.test(nm) ? 'image/gif'
+        : /\.(webp)$/.test(nm) ? 'image/webp'
+        : /\.(bmp)$/.test(nm) ? 'image/bmp'
+        : /\.(heic|heif)$/.test(nm) ? 'image/heic'
+        : /\.(svg)$/.test(nm) ? 'image/svg+xml'
+        : '';
       // webm / 3gp 既可能是音频也可能是视频 → 用上传时的 kind 来定
       const kind = String((rec.meta && rec.meta.kind) || '');
       const isVoice = (kind === 'voice');
-      const isVideo = (kind === 'video' || kind === 'image');
+      const isVideo = (kind === 'video');
       if (isVoice && audioByExt) mime = audioByExt;
       else if (isVideo && videoByExt) mime = videoByExt;
+      else if (imageByExt) mime = imageByExt;
       else if (videoByExt && !audioByExt) mime = videoByExt;
       else if (audioByExt) mime = audioByExt;
       else if (videoByExt) mime = videoByExt;
       const dl = url.searchParams.get('dl') === '1';
-      const disp = dl
-        ? 'attachment; filename="' + String(rec.name || 'file').replace(/["]/g, '') + '"; filename*=UTF-8\'\'' + encodeURIComponent(rec.name || 'file')
-        : 'inline; filename="' + String(rec.name || 'file').replace(/["]/g, '') + '"; filename*=UTF-8\'\'' + encodeURIComponent(rec.name || 'file');
+      /* Content-Disposition 里不能直接放中文。
+         Node 的 header 值只接受 latin1，遇到「不得不夸下我老公了.docx」这种名字会直接抛
+         "Invalid character in header content" —— 表现就是点下载/打开弹一段 JSON 报错。
+         做法：filename= 只放 ASCII 安全版本（中文和特殊符号换成 _），
+               真名通过 filename*=UTF-8''<urlencode> 给（浏览器/下载器都认这个）。 */
+      const disp = (dl ? 'attachment' : 'inline')
+        + '; filename="' + asciiName(rec.name) + '"; filename*=UTF-8\'\'' + encodeURIComponent(rec.name || 'file');
       const base = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Content-Disposition': disp };
       const range = req.headers.range;
       if (range) {
@@ -479,9 +512,15 @@ function gameView(g, seat, room) {
     dead: isOver ? g.dead.map(cardDTO) : null,
     openCard: cardDTO(g.openCard),
     bidTurn: g.bidTurn, firstBidder: g.firstBidder, bid: g.bid,
+    doubleTurn: (g.phase === 'double') ? DDZ.doubleTurn(g) : -1,
+    doubleSeats: g.doubleSeats || [], doubled: g.doubled || [],
     grabCount: g.grabCount, letCount: g.letCount, multiplier: g.multiplier,
     last: g.last ? { ids: g.last.ids, info: g.last.info, by: g.last.by, cards: g.last.cards.map(cardDTO) } : null,
-    lastSeat: g.lastSeat.map(function (x) { return x ? { info: x.info, by: x.by, cards: x.cards.map(cardDTO) } : null; }),
+    lastSeat: g.lastSeat.map(function (x) {
+      if (!x) return null;
+      if (x.pass) return { pass: true, by: x.by };
+      return { info: x.info, by: x.by, cards: x.cards.map(cardDTO) };
+    }),
     seats: room.seats.map(pubOf),
     result: g.result,
     farmerNeed: (g.rule === 'let46' && g.landlord >= 0 && g.phase === 'play')
@@ -512,7 +551,8 @@ function pushResult(room) {
 function scheduleBots(room) {
   clearBotTimers(room);
   const g = room.game; if (!g || g.phase === 'over') return;
-  const seat = (g.phase === 'bid') ? g.bidTurn : g.turn;
+  const seat = (g.phase === 'bid') ? g.bidTurn
+    : (g.phase === 'double') ? DDZ.doubleTurn(g) : g.turn;
   const who = room.seats[seat];
   if (process.env.DDZ_DEBUG) console.log('[sched] seat', seat, 'isBot', !!(who && who.bot), 'phase', g.phase, 'seats', room.seats.map(x => x ? (x.bot ? 'BOT' : 'P') : '-').join(','));
   if (!who || !who.bot) return;
@@ -524,6 +564,15 @@ function botAct(room, seat) {
   const g = room.game; if (!g || g.phase === 'over') return;
   const who = room.seats[seat]; if (!who || !who.bot) return;
   try {
+    if (g.phase === 'double') {
+      // 机器人加倍策略：手牌越有把握越倾向加倍
+      const strong = (g.hands[seat] || []).filter(c => c.v >= 15 || c.v === 14).length;
+      const yes = strong >= 2 || (g.hands[seat] || []).some(c => c.v >= 16);
+      DDZ.applyDouble(g, seat, yes);
+      pushGame(room);
+      scheduleBots(room);
+      return;
+    }
     if (g.phase === 'bid') {
       let act;
       if (g.rule === 'let46') act = g.landlord < 0 ? AI.bid(g, seat) : AI.grab(g, seat);
@@ -547,6 +596,33 @@ function botAct(room, seat) {
   } catch (e) { console.error('[bot]', e.message); }
   scheduleBots(room);
 }
+/* 加倍阶段真人超时兜底：4 秒不做决定视为「不加倍」。
+   没有这个兜底，一旦有人掉线/切后台，整桌都会卡在加倍界面。 */
+const doubleTimers = new Map();
+function clearDoubleTimer(gid) {
+  const t = doubleTimers.get(gid);
+  if (t) { clearTimeout(t); doubleTimers.delete(gid); }
+}
+function armDoubleTimeout(room) {
+  clearDoubleTimer(room.gid);
+  const g = room.game;
+  if (!g || g.phase !== 'double') return;
+  const seat = DDZ.doubleTurn(g);
+  if (seat < 0) return;
+  const who = room.seats[seat];
+  if (!who || who.bot) return;                 // 机器人由 scheduleBots 驱动
+  const t = setTimeout(() => {
+    doubleTimers.delete(room.gid);
+    if (!room.game || room.game.phase !== 'double') return;
+    if (DDZ.doubleTurn(room.game) !== seat) return;
+    DDZ.applyDouble(room.game, seat, false);
+    pushGame(room);
+    if (room.game.phase === 'double') { scheduleBots(room); armDoubleTimeout(room); }
+    else scheduleBots(room);
+  }, 4000);
+  doubleTimers.set(room.gid, t);
+}
+
 function tryStart(room) {
   if (room.game) return;
   if (room.seats.every(s => s)) {
@@ -748,8 +824,99 @@ function echoReply(ws, u, msg, via) {
   }, 320);
 }
 
+/* ---------- 好友名单 ----------
+ * 以「真人 pid」为单位存：换昵称 / 换 ID 后好友依旧在（一台手机 = 一个人）。
+ * via='main'  → db.friends   主界面聊天的好友
+ * via='secret'→ db.sfriends  隐私空间的好友（完全独立，不互通）
+ */
+function fMap(via) {
+  if (via === 'secret') { if (!db.sfriends) db.sfriends = {}; return db.sfriends; }
+  if (!db.friends) db.friends = {};
+  return db.friends;
+}
+function friendsOf(pid, via) {
+  const m = fMap(via);
+  if (!m[pid]) m[pid] = [];
+  return m[pid];
+}
+function addFriend(pid, fpid, via) {
+  if (pid === fpid) return { err: '不能添加自己' };
+  const arr = friendsOf(pid, via);
+  if (arr.some(x => x.pid === fpid)) return { err: '已经是好友了' };
+  arr.push({ pid: fpid, ts: Date.now() });
+  store.save();
+  return { ok: true };
+}
+function delFriend(pid, fpid, via) {
+  const m = fMap(via);
+  m[pid] = (m[pid] || []).filter(x => x.pid !== fpid);
+  store.save();
+  return { ok: true };
+}
+/* 把好友 pid 换成一个可聊天的 uid（优先取在线的那个） */
+function uidOfPid(pid) {
+  const p = db.persons[pid];
+  if (!p || !p.uids || !p.uids.length) return null;
+  for (const u of p.uids) if (db.users[u] && online.has(u)) return u;
+  return p.uids[p.uids.length - 1];
+}
+/* 好友卡片：昵称 / 头像 / 在线状态 */
+function friendCard(pid) {
+  const p = db.persons[pid];
+  if (!p) return null;
+  const uid = uidOfPid(pid);
+  const u = uid && db.users[uid];
+  return {
+    pid: pid,
+    uid: uid || '',
+    nick: (u && u.nick) || p.nick || '玩家',
+    avatar: (u && u.avatar) || p.avatar || null,
+    online: !!(uid && online.has(uid))
+  };
+}
+function friendList(pid, via) {
+  return friendsOf(pid, via)
+    .map(x => friendCard(x.pid))
+    .filter(Boolean)
+    .sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
+}
+/* 按 UID 或昵称查找可添加的人（不含自己） */
+function findPeople(pid, q) {
+  q = String(q || '').trim();
+  if (!q) return [];
+  const seen = new Set();
+  const out = [];
+  const push = (p) => {
+    if (!p || p.pid === pid || seen.has(p.pid)) return;
+    seen.add(p.pid); out.push(friendCard(p.pid));
+  };
+  Object.values(db.users).forEach(u => {
+    if (u.bot || !u.pid) return;
+    if (String(u.uid) === q) push(db.persons[u.pid]);
+  });
+  Object.values(db.persons).forEach(p => {
+    if (p.pid === pid) return;
+    const nm = String(p.nick || '');
+    if (nm && nm.indexOf(q) >= 0) push(p);
+  });
+  if (!out.length) {
+    Object.values(db.users).forEach(u => {
+      if (u.bot || !u.pid) return;
+      if (String(u.uid).indexOf(q) === 0) push(db.persons[u.pid]);
+    });
+  }
+  return out.slice(0, 20);
+}
+
 function contactsOf(u) {
   const set = new Map();
+  /* 好友始终在列表里：即使把会话整个删了，也能从好友名单重新发起聊天 */
+  try {
+    const me = personOf(u).pid;
+    friendList(me, 'main').forEach(f => {
+      if (f.uid && db.users[f.uid]) set.set(f.uid, Date.now() + 5e12);
+    });
+  } catch (e) { }
   db.messages.forEach(m => {
     if (msgHidden(u, m.id)) return;
     const o = m.from === u ? m.to : (m.to === u ? m.from : null);
@@ -819,6 +986,12 @@ function mySecretRooms(u) {
   try {
     ensureEcho();
     if (!echoRoomHiddenFor(me) && !sh.rooms[String(ridOf(me, ECHO_PID))]) touchSecret(me, ECHO_PID);
+  } catch (e) { }
+  /* 隐私空间好友：即便会话被删了也保留入口，随时能重新发起聊天 */
+  try {
+    (db.sfriends && db.sfriends[me] ? db.sfriends[me] : []).forEach(f => {
+      if (f && f.pid && db.persons[f.pid]) touchSecret(me, f.pid);
+    });
   } catch (e) { }
   return db.secretRooms.filter(r => {
     if ((r.pidMembers || r.members).indexOf(me) < 0) return false;
@@ -1044,6 +1217,43 @@ function handle(ws, st, m) {
       scheduleAutoFill(room, 15000);
       break;
     }
+    /* 批量邀请真人好友进当前房间：
+       会先把机器人座位腾出来，避免真人被「座位已满」挡在外面。 */
+    case 'room:invitemany': {
+      const tos = (Array.isArray(m.tos) ? m.tos : []).filter(x => x && x !== u.uid);
+      if (!tos.length) return send(ws, { t: 'err', msg: '没有选择好友' });
+      const room = findRoom(u);
+      if (!room) return send(ws, { t: 'err', msg: '你不在房间' });
+      if (room.game) return send(ws, { t: 'err', msg: '对局已开始' });
+
+      // 腾位：先踢机器人，给真人留出空座
+      let freeNow = room.seats.filter(x => !x).length;
+      let guard = 0;
+      while (freeNow < tos.length && guard++ < 8) {
+        let idx = -1;
+        for (let i = room.seats.length - 1; i >= 1; i--) {
+          if (room.seats[i] && room.seats[i].bot) { idx = i; break; }
+        }
+        if (idx < 0) break;
+        room.seats[idx] = null;
+        freeNow++;
+      }
+      pushRoom(room);
+
+      let onlineCnt = 0;
+      tos.forEach(to => {
+        const target = db.users[to];
+        if (!target) return;
+        const w = online.get(to);
+        if (w) { send(w, { t: 'invite', by: pub(u), gid: room.gid, rule: room.rule }); onlineCnt++; }
+        sendInviteCard(u, to, room);          // 离线也能收到聊天卡片，上线后可点进房间
+      });
+      send(ws, { t: 'toast', msg: onlineCnt ? ('已邀请 ' + onlineCnt + ' 位在线玩家') : '对方离线，已发送邀请卡片' });
+      // 若还有空位且没人来，稍后自动补机器人，避免一直等
+      scheduleAutoFill(room, 15000);
+      break;
+    }
+
     /* 加入别人发来的邀请卡片：直接进房间 */
     case 'invite:join': {
       const room = rooms.get(String(m.gid || '').trim());
@@ -1065,6 +1275,18 @@ function handle(ws, st, m) {
     }
 
     /* 房间内聊天（文字 / 表情 / 快捷语 / 短语音），只在牌桌内显示，不落库 */
+    /* 牌桌短语音的「正在说话」状态：让对方在声音响起前先看到提示 */
+    case 'table:speaking': {
+      const room = findRoom(u); if (!room) return;
+      const seat = seatOf(room, u); if (seat < 0) return;
+      room.seats.forEach((s, i) => {
+        if (!s || s.bot || i === seat) return;
+        const w = online.get(s.uid);
+        if (w) send(w, { t: 'table:speaking', on: !!m.on, seat: seat });
+      });
+      break;
+    }
+
     case 'room:chat': {
       const room = findRoom(u); if (!room) return;
       const msg = { id: mid(), from: u.uid, nick: u.cur.nick, avatar: u.cur.avatar, ts: Date.now(), ...m.msg };
@@ -1088,6 +1310,19 @@ function handle(ws, st, m) {
       }
       pushGame(room);
       if (room.game.phase === 'play' || room.game.phase === 'bid') scheduleBots(room);
+      else if (room.game.phase === 'double') { scheduleBots(room); armDoubleTimeout(room); }
+      break;
+    }
+
+    /* 加倍：只有「没轮到叫分」的人能选，已叫过分的没有这个权力（引擎侧校验） */
+    case 'game:double': {
+      const room = findRoom(u); if (!room || !room.game) return;
+      const seat = seatOf(room, u);
+      const r = DDZ.applyDouble(room.game, seat, !!m.yes);
+      if (r.err) return send(ws, { t: 'err', msg: r.err });
+      pushGame(room);
+      if (room.game.phase === 'double') { scheduleBots(room); armDoubleTimeout(room); }
+      else scheduleBots(room);
       break;
     }
     case 'game:play': {
@@ -1173,6 +1408,56 @@ function handle(ws, st, m) {
       break;
     }
     case 'contacts': send(ws, { t: 'contacts', list: contactsOf(u.uid) }); break;
+
+    /* ---------- 好友名单（主界面 / 隐私空间 各一套，互不互通） ---------- */
+    case 'friend:list': {
+      const me = personOf(u).pid;
+      send(ws, { t: 'friend:list', via: m.via === 'secret' ? 'secret' : 'main', list: friendList(me, m.via) });
+      break;
+    }
+    case 'friend:search': {
+      const me = personOf(u).pid;
+      send(ws, { t: 'friend:search', q: m.q || '', list: findPeople(me, m.q) });
+      break;
+    }
+    case 'friend:add': {
+      const me = personOf(u).pid;
+      const via = m.via === 'secret' ? 'secret' : 'main';
+      let target = m.pid;
+      if (!target && m.q) {
+        const found = findPeople(me, m.q);
+        if (!found.length) return send(ws, { t: 'err', msg: '没找到这个玩家' });
+        if (found.length > 1) return send(ws, { t: 'friend:search', q: m.q, list: found });
+        target = found[0].pid;
+      }
+      if (!target) return send(ws, { t: 'err', msg: '请输入对方 UID 或昵称' });
+      if (!db.persons[target]) return send(ws, { t: 'err', msg: '玩家不存在' });
+      const r = addFriend(me, target, via);
+      if (r.err) return send(ws, { t: 'err', msg: r.err });
+      const card = friendCard(target);
+      send(ws, { t: 'toast', msg: card ? ('已添加好友：' + card.nick) : '已添加好友' });
+      send(ws, { t: 'friend:list', via: via, list: friendList(me, via) });
+      if (via === 'main') send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      else { try { send(ws, { t: 'secret:rooms', rooms: mySecretRooms(u) }); } catch (e) { } }
+      break;
+    }
+    /* 从好友卡片直接开一个私密会话（不存在就建） */
+    case 'secret:open': {
+      const me = personOf(u).pid;
+      if (!db.persons[m.pid]) return send(ws, { t: 'err', msg: '玩家不存在' });
+      const r = touchSecret(me, m.pid);
+      send(ws, { t: 'secret:rooms', rooms: mySecretRooms(u) });
+      break;
+    }
+    case 'friend:del': {
+      const me = personOf(u).pid;
+      const via = m.via === 'secret' ? 'secret' : 'main';
+      delFriend(me, m.pid, via);
+      send(ws, { t: 'friend:list', via: via, list: friendList(me, via) });
+      if (via === 'main') send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      else { try { send(ws, { t: 'secret:rooms', rooms: mySecretRooms(u) }); } catch (e) { } }
+      break;
+    }
     /* 重新生成测试会话（聊天 + 好友空间各一个），用于装机前试功能 */
     case 'test:reset': {
       ensureEcho();

@@ -7,6 +7,12 @@ window.Chat = (function () {
 
   function init() {
     Net.on('contacts', function (m) { contacts = m.list || []; renderList(); paintThreadState(); });
+    /* 好友名单：主界面专用，与隐私空间完全隔离 */
+    Net.on('friend:list', function (m) {
+      if (m.via === 'secret') return;
+      paintFriends(m.list || [], 'list');
+    });
+    Net.on('friend:search', function (m) { paintFriends(m.list || [], 'search'); });
     Net.on('chat', function (m) {
       // 通知栏永远只推送斗地主营销广告，绝不泄露真实内容
       if (m.msg.from !== App.me().uid) Notifier.notifyIfHidden(m.msg.id || (m.msg.from + m.msg.ts));
@@ -148,6 +154,80 @@ window.Chat = (function () {
       mb.textContent = selMode === 'conv' ? '完成' : '管理';
       mb.onclick = function () { if (selMode === 'conv') exitSel(); else enterConvSel(); };
     }
+    var fb = document.getElementById('chat-friends');
+    if (fb) fb.onclick = openFriends;
+  }
+
+  /* ---------------- 好友名单 ----------------
+   * 删掉整个会话后好友依然在，随时能从这里重新发起聊天。 */
+  function openFriends() {
+    Net.send({ t: 'friend:list', via: 'main' });
+    var box = document.createElement('div');
+    box.className = 'modal'; box.id = 'friend-box';
+    box.innerHTML = '<div class="box" style="max-width:340px">' +
+      '<h3>好友</h3>' +
+      '<p style="margin-bottom:8px">删掉会话后好友仍在这里<br>' +
+      '<span style="font-size:11px;opacity:.75">输入对方 UID 或昵称即可添加</span></p>' +
+      '<div class="row" style="margin-bottom:10px">' +
+      '<input id="fr-q" placeholder="输入 UID 或昵称" style="flex:1;margin:0">' +
+      '<button class="btn jade" id="fr-add">添加</button></div>' +
+      '<div class="fr-list" id="fr-list"><div class="fr-empty">加载中…</div></div>' +
+      '<div class="row" style="margin-top:12px"><button class="btn ghost" id="fr-close">关闭</button></div></div>';
+    document.body.appendChild(box);
+    box.querySelector('#fr-close').onclick = function () { box.remove(); };
+    box.querySelector('#fr-add').onclick = function () {
+      var q = (box.querySelector('#fr-q').value || '').trim();
+      if (!q) { App.toast('请输入 UID 或昵称'); return; }
+      Net.send({ t: 'friend:add', via: 'main', q: q });
+      box.querySelector('#fr-q').value = '';
+    };
+    box.onclick = function (e) { if (e.target === box) box.remove(); };
+  }
+
+  /* 好友列表渲染（搜索结果复用同一套卡片） */
+  function paintFriends(list, mode) {
+    var box = document.getElementById('friend-box'); if (!box) return;
+    var el = box.querySelector('#fr-list'); if (!el) return;
+    if (!list || !list.length) {
+      el.innerHTML = '<div class="fr-empty">' + (mode === 'search' ? '没找到这个玩家' : '还没有好友') + '</div>';
+      return;
+    }
+    el.innerHTML = list.map(function (f) {
+      return '<div class="fr-item' + (f.online ? '' : ' off') + '" data-pid="' + f.pid + '"' +
+        (mode === 'search' ? ' data-add="1"' : '') + '>' +
+        '<div class="a">' + Avatar.svg(f.avatar, 36) + '</div>' +
+        '<div class="m"><div class="n">' + esc(f.nick || '玩家') + '</div>' +
+        '<div class="u">' + esc(f.uid || f.pid) + '</div></div>' +
+        '<span class="st">' + (f.online ? '在线' : '离线') + '</span>' +
+        (mode === 'search'
+          ? '<button class="del" data-act="add">添加</button>'
+          : '<button class="del" data-act="del">删除</button>') +
+        '</div>';
+    }).join('');
+    el.querySelectorAll('.fr-item').forEach(function (it) {
+      var pid = it.dataset.pid;
+      var b = it.querySelector('[data-act]');
+      if (b) b.onclick = function (e) {
+        e.stopPropagation();
+        if (b.dataset.act === 'add') {
+          Net.send({ t: 'friend:add', via: 'main', pid: pid });
+        } else {
+          App.confirm('删除好友？', '会话不会被删除，只是从好友列表移除', function () {
+            Net.send({ t: 'friend:del', via: 'main', pid: pid });
+          });
+        }
+      };
+      it.onclick = function () {
+        if (it.dataset.add) return;
+        box.remove();
+        if (f_uid_of(list, pid)) open(f_uid_of(list, pid));
+        else App.toast('对方暂无可聊天的账号');
+      };
+    });
+  }
+  function f_uid_of(list, pid) {
+    for (var i = 0; i < list.length; i++) if (list[i].pid === pid) return list[i].uid;
+    return '';
   }
 
   function open(uid) {
@@ -260,6 +340,16 @@ window.Chat = (function () {
           var d = document.createElement('div');
           d.className = 'imgbad';
           d.textContent = '图片加载失败 · 点此重试';
+          /* 探一下真实原因再写进提示：
+             404 = 服务器上文件没了；0/网络错误 = 被拦或连不上（多半是混合内容没放行）。
+             以前只有一个笼统的「加载失败」，根本没法判断是哪种。 */
+          try {
+            fetch(el.getAttribute('src'), { method: 'GET' }).then(function (r) {
+              d.textContent = '图片加载失败（HTTP ' + r.status + '）· 点此重试';
+            })['catch'](function () {
+              d.textContent = '图片加载失败（网络被拦截）· 点此重试';
+            });
+          } catch (e) { }
           d.onclick = function () { delete el.dataset.bad; el.style.display = ''; d.remove(); el.src = el.getAttribute('src') + (el.src.indexOf('?') >= 0 ? '&' : '?') + 'r=' + Date.now(); };
           el.style.display = 'none';
           if (el.parentNode) el.parentNode.insertBefore(d, el);
@@ -349,7 +439,7 @@ window.Chat = (function () {
     }
     /* 图片：加载失败会给出「点此重试」的占位，不再是一片空白 */
     if (m.kind === 'image') {
-      return '<img src="' + Net.abs(m.url) + '" alt="图片" loading="lazy" data-img="1">';
+      return '<img src="' + Net.abs(m.url) + '" alt="图片" data-img="1">';
     }
     /* 视频：playsinline + 明确尺寸，避免 WebView 里全屏接管导致黑屏 */
     if (m.kind === 'video') {
@@ -405,7 +495,7 @@ window.Chat = (function () {
   }
   function sendFile(file, kind) {
     if (!file) return;
-    if (file.size > 26 * 1024 * 1024) return App.toast('文件太大，上限 26MB');
+    if (file.size > 300 * 1024 * 1024) return App.toast('文件太大，上限 300MB');
     App.toast('发送中…');
     Net.upload(file, kind, 0).then(function (r) {
       if (r.err) return App.toast(r.err);
@@ -512,31 +602,47 @@ window.Chat = (function () {
     if (panel) return closePanel();
     panel = document.createElement('div');
     panel.className = 'emoji-panel'; panel.id = 'emoji-panel';
-    panel.innerHTML = '<div class="tabs">' +
-      '<button class="on" data-p="face">表情</button><button data-p="obj">物件</button><button data-p="emoji">Emoji</button></div>' +
-      '<div class="grid" id="emo-grid"></div>';
+    /* 只保留 Emoji，去掉「表情 / 物件」两个自绘 SVG 包和顶部切换栏 */
+    var big = !!(window.Stickers && Stickers.isBig && Stickers.isBig());
+    panel.innerHTML = '<div class="ep-bar"><button class="ep-add" id="ep-add">＋ 表情包</button>' +
+      '<button class="ep-add' + (big ? ' on' : '') + '" id="ep-big">大图</button></div>' +
+      '<div class="grid' + (big ? ' big' : '') + '" id="emo-grid"></div>';
     document.getElementById('thread').appendChild(panel);
-    fill('face');
-    panel.querySelectorAll('.tabs button').forEach(function (b) {
-      b.onclick = function () {
-        panel.querySelectorAll('.tabs button').forEach(function (x) { x.classList.remove('on'); });
-        b.classList.add('on'); fill(b.dataset.p);
-      };
-    });
+    fill('emoji');
+    var add = document.getElementById('ep-add');
+    if (add) add.onclick = openImport;
+    /* 大图模式：面板格子放大到 3 列，表情看得更清楚 */
+    var bg = document.getElementById('ep-big');
+    if (bg) bg.onclick = function () {
+      if (!window.Stickers) return;
+      Stickers.setBig(!Stickers.isBig());
+      closePanel(); togglePanel();
+    };
   }
   function fill(p) {
     var g = document.getElementById('emo-grid'); if (!g) return;
-    if (p === 'emoji') {
-      g.innerHTML = Stickers.EMOJI.map(function (e, i) { return '<button data-k="emoji" data-i="' + i + '">' + e + '</button>'; }).join('');
-    } else {
-      var arr = p === 'face' ? Stickers.PACK_FACE : Stickers.PACK_OBJ;
-      g.innerHTML = arr.map(function (s) { return '<button data-k="' + p + '" data-i="' + s.id + '" title="' + s.n + '">' + Stickers.svgOf(s) + '</button>'; }).join('');
-    }
+    /* 只保留 Emoji：自绘 SVG 贴纸在对方手机上经常渲染不出来（一片空白），
+       Emoji 走系统字体，任何机型都能正常显示。 */
+    g.innerHTML = Stickers.EMOJI.map(function (e, i) { return '<button data-k="emoji" data-i="' + i + '">' + e + '</button>'; }).join('');
     g.querySelectorAll('button').forEach(function (b) {
-      b.onclick = function () { sendSticker(b.dataset.k, b.dataset.i); };
+      b.onclick = function () { sendSticker('emoji', b.dataset.i); };
     });
   }
   function closePanel() { if (panel) { panel.remove(); panel = null; } }
+
+  /* 导入表情包：把选中的表情上传后作为图片发出去，对方能正常看到 */
+  function openImport() {
+    if (!window.Stickers || !Stickers.openImport) return;
+    Stickers.openImport(function (file) {
+      closePanel();
+      if (!file) return;
+      App.toast('发送中…');
+      Net.upload(file, 'image', 0).then(function (up) {
+        if (up && up.err) return App.toast(up.err);
+        send({ kind: 'image', url: up.url, name: file.name, size: file.size });
+      }).catch(function () { App.toast('发送失败'); });
+    });
+  }
 
   /* ---------------- 附件菜单 ---------------- */
   function plusMenu() {
@@ -711,5 +817,5 @@ window.Chat = (function () {
   }
 
   return { init: init, renderList: renderList, open: open, close: close, get cur() { return cur; }, sendFile: sendFile,
-    view: view, exitSel: exitSel, isSel: function () { return !!selMode; } };
+    view: view, saveToDevice: saveToDevice, exitSel: exitSel, isSel: function () { return !!selMode; } };
 })();

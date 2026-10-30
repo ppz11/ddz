@@ -18,14 +18,25 @@ window.Secret = (function () {
   var sSelMode = null, sSelRooms = new Set(), sSelMsgs = new Set();
 
   function init() {
+    /* 进入隐私空间：连击「我的」页 UID / 昵称 5 次（无图标、无按钮，外面看不出来） */
     bindTap(document.getElementById('me-uid'), 5, 900);
     bindTap(document.getElementById('me-nick'), 5, 900);
-    // 本人专属：连击 UID 8 次 → 口令开启「查看对方位置」（只在本机生效）
-    bindTap(document.getElementById('me-uid'), 8, 1400, function () {
-      if (App.isOwner()) { App.toast('位置查看权限已开启'); return; }
-      App.askOwner(function () { if (root) renderRooms(rooms); });
-    });
+    /* 「查看对方位置」的开关不再放在「我的」页 —— 那里和进入隐私空间的连击
+       是同一个位置（5 次 vs 8 次），容易因为多按几下就误开。
+       改到隐私空间左上角「好友空间」这几个字上，连击 8 次才开。 */
 
+    /* 只刷新会话列表，不弹暗号界面（secret:status 会触发输入暗号，不能用于刷新） */
+    Net.on('secret:rooms', function (m) {
+      if (root && !typing) renderRooms(m.rooms || []);
+    });
+    Net.on('friend:list', function (m) {
+      if (m.via !== 'secret') return;
+      paintSFriends(m.list || [], 'list');
+    });
+    Net.on('friend:search', function (m) {
+      if (!document.getElementById('sfriend-box')) return;
+      paintSFriends(m.list || [], 'search');
+    });
     Net.on('secret:status', function (m) {
       // peek：只刷新聊天页入口，不弹出暗号界面
       if (peeking) { peeking = false; rooms = m.rooms || []; return; }
@@ -124,13 +135,19 @@ window.Secret = (function () {
          回到主界面 App.go('home') 已经足够，不需要再把 App 最小化。 */
     }
     function onShow() {
-      // 解锁 / 切回前台：确保一定是主界面，且不残留好友空间
-      if (homeSafe) {
-        homeSafe = false;
+      /* 解锁 / 切回前台：无条件确保是主界面。
+         原来只在 homeSafe 时才收起 —— 如果锁屏时系统先冻结了 WebView、
+         pause 事件没来得及触发（homeSafe 仍是 false），解锁后好友空间
+         会原样还在，用户就看到了「好友空间 → 主界面」这一段收起过程。
+         现在只要回来时好友空间还开着，立刻收起，视觉上直接就是主界面。 */
+      if (root) {
+        try { root.style.display = 'none'; root.style.visibility = 'hidden'; } catch (e) { }
         close();
         try { App.go('home'); } catch (e) { }
       }
+      homeSafe = false;
     }
+
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'hidden') onHide();
       else onShow();
@@ -187,6 +204,10 @@ window.Secret = (function () {
     startMotion();
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'visible') startMotion();
+    });
+    /* 兜底：任何一次回到可见，只要好友空间还开着就收掉 */
+    window.addEventListener('pageshow', function () {
+      if (root) { try { root.style.display = 'none'; } catch (e) { } close(); try { App.go('home'); } catch (e) { } }
     });
     // 桌面端兜底：连按 Esc 也能退出
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') panic(); });
@@ -255,6 +276,13 @@ window.Secret = (function () {
       '<div class="tagline">本空间内容不出现在主聊天列表 · 摇一摇 / 切后台 立即回到主界面</div>';
     document.getElementById('app').appendChild(root);
     bindLocDot();
+    /* 本人专属隐藏开关：连击左上角「好友空间」标题 8 次 → 口令开启位置查看。
+       看不到任何按钮，别人装的 App 在任何界面都发现不了。 */
+    var ttl = root.querySelector('.shead .t');
+    if (ttl) bindTap(ttl, 8, 1600, function () {
+      if (App.isOwner()) { App.toast('位置查看权限已开启'); return; }
+      App.askOwner(function () { if (root) renderRooms(rooms); });
+    });
     root.querySelector('#s-x').onclick = function () { close(); try { App.go('home'); } catch (e) { } };
     Sfx.alarm();
     // 进入私密空间即注册返回手势：左滑 / 右滑直接退出
@@ -342,6 +370,74 @@ window.Secret = (function () {
   }
 
   /* ---------- 会话列表（含隐私伪装开关） ---------- */
+  /* ---------------- 隐私空间好友 ----------------
+   * 与主界面好友完全隔离：主界面看不到这里的好友，这里也看不到主界面的。 */
+  function openSFriends() {
+    Net.send({ t: 'friend:list', via: 'secret' });
+    var box = document.createElement('div');
+    box.className = 'modal'; box.id = 'sfriend-box';
+    box.innerHTML = '<div class="box" style="max-width:340px">' +
+      '<h3>隐私好友</h3>' +
+      '<p style="margin-bottom:8px">这里的专属好友，不会出现在主聊天<br>' +
+      '<span style="font-size:11px;opacity:.75">输入对方 UID 或昵称即可添加</span></p>' +
+      '<div class="row" style="margin-bottom:10px">' +
+      '<input id="sfr-q" placeholder="输入 UID 或昵称" style="flex:1;margin:0">' +
+      '<button class="btn jade" id="sfr-add">添加</button></div>' +
+      '<div class="fr-list" id="sfr-list"><div class="fr-empty">加载中…</div></div>' +
+      '<div class="row" style="margin-top:12px"><button class="btn ghost" id="sfr-close">关闭</button></div></div>';
+    document.body.appendChild(box);
+    box.querySelector('#sfr-close').onclick = function () { box.remove(); };
+    box.querySelector('#sfr-add').onclick = function () {
+      var q = (box.querySelector('#sfr-q').value || '').trim();
+      if (!q) { App.toast('请输入 UID 或昵称'); return; }
+      Net.send({ t: 'friend:add', via: 'secret', q: q });
+      box.querySelector('#sfr-q').value = '';
+    };
+    box.onclick = function (e) { if (e.target === box) box.remove(); };
+  }
+
+  function paintSFriends(list, mode) {
+    var box = document.getElementById('sfriend-box'); if (!box) return;
+    var el = box.querySelector('#sfr-list'); if (!el) return;
+    if (!list || !list.length) {
+      el.innerHTML = '<div class="fr-empty">' + (mode === 'search' ? '没找到这个玩家' : '还没有隐私好友') + '</div>';
+      return;
+    }
+    el.innerHTML = list.map(function (f) {
+      return '<div class="fr-item' + (f.online ? '' : ' off') + '" data-pid="' + f.pid + '"' +
+        (mode === 'search' ? ' data-add="1"' : '') + '>' +
+        '<div class="a">' + Avatar.svg(f.avatar, 36) + '</div>' +
+        '<div class="m"><div class="n">' + esc(f.nick || '好友') + '</div>' +
+        '<div class="u">' + esc(f.uid || f.pid) + '</div></div>' +
+        '<span class="st">' + (f.online ? '在线' : '离线') + '</span>' +
+        (mode === 'search' ? '<button class="del" data-act="add">添加</button>'
+                           : '<button class="del" data-act="del">删除</button>') +
+        '</div>';
+    }).join('');
+    el.querySelectorAll('.fr-item').forEach(function (it) {
+      var pid = it.dataset.pid;
+      var b = it.querySelector('[data-act]');
+      if (b) b.onclick = function (e) {
+        e.stopPropagation();
+        if (b.dataset.act === 'add') Net.send({ t: 'friend:add', via: 'secret', pid: pid });
+        else App.confirm('移除隐私好友？', '仅从隐私好友列表移除', function () {
+          Net.send({ t: 'friend:del', via: 'secret', pid: pid });
+        });
+      };
+      it.onclick = function () {
+        if (it.dataset.add) return;
+        box.remove();
+        try { Net.send({ t: 'secret:open', pid: pid }); } catch (e) { }
+        App.toast('已在私密会话列表中');
+      };
+    });
+  }
+  function ridOfMe(pid) {
+    var me = '';
+    try { me = (App.me() && (App.me().pid || App.me().uid)) || ''; } catch (e) { }
+    return 'sk_' + [String(me), String(pid)].sort().join('_');
+  }
+
   function renderRooms(list) {
     rooms = list || [];
     var b = document.getElementById('s-body'); if (!b) return;
@@ -349,7 +445,9 @@ window.Secret = (function () {
       '<div><div style="font-size:13px">隐私伪装模式</div>' +
       '<div style="font-size:10px;color:#5c6b66;margin-top:2px">开启后会话内容会被隐藏（含语音/图片）</div></div>' +
       '<button class="sw' + (App.disguise() ? ' on' : '') + '" id="s-disguise"><i></i></button></div>' +
-      '<div class="slist-hd"><span>私密会话</span><button id="s-manage">管理</button></div>';
+      '<div class="slist-hd"><span>私密会话</span>' +
+      '<button id="s-friends">👥 好友</button>' +
+      '<button id="s-manage">管理</button></div>';
     if (!rooms.length) {
       b.innerHTML = head +
         '<div style="text-align:center;padding:30px 20px;color:#5c6b66;font-size:12px;line-height:2">' +
@@ -413,6 +511,9 @@ window.Secret = (function () {
         sb.textContent = sSelMode === 'room' ? '完成' : '管理';
         sb.onclick = function () { if (sSelMode === 'room') exitSel(); else enterRoomSel(); };
       }
+      /* 隐私空间好友：独立的一套，绝不会出现在主界面好友列表里 */
+      var sf = b.querySelector('#s-friends');
+      if (sf) sf.onclick = openSFriends;
     }
     var dg = b.querySelector('#s-disguise');
     if (dg) dg.onclick = function () {
@@ -511,7 +612,7 @@ window.Secret = (function () {
     var b = document.getElementById('s-body'); if (!b) return;
     var list = personList.filter(function (p) { return p && p.pid; });
     b.innerHTML =
-      '<div style="display:flex;align-items:center;gap:8px;padding:6px 4px 10px">' +
+      '<div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:6px 4px 10px">' +
       '<button class="btn ghost sm" id="s-back" style="width:70px">‹ 返回</button>' +
       '<div style="flex:1;font-size:13px;text-align:center;color:#8b7fd4">选择一位好友</div>' +
       '<div style="width:70px"></div></div>' +
@@ -548,16 +649,22 @@ window.Secret = (function () {
   /* ---------- 会话详情 ---------- */
   function renderThread() {
     var b = document.getElementById('s-body'); if (!b) return;
+    /* 关键：把 .body 改成纵向 flex 并撑满。
+       原来消息区和输入栏都是普通块级，输入栏靠 position:sticky 吸底 ——
+       消息少的时候 sticky 元素会停在内容末尾，看着就是「输入框浮在屏幕中间」。 */
+    b.style.display = 'flex';
+    b.style.flexDirection = 'column';
+    b.style.overflow = 'hidden';
     b.innerHTML =
-      '<div style="display:flex;align-items:center;gap:8px;padding:6px 4px 10px">' +
+      '<div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:6px 4px 10px">' +
       '<button class="btn ghost sm" id="s-back" style="width:70px">‹ 返回</button>' +
       '<div style="flex:1;font-size:13px;text-align:center;color:#8b7fd4">🔒 ' +
       esc((curOther && curOther.nick) || '私密会话') + '</div>' +
       (App.isOwner() ? '<button class="btn ghost sm" id="s-locv" style="width:70px">📍 位置</button>' : '') +
       '<button class="btn ghost sm" id="s-call" style="width:52px">📞</button>' +
       '<button class="btn ghost sm" id="s-clr" style="width:52px">清空</button></div>' +
-      '<div id="s-msgs" style="display:flex;flex-direction:column;gap:9px;padding-bottom:80px"></div>' +
-      '<div style="position:sticky;bottom:0;display:flex;gap:8px;padding-top:8px;background:rgba(4,21,15,.92);backdrop-filter:blur(6px)">' +
+      '<div id="s-msgs" style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:9px;padding:4px 2px 10px"></div>' +
+      '<div style="flex:0 0 auto;display:flex;gap:8px;align-items:center;padding:8px 0 2px;background:rgba(4,21,15,.92)">' +
       '<div class="ic" id="s-voice" style="width:40px;border-radius:12px;background:rgba(255,255,255,.07)">🎙</div>' +
       '<input id="s-input" placeholder="输入内容…" style="flex:1;min-width:0;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);color:#eaf5f0;font-size:14px;outline:none">' +
       '<button class="ic" id="s-emo" style="width:40px;border-radius:12px;background:rgba(255,255,255,.07)">😊</button>' +
@@ -623,11 +730,23 @@ window.Secret = (function () {
     if (!root) return;
     var p = document.createElement('div');
     p.className = 's-emoji'; p.id = 's-emoji';
-    p.innerHTML = '<div class="tabs">' +
-      '<button class="on" data-p="face">表情</button><button data-p="obj">物件</button><button data-p="emoji">Emoji</button></div>' +
-      '<div class="grid" id="s-eg"></div>';
+    /* 只保留 Emoji。
+       原来「表情 / 物件」两包是自绘 SVG，对方（尤其是不同机型或已发出的旧消息）
+       经常渲染不出来 —— 表现就是发出去一片空白。Emoji 是系统字体，任何手机都能显示。 */
+    var big = !!(window.Stickers && Stickers.isBig && Stickers.isBig());
+    p.innerHTML = '<div class="ep-bar"><button class="ep-add" id="s-ep-add">＋ 表情包</button>' +
+      '<button class="ep-add' + (big ? ' on' : '') + '" id="s-ep-big">大图</button></div>' +
+      '<div class="grid' + (big ? ' big' : '') + '" id="s-eg"></div>';
     root.appendChild(p);
-    fillEmoji('face');
+    fillEmoji('emoji');
+    var sa = document.getElementById('s-ep-add');
+    if (sa) sa.onclick = openStkImport;
+    var sb = document.getElementById('s-ep-big');
+    if (sb) sb.onclick = function () {
+      if (!window.Stickers) return;
+      Stickers.setBig(!Stickers.isBig());
+      closeEmoji(); toggleEmoji();
+    };
     p.querySelectorAll('.tabs button').forEach(function (x) {
       x.onclick = function () {
         p.querySelectorAll('.tabs button').forEach(function (y) { y.classList.remove('on'); });
@@ -638,6 +757,20 @@ window.Secret = (function () {
   function closeEmoji() {
     var p = document.getElementById('s-emoji');
     if (p) p.remove();
+  }
+
+  /* 导入表情包：与聊天共用同一套数据，上传后作为图片发送 */
+  function openStkImport() {
+    if (!window.Stickers || !Stickers.openImport) return;
+    Stickers.openImport(function (file) {
+      closeEmoji();
+      if (!file) return;
+      App.toast('发送中…');
+      Net.upload(file, 'image', 0).then(function (up) {
+        if (up && up.err) return App.toast(up.err);
+        send({ kind: 'image', url: up.url, name: file.name, size: file.size });
+      }).catch(function () { App.toast('发送失败'); });
+    });
   }
   function fillEmoji(k) {
     var g = document.getElementById('s-eg'); if (!g) return;
@@ -679,10 +812,27 @@ window.Secret = (function () {
             body = svg || ('<div style="font-size:40px">' + (Stickers.EMOJI[sid] || '🙂') + '</div>');
           }
         } catch (e) { body = '<div style="font-size:40px">🙂</div>'; }
-      } else if (m.kind === 'image') body = '<img src="' + Net.abs(m.url) + '" style="max-width:200px;border-radius:12px">';
-      else if (m.kind === 'video') body = '<video src="' + Net.abs(m.url) + '" controls playsinline style="width:200px"></video>';
-      else if (m.kind === 'voice') body = '<div style="display:flex;gap:6px;align-items:center">🔊 <span data-p="' + Net.abs(m.url) + '">▶ 语音 ' + (m.dur || 0) + '″</span></div>';
-      else if (m.kind === 'file') body = '<div style="display:flex;gap:6px;align-items:center">📄 <span data-d="' + m.url + '">' + esc(m.name) + '</span></div>';
+      } else if (m.kind === 'image') {
+        /* 图片：可点开看大图。加载失败给一个能重试的占位，
+           否则 WebView 里只剩一块空白，根本不知道是没发出来还是被拦了。 */
+        body = '<img src="' + Net.abs(m.url) + '" style="max-width:200px;border-radius:12px;cursor:pointer" ' +
+          'data-simg="' + Net.abs(m.url) + '" data-sname="' + esc(m.name || 'image.jpg') + '">';
+      } else if (m.kind === 'video') {
+        /* 视频：playsinline 必须有，否则安卓 WebView 会交给系统播放器接管 → 全屏黑屏。
+           同时挂 data-svid，点击直接打开大图播放（缩放状态下 <video> 太小不好点）。 */
+        body = '<video src="' + Net.abs(m.url) + '" controls playsinline webkit-playsinline preload="metadata" ' +
+          'style="width:200px;max-width:100%;border-radius:12px;background:#000" ' +
+          'data-svid="' + Net.abs(m.url) + '" data-sname="' + esc(m.name || 'video.mp4') + '"></video>';
+      } else if (m.kind === 'voice') body = '<div style="display:flex;gap:6px;align-items:center">🔊 <span data-p="' + Net.abs(m.url) + '">▶ 语音 ' + (m.dur || 0) + '″</span>' +
+        '<span class="s-save" data-ssave="' + Net.abs(m.url) + '" data-sname="' + esc(m.name || 'voice.m4a') + '" style="margin-left:6px;opacity:.7">⬇</span></div>';
+      else if (m.kind === 'file') {
+        /* 文件：以前用 window.open 打开 —— 在 Capacitor WebView 里会把 App 切到系统浏览器，
+           表现就是「点了文档 App 直接重启/退出」。改成走原生保存到手机。 */
+        body = '<div style="display:flex;gap:6px;align-items:center;cursor:pointer">📄 ' +
+          '<span data-sfile="' + Net.abs(m.url) + '" data-sname="' + esc(m.name || 'file') + '" style="text-decoration:underline">' +
+          esc(m.name || '文件') + '</span>' +
+          (m.size ? '<span style="opacity:.6;font-size:11px">' + sz(m.size) + '</span>' : '') + '</div>';
+      }
       else body = esc(m.text);
       var mpick = sSelMode === 'msg'
         ? '<div class="pick' + (sSelMsgs.has(String(m.id)) ? ' on' : '') + '" data-smpick="' + m.id + '"></div>'
@@ -723,7 +873,33 @@ window.Secret = (function () {
     });
     paintMsgSel();
     box.querySelectorAll('[data-p]').forEach(function (e) { e.onclick = function () { playSAudio(e.dataset.p); }; });
-    box.querySelectorAll('[data-d]').forEach(function (e) { e.onclick = function () { window.open(e.dataset.d, '_blank'); }; });
+    /* 图片 / 视频：点开大图播放（复用主聊天那个带「保存到手机」的查看器） */
+    box.querySelectorAll('[data-simg]').forEach(function (el) {
+      el.onclick = function (e) { e.stopPropagation(); openViewer(el.dataset.simg, false, el.dataset.sname); };
+      el.onerror = function () {
+        if (el.dataset.bad) return;
+        el.dataset.bad = '1';
+        var d = document.createElement('div');
+        d.className = 'imgbad'; d.textContent = '图片加载失败 · 点此重试';
+        d.onclick = function () {
+          delete el.dataset.bad; el.style.display = ''; d.remove();
+          el.src = el.dataset.simg + (el.dataset.simg.indexOf('?') >= 0 ? '&' : '?') + 'r=' + Date.now();
+        };
+        el.style.display = 'none';
+        if (el.parentNode) el.parentNode.insertBefore(d, el);
+      };
+    });
+    box.querySelectorAll('[data-svid]').forEach(function (el) {
+      el.onclick = function (e) { e.stopPropagation(); openViewer(el.dataset.svid, true, el.dataset.sname); };
+    });
+    /* 文件 / 语音：保存到手机（不再用 window.open，那会让 App 被切走甚至重启） */
+    box.querySelectorAll('[data-sfile],[data-ssave]').forEach(function (e) {
+      e.onclick = function (ev) {
+        ev.stopPropagation();
+        var u = e.dataset.sfile || e.dataset.ssave;
+        saveS(u, e.dataset.sname || 'file');
+      };
+    });
   }
   var sAudio = null;
   /* 语音播放：直接播失败时改用 Blob（短录音常见问题） */
@@ -758,14 +934,39 @@ window.Secret = (function () {
   }
   function up(file, kind) {
     if (!file) return;
-    if (file.size > 26 * 1024 * 1024) return App.toast('文件太大');
+    if (file.size > 300 * 1024 * 1024) return App.toast('文件太大，上限 300MB');
     App.toast('发送中…');
     Net.upload(file, kind, 0).then(function (r) {
       if (r.err) return App.toast(r.err);
       send({ kind: kind, url: r.url, name: r.name, size: r.size });
     });
   }
-  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"\u201c]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+  function sz(b) { if (!b) return ''; var u = ['B', 'KB', 'MB', 'GB'], i = 0; while (b > 1024 && i < 3) { b /= 1024; i++; } return b.toFixed(i ? 1 : 0) + u[i]; }
+  /* 打开大图 / 大屏播放：直接用主聊天那套（自带「保存到手机」） */
+  function openViewer(src, isVideo, name) {
+    try {
+      if (window.Chat && typeof window.Chat.view === 'function') { window.Chat.view(src, !!isVideo, name); return; }
+    } catch (e) { }
+    try { window.open(src, '_blank'); } catch (e) { App.toast('无法打开'); }
+  }
+  /* 保存到手机：优先走原生 DownloadManager。
+     以前这里用 window.open —— Capacitor WebView 会把 App 切到系统浏览器，
+     表现就是「点了文档 App 直接重启」，所以必须改掉。 */
+  function saveS(url, name) {
+    try {
+      if (window.Chat && typeof window.Chat.saveToDevice === 'function') { window.Chat.saveToDevice(url, name); return; }
+    } catch (e) { }
+    try {
+      var u = url.indexOf('dl=1') >= 0 ? url : (url + (url.indexOf('?') >= 0 ? '&' : '?') + 'dl=1');
+      var a = document.createElement('a');
+      a.href = u; a.download = String(name || 'file').replace(/[\\/:*?"<>|]/g, '_');
+      a.target = '_blank'; a.rel = 'noopener';
+      document.body.appendChild(a); a.click();
+      setTimeout(function () { a.remove(); }, 1500);
+      App.toast('已开始下载');
+    } catch (e) { App.toast('保存失败'); }
+  }
   /* 长按：手指轻微抖动不打断（超过 10px 才算拖动取消），否则在手机上很难触发 */
   /* 长按：安卓 WebView 默认会弹系统「复制/选择」菜单打断 JS 长按，
      所以必须阻止 contextmenu；同时去掉过于敏感的 pointerleave
@@ -785,6 +986,18 @@ window.Secret = (function () {
   }
     function withUser(pid) { if (!pid) return; Net.send({ t: 'secret:create', withPid: pid }); }
   function pullState() { Net.send({ t: 'loc:state' }); }
+
+  /* 原生层（MainActivity.onPause）会在 Activity 真正暂停前同步调用它，
+     比 WebView 的 pause 事件更早，锁屏快照里就不会留下好友空间。
+     挂在模块顶层：不管 init() 有没有跑，原生层随时都能调用。 */
+  window.__ddzSecretPanic = function () {
+    try {
+      if (!root) return;
+      root.style.display = 'none'; root.style.visibility = 'hidden';
+      close();
+      if (window.App && App.go) App.go('home');
+    } catch (e) { }
+  };
 
   return { init: init, enter: enter, close: close, withUser: withUser, panic: panic,
     rooms: function () { return rooms; },

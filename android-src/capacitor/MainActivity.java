@@ -139,6 +139,18 @@ public class MainActivity extends BridgeActivity {
        这里的重写必须同样用 public —— 写成 protected 会因为「降低访问权限」直接编译失败。 */
     @Override
     public void onPause() {
+        // 关键：先同步收起好友空间，再走 super.onPause()。
+        // 锁屏时系统会在 onPause 之后立刻取 Activity 快照，
+        // 若等 WebView 的 pause 事件才处理，快照里还留着好友空间，
+        // 解锁后就会看到「好友空间 → 主界面」这段收起过程。
+        try {
+            android.webkit.WebView wv0 = (getBridge() != null) ? getBridge().getWebView() : null;
+            if (wv0 != null) {
+                wv0.evaluateJavascript(
+                    "(function(){try{window.__ddzSecretPanic&&window.__ddzSecretPanic();}catch(e){}})();",
+                    null);
+            }
+        } catch (Throwable ignored) { }
         super.onPause();
         evalJs("(window.__ddzPause&&window.__ddzPause())");
         try {
