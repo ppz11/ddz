@@ -165,6 +165,8 @@ window.Game = (function () {
     } catch (e) { }
     var b = document.getElementById('btn-table-chat');
     if (b) b.onclick = toggleTableChat;
+    var q = document.getElementById('btn-table-quick');
+    if (q) q.onclick = toggleQuickPanel;
   }
   function reset() {
     sel = {}; over = false; dealAnim = true; S = null; myRoom = null; gid = null;
@@ -804,8 +806,9 @@ window.Game = (function () {
   }
 
   /* ---------------- 房间内聊天（文字 / 表情 / 快捷语 / 短语音） ---------------- */
-  var QUICK = ['快点儿吧，我等的花儿都谢了！', '你的牌打得也太好了', '不要走，决战到天亮',
-    '别走开，马上回来', '合作愉快，双赢', '这把稳了', '好牌，佩服', '你是我的偶像'];
+  /* 快捷语：点一下发出去，除了显示文字还会把这句话念出来 */
+  var QUICK = ['快点儿吧，我等的花儿都谢了', '你的牌打得也太好了', '不要走，决战到天亮',
+    '别走开，马上回来', '合作愉快', '这把稳了', '好牌，佩服', '你是我的偶像'];
   function toggleTableChat() {
     var el = document.getElementById('tchat');
     tcOpen = !tcOpen;
@@ -846,7 +849,14 @@ window.Game = (function () {
       }
     };
     el.querySelectorAll('[data-q]').forEach(function (b) {
-      b.onclick = function () { tcSend({ kind: 'text', text: QUICK[+b.dataset.q] }); };
+      b.onclick = function () {
+        var txt = QUICK[+b.dataset.q] || '';
+        /* 快捷语：显示文字 + 同时用语音念出来，对方听到也看到 */
+        tcSend({ kind: 'text', text: txt, quick: true, voice: txt });
+        Sfx.send();
+        try { Sfx.speak(txt); } catch (e) { }
+        floatSay('我', txt, 'quick');
+      };
     });
     bindTcVoice(el.querySelector('#tc-voice'));
     renderTcMsgs();
@@ -899,13 +909,77 @@ window.Game = (function () {
   }
 
   function onTableChat(m) {
-    tcMsgs.push(m.msg); if (tcMsgs.length > 200) tcMsgs.shift();
+    var mm = m.msg || {};
+    /* 取自己的 uid 做「是不是我发的」判断；未登录/异常时兜空，不能让整条消息处理挂掉 */
+    var myUid = '';
+    try { var me = App.me(); if (me) myUid = me.uid || ''; } catch (e) { myUid = ''; }
+    /* 短语音不再进聊天框：直接在房间里播出来，不占画面 */
+    if (mm.kind === 'voice') {
+      Sfx.msg();
+      if (mm.url) autoPlayVoice(mm.url);
+      if (mm.from !== myUid) floatSay(mm.nick || '对手', '🎤 语音', 'voice');
+      return;
+    }
+    tcMsgs.push(mm); if (tcMsgs.length > 200) tcMsgs.shift();
     var badge = document.getElementById('btn-table-chat');
     if (badge && !tcOpen) { badge.classList.add('new'); setTimeout(function () { badge.classList.remove('new'); }, 2600); }
     renderTcMsgs(); Sfx.msg();
-    /* 语音消息直接播出来 —— 打牌时腾不出手去点播放 */
-    if (m.msg && m.msg.kind === 'voice' && m.msg.url) autoPlayVoice(m.msg.url);
+    /* 文字 / 表情 / 快捷语：对方不用点开聊天框，直接在屏幕右半边飘出来看 */
+    if (mm.from !== myUid) {
+      if (mm.kind === 'sticker') floatSay(mm.nick || '对手', mm.emoji || '🙂', 'sticker');
+      else if (mm.quick) floatSay(mm.nick || '对手', mm.text, 'quick', mm.voice);
+      else floatSay(mm.nick || '对手', mm.text || '', 'text');
+    }
   }
+
+  /* ---------- 飘屏：对方发的文字/表情/快捷语直接在右半边显示 ---------- */
+  var floatTimer = [];
+  function floatSay(nick, text, kind, voiceUrl) {
+    try {
+      var layer = document.getElementById('float-layer');
+      if (!layer) {
+        layer = document.createElement('div');
+        layer.id = 'float-layer'; layer.className = 'float-layer';
+        var pg = document.getElementById('page-play');
+        (pg || document.body).appendChild(layer);
+      }
+      var d = document.createElement('div');
+      d.className = 'float-say' + (kind === 'sticker' ? ' big' : '');
+      d.innerHTML = '<span class="fn">' + esc(nick) + '</span>' +
+        '<span class="ft">' + (kind === 'sticker' ? text : esc(text)) + '</span>';
+      layer.appendChild(d);
+      // 快捷语带语音：文字飘出来的同时把话说出来
+      if (voiceUrl) { try { Sfx.speak(voiceUrl); } catch (e) { } }
+      var t1 = setTimeout(function () { d.classList.add('out'); }, 3200);
+      var t2 = setTimeout(function () { d.remove(); }, 3900);
+      floatTimer.push(t1, t2);
+      while (layer.children.length > 4) layer.removeChild(layer.firstChild);
+    } catch (e) { }
+  }
+
+  /* ---------- 快捷语按钮：点一下列出常用语，发出去带语音 ---------- */
+  function toggleQuickPanel() {
+    var old = document.getElementById('quick-panel');
+    if (old) { old.remove(); return; }
+    var p = document.createElement('div');
+    p.id = 'quick-panel'; p.className = 'quick-panel';
+    p.innerHTML = QUICK.map(function (t, i) {
+      return '<button class="qk" data-i="' + i + '">' + esc(t) + '</button>';
+    }).join('');
+    document.getElementById('page-play').appendChild(p);
+    p.querySelectorAll('.qk').forEach(function (b) {
+      b.onclick = function () {
+        var txt = QUICK[+b.dataset.i] || '';
+        tcSend({ kind: 'text', text: txt, quick: true, voice: txt });
+        Sfx.send();
+        try { Sfx.speak(txt); } catch (e) { }
+        floatSay('我', txt, 'quick');
+        p.remove();
+      };
+    });
+    setTimeout(function () { if (p.parentNode) p.remove(); }, 8000);
+  }
+
   /* 短语音（按住说话，松开发送，最长 15 秒）—— 原生录音优先 */
   function bindTcVoice(btn) {
     if (!btn) return;

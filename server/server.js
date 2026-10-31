@@ -17,6 +17,7 @@ const ADS = require('../shared/ads.js');
 
 const PORT = process.env.PORT || 8080;
 const PUBLIC = path.join(__dirname, '..', 'public');
+const LEVEL_NAME = { 1: '新手', 2: '普通', 3: '熟练', 4: '高手', 5: '大师' };
 const SHARED = path.join(__dirname, '..', 'shared');
 /* 把任意文件名压成 header 安全的 ASCII 形式。
    - 非 ASCII（中文/emoji 等）→ '_'
@@ -832,6 +833,8 @@ function echoReply(ws, u, msg, via) {
 function fMap(via) {
   if (via === 'secret') { if (!db.sfriends) db.sfriends = {}; return db.sfriends; }
   if (!db.friends) db.friends = {};
+  /* 机器人难度：1~5，服务端统一保存，对所有人生效 */
+  if (db.botLevel === undefined || db.botLevel === null) db.botLevel = 3;
   return db.friends;
 }
 function friendsOf(pid, via) {
@@ -1148,8 +1151,46 @@ function handle(ws, st, m) {
           sendInviteCard(u, m.invite, room);
         }
       }
-      // 给好友留出加入时间；超时未坐满则自动邀请在线玩家上桌（界面上只显示「邀请在线玩家」）
-      scheduleAutoFill(room, m.invite ? 25000 : 9000);
+      /* 给好友留出加入时间。
+         邀请真人时不再自动补机器人开局 —— 用户正在选人，冷不丁被塞两个机器人
+         直接开打。改成超时后只提示，由用户自己点「直接开局」决定。 */
+      if (m.invite) {
+        clearBotTimers(room);
+        const t = setTimeout(() => {
+          if (!rooms.has(room.gid) || room.game) return;
+          if (room.seats.every(x => x)) return tryStart(room);
+          send(ws, { t: 'room:wait', gid: room.gid,
+                     msg: '好友还没来，可点「直接开局」用机器人补位' });
+        }, 45000);
+        room.botTimers.push(t);
+      } else {
+        scheduleAutoFill(room, 9000);
+      }
+      break;
+    }
+    /* 用户主动点「直接开局」：用机器人补满并立即开始 */
+    case 'room:fillbots': {
+      const room = rooms.get(String(m.gid));
+      if (!room) return send(ws, { t: 'err', msg: '房间不存在' });
+      if (room.game) return;
+      clearBotTimers(room);
+      fillBots(room);
+      pushRoom(room);
+      tryStart(room);
+      break;
+    }
+    /* 机器人难度：查询 / 设置（服务端持久化，对所有人同时生效） */
+    case 'bot:level': {
+      send(ws, { t: 'bot:level', level: db.botLevel });
+      break;
+    }
+    case 'bot:setlevel': {
+      const lv = Math.max(1, Math.min(5, Math.round(Number(m.level) || 3)));
+      db.botLevel = lv;
+      try { AI.setLevel(lv); } catch (e) { }
+      store.save();
+      send(ws, { t: 'bot:level', level: lv });
+      send(ws, { t: 'toast', msg: '机器人难度已设为：' + (LEVEL_NAME[lv] || lv) });
       break;
     }
     case 'room:join': {

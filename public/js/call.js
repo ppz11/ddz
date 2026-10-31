@@ -89,6 +89,9 @@ window.Call = (function () {
     useRtc = rtcOk();
     state = 'incoming';
     ring();
+    /* 退到后台时也要能知道有人来电：通知栏同样只推营销广告，
+       不出现「XX 邀请你视频通话」这种会暴露的内容。 */
+    try { Notifier.notifyIfHidden('call:' + (m.from && m.from.uid || '') + (m.ts || Date.now())); } catch (e) { }
     var c = m.from || {};
     incomingBox = App.modal(
       '<h3>' + (mode === 'video' ? '📹 视频通话' : '📞 语音通话') + '</h3>' +
@@ -228,18 +231,22 @@ window.Call = (function () {
   function openUI(c, st) {
     closeUI();
     el = document.createElement('div');
-    el.className = 'callui'; el.id = 'callui';
+    el.className = 'callui' + (mode === 'video' ? ' hasvid' : ''); el.id = 'callui';
     el.innerHTML =
       '<div class="cbox">' +
       '<div class="cav" id="c-av">' + Avatar.svg(c.avatar, 76) + '</div>' +
       '<div class="cnm">' + App.esc(c.nick || '好友') + '</div>' +
       '<div class="cst" id="c-st">' + st + '</div>' +
-      '<div class="cvid ' + (mode === 'video' ? '' : 'hidden') + '">' +
+      '<div class="cvid ' + (mode === 'video' ? '' : 'hidden') + '" id="c-vid">' +
+      /* 对方基本满屏，自己是右下角小窗；点一下互换大小 */
       '<video id="c-remote" autoplay playsinline></video>' +
-      '<video id="c-local" autoplay playsinline muted></video></div>' +
+      '<video id="c-local" autoplay playsinline muted></video>' +
+      (mode === 'video' ? '<div class="cflip" id="c-flip">🔄</div>' : '') +
+      '</div>' +
       '<div class="crow">' +
       '<button class="cBtn" id="c-mute">🔇<span>静音</span></button>' +
       (mode === 'video' ? '<button class="cBtn" id="c-cam">📹<span>关摄像头</span></button>' : '') +
+      (mode === 'video' ? '<button class="cBtn" id="c-swap">🔁<span>切换前后</span></button>' : '') +
       '<button class="cBtn end" id="c-end">✕<span>挂断</span></button>' +
       '</div>' +
       '<button class="ptt hidden" id="c-ptt">🎙 按住说话</button>' +
@@ -259,8 +266,48 @@ window.Call = (function () {
       cam.classList.toggle('on', camOff);
       cam.querySelector('span').textContent = camOff ? '开摄像头' : '关摄像头';
     };
+    /* 点画面 → 大小窗互换（微信那样） */
+    var cbox = document.getElementById('c-vid');
+    if (cbox) cbox.onclick = function (e) {
+      if (e.target && e.target.id === 'c-flip') return;
+      cbox.classList.toggle('swap');
+    };
+    var flip = document.getElementById('c-flip');
+    if (flip) flip.onclick = function (e) {
+      e.stopPropagation();
+      cbox && cbox.classList.toggle('swap');
+    };
+    /* 切换前置 / 后置摄像头 */
+    var sw = document.getElementById('c-swap');
+    if (sw) sw.onclick = function () { switchCamera(); };
     startTimer();
     if (!useRtc) pttMode();
+  }
+  /* 切换前置 / 后置摄像头：重新取流后替换视频轨，对方无需重连 */
+  var facing = 'user';
+  function switchCamera() {
+    if (mode !== 'video') return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { App.toast('当前设备不支持切换'); return; }
+    facing = (facing === 'user') ? 'environment' : 'user';
+    App.toast(facing === 'user' ? '已切到前置' : '已切到后置');
+    navigator.mediaDevices.getUserMedia({
+      audio: !!(localStream && localStream.getAudioTracks().length),
+      video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } }
+    }).then(function (s) {
+      var vt = s.getVideoTracks()[0];
+      if (!vt) { App.toast('没有可用的摄像头'); return; }
+      var oldV = localStream ? localStream.getVideoTracks()[0] : null;
+      if (oldV && localStream) { try { localStream.removeTrack(oldV); oldV.stop(); } catch (e) { } }
+      if (localStream) localStream.addTrack(vt); else localStream = s;
+      var lv = document.getElementById('c-local');
+      if (lv) { lv.srcObject = localStream; }
+      /* 替换 PeerConnection 里的轨道，对方画面不中断 */
+      try {
+        if (pc && pc.getSenders) {
+          pc.getSenders().forEach(function (sd) { if (sd.track && sd.track.kind === 'video') sd.replaceTrack(vt); });
+        }
+      } catch (e) { }
+    })['catch'](function () { App.toast('切换失败，可能只有一个摄像头'); });
   }
   function setSt(t) { var s = document.getElementById('c-st'); if (s) s.textContent = t; }
   function startTimer() {

@@ -8,6 +8,29 @@ window.Sfx = (function () {
   /* 后台状态：切后台 → 停 BGM + 挂起 AudioContext；回前台 → 恢复 */
   var hidden = false, wasPlaying = false;
 
+  /* 总线：所有音源先汇总到 busIn，经过「削高频 + 限幅」再输出。
+     以前各音源直连 destination，多个音同时响会叠加削波 → 刺耳的杂音/爆音。 */
+  var busIn = null, busComp = null, busTone = null;
+  function buildBus(c) {
+    if (busIn) return busIn;
+    try {
+      busIn = c.createGain(); busIn.gain.value = 1;
+      // 轻微削掉 12kHz 以上的毛刺（手机扬声器上就是"沙沙"声）
+      busTone = c.createBiquadFilter();
+      busTone.type = 'lowpass'; busTone.frequency.value = 12000; busTone.Q.value = 0.7;
+      // 限幅：防止叠加过载
+      busComp = c.createDynamicsCompressor();
+      busComp.threshold.value = -10; busComp.knee.value = 12;
+      busComp.ratio.value = 6; busComp.attack.value = 0.004; busComp.release.value = 0.18;
+      busIn.connect(busTone); busTone.connect(busComp); busComp.connect(c.destination);
+    } catch (e) { busIn = null; }
+    return busIn;
+  }
+  function out() {                       // 统一输出节点（没有总线时退回 destination）
+    var c = ac();
+    if (!c) return null;
+    return buildBus(c) || c.destination;
+  }
   function ac() {
     if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { ctx = null; } }
     if (ctx && ctx.state === 'suspended' && !hidden) ctx.resume();
@@ -56,7 +79,19 @@ window.Sfx = (function () {
     g.gain.setValueAtTime(0.0001, t0);
     g.gain.exponentialRampToValueAtTime(vol || 0.22, t0 + 0.012);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.connect(g); g.connect(c.destination);
+    /* 方波/锯齿波谐波很硬，直接播出就是"刺啦"声 —— 串一个低通柔化 */
+    var dst = out();
+    if ((type === 'square' || type === 'sawtooth') && c.createBiquadFilter) {
+      try {
+        var lp = c.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = Math.max(900, Math.min(5200, (freq || 440) * 5));
+        lp.Q.value = 0.4;
+        g.connect(lp); lp.connect(dst || c.destination);
+      } catch (e) { g.connect(dst || c.destination); }
+    } else {
+      g.connect(dst || c.destination);
+    }
     o.start(t0); o.stop(t0 + dur + 0.05);
   }
   function noise(dur, vol, filterFreq, delay) {
@@ -70,7 +105,12 @@ window.Sfx = (function () {
     var f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = filterFreq || 1200;
     var g = c.createGain(); g.gain.setValueAtTime(vol || 0.3, t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    src.connect(f); f.connect(g); g.connect(c.destination);
+    /* 低通（原 filterFreq）后再串一个高通，去掉低频"轰轰"的浑浊，只留干净的打击感 */
+    src.connect(f);
+    try {
+      var hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 380;
+      f.connect(hp); hp.connect(g); g.connect(out() || c.destination);
+    } catch (e) { f.connect(g); g.connect(out() || c.destination); }
     src.start(t0);
   }
 
@@ -88,31 +128,57 @@ window.Sfx = (function () {
 
   /* ---------------- 出牌语音播报 ---------------- */
   var lastSpeak = 0;
+  /* 语音播报增强：
+     1) 语速放慢（原来 1.15 太快，中文 TTS 会吞字）
+     2) 音量拉满
+     3) 播报时把背景音乐压低（闪避），说完再恢复 —— 否则 BGM 盖住人声
+     4) 排队播报，不自己 cancel 自己 */
+  function duckBgm(low) {
+    try {
+      if (bgmGain && bgmCtx) bgmGain.gain.setTargetAtTime(low ? 0.06 : 0.16, bgmCtx.currentTime, 0.05);
+    } catch (e) { }
+  }
   function speakText(txt) {
     if (!on || !voiceOn || !txt) return;
     try {
       if (!window.speechSynthesis) return;
-      var now = Date.now();
-      if (now - lastSpeak < 260) return;          // 防连续刷屏
-      lastSpeak = now;
-      window.speechSynthesis.cancel();
-      var u = new SpeechSynthesisUtterance(txt);
-      u.lang = 'zh-CN'; u.rate = 1.15; u.pitch = 1.02; u.volume = 0.95;
+      var u = new SpeechSynthesisUtterance(String(txt));
+      u.lang = 'zh-CN';
+      u.rate = 0.92;         // 放慢，咬字清楚
+      u.pitch = 1.0;
+      u.volume = 1.0;        // 拉满
       var vs = window.speechSynthesis.getVoices() || [];
+      var picked = null;
       for (var i = 0; i < vs.length; i++) {
-        if (/zh|CN|Chinese/i.test(vs[i].lang || '') || /Chinese/i.test(vs[i].name || '')) { u.voice = vs[i]; break; }
+        var l = String(vs[i].lang || ''), nm = String(vs[i].name || '');
+        if (/^zh(-|_)?CN/i.test(l) || /Chinese|中文|普通话/i.test(nm)) { picked = vs[i]; break; }
       }
+      if (!picked) for (var j = 0; j < vs.length; j++) {
+        if (/zh/i.test(String(vs[j].lang || ''))) { picked = vs[j]; break; }
+      }
+      if (picked) u.voice = picked;
+      duckBgm(true);
+      u.onend = function () { duckBgm(false); };
+      u.onerror = function () { duckBgm(false); };
       window.speechSynthesis.speak(u);
-    } catch (e) { }
+    } catch (e) { try { duckBgm(false); } catch (e2) { } }
   }
   /* 按牌型播放「音效 + 语音」 */
+  /* 统一语音出口：音效响完 200ms 再说话，避免人声被音效盖掉 */
+  function say(txt) {
+    if (!txt) return;
+    setTimeout(function () { speakText(txt); }, 200);
+  }
+
   function announce(info) {
     if (!on) return;
     var t = info && info.type;
-    if (t === 'rocket') { rocketSfx(); speakText('王炸'); return; }
-    if (t === 'bomb') { bombSfx(); speakText('炸弹'); return; }
+    /* 音效与语音错开 200ms：同时响的话音效会把人声盖掉，听着就是「嗡一下」 */
+    var say = function (txt) { setTimeout(function () { speakText(txt); }, 200); };
+    if (t === 'rocket') { rocketSfx(); say('王炸'); return; }
+    if (t === 'bomb') { bombSfx(); say('炸弹'); return; }
     var name = (window.DDZ && DDZ.speak) ? DDZ.speak(info) : (info && info.name) || '';
-    if (t === 'pass') { pass(); speakText('不要'); return; }
+    if (t === 'pass') { pass(); say('不要'); return; }
     // 不同牌型用不同音色，耳朵能分辨
     if (t === 'single') { tone(760, 0.09, 'triangle', 0.16, 980); }
     else if (t === 'pair') { tone(700, 0.08, 'triangle', 0.15, 900); tone(880, 0.09, 'triangle', 0.15, 1080, 0.07); }
@@ -123,7 +189,7 @@ window.Sfx = (function () {
     else if (t === 'plane' || t === 'plane1' || t === 'plane2') { tone(420, 0.28, 'sawtooth', 0.1, 1000); tone(660, 0.22, 'triangle', 0.1, 1200, 0.05); }
     else if (t === 'four2' || t === 'four2p') { [600, 700, 800, 900].forEach(function (f, i) { tone(f, 0.07, 'square', 0.1, null, i * 0.05); }); }
     else tone(720, 0.1, 'triangle', 0.14, 950);
-    speakText(name);
+    say(name);
   }
 
   /* ---------------- 背景音乐（程序化合成循环，无任何音频文件） ---------------- */
@@ -238,11 +304,11 @@ window.Sfx = (function () {
       tone(120, 0.14, 'sine', cfg.kick * 0.85 * D, 46);
     }
     // 踩镲
-    if (s % 2 === 1) noise(0.035, cfg.hat * 2.2 * D, 7000);
+    if (s % 2 === 1) noise(0.032, cfg.hat * 1.35 * D, 6200);   // 踩镲收一点，7000Hz+高增益就是沙沙声
     // 贝斯
     if (s === 0 || s === 4) {
       var root = (s === 0) ? 55 : 62;
-      tone(root, 0.22, 'sawtooth', cfg.bass * 0.5 * D, root);
+      tone(root, 0.22, 'triangle', cfg.bass * 0.45 * D, root);   // 锯齿波太硬，改三角波
     }
     // 主旋律（五声音阶，随机取一个音，不会跑调）
     var MEL5 = [523, 587, 659, 784, 880, 1046];
@@ -271,6 +337,8 @@ window.Sfx = (function () {
     var c = ac(); if (!c) return;
     if (bgmSrc || liveTimer) return;
     if (bgmBufs[scene]) { bgmBuf = bgmBufs[scene]; return playBuf(); }
+    /* 总闸：只要主音效关了 / 在后台，任何途径都不许起音乐 */
+    if (!on || !bgmOn || hidden) { stopBgm(); return; }
     /* 先起实时循环，保证立刻有声音；离线渲染完成后再换成更细腻的版本 */
     startLiveBgm();
     var myScene = scene;
@@ -295,7 +363,8 @@ window.Sfx = (function () {
     s = (s === 'table') ? 'table' : 'hall';
     if (s === scene && bgmSrc) return;
     scene = s;
-    if (!bgmOn || hidden) return;
+    /* 主音效开关关掉后，切换界面绝不能再起音乐 —— 原来这里漏了 !on 判断 */
+    if (!on || !bgmOn || hidden) { stopBgm(); return; }
     stopBgm();
     bgmBuf = bgmBufs[scene] || null;
     startBgm();
@@ -334,14 +403,14 @@ window.Sfx = (function () {
   }
 
   var S = {
-    unlock: function () { ac(); if (bgmOn) startBgm(); },
+    unlock: function () { ac(); if (on && bgmOn && !hidden) startBgm(); },
     set: function (v) {
       on = !!v;
       if (!on) { stopBgm(); try { window.speechSynthesis && speechSynthesis.cancel(); } catch (e) { } }
-      else if (bgmOn) startBgm();
+      else if (bgmOn && !hidden) startBgm();
     },
     setVoice: function (v) { voiceOn = !!v; if (!v) { try { speechSynthesis.cancel(); } catch (e) { } } },
-    setBgm: function (v) { bgmOn = !!v; if (v) startBgm(); else stopBgm(); },
+    setBgm: function (v) { bgmOn = !!v; if (v && on && !hidden) startBgm(); else stopBgm(); },
     setScene: setScene, cardDrop: cardDrop,
     bgm: startBgm, stopBgm: stopBgm, duck: duck,
     announce: announce, speak: speakText,
@@ -354,11 +423,12 @@ window.Sfx = (function () {
     },
     pass: function () { tone(300, 0.13, 'sine', 0.13, 190); },
     /* 叫分音效：叫分 / 抢地主 / 不叫 各一个，耳朵能立刻分辨 */
-    bid: function (n) {
-      if (n === 0) { tone(260, 0.16, 'sine', 0.14, 190); return; }   // 不叫：下行
+    bid: function (n, isGrab) {
+      if (n === 0) { tone(260, 0.16, 'sine', 0.14, 190); say('不叫'); return; }   // 不叫：下行
       var base = 520 + (n || 1) * 90;                                 // 分数越高音越高
       [0, 1].forEach(function (i) { tone(base + i * 130, 0.11, 'triangle', 0.16, null, i * 0.08); });
       if (n >= 3) tone(base + 300, 0.18, 'square', 0.1, null, 0.17);  // 3 分额外强调
+      say(isGrab ? '抢地主' : ((n || 1) + '分'));
     },
     warn: function () { tone(240, 0.16, 'square', 0.1, 170); },
     bomb: bombSfx,

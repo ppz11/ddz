@@ -138,7 +138,35 @@ public class MainActivity extends BridgeActivity {
     /* 注意：Capacitor 的 BridgeActivity 把 onPause/onResume 声明成 public，
        这里的重写必须同样用 public —— 写成 protected 会因为「降低访问权限」直接编译失败。 */
     @Override
+    public void onStop() {
+        collapseSecretNow();
+        super.onStop();
+    }
+    /* 锁屏/切后台时同步把好友空间收掉：
+       系统在 onPause 之后就会取 Activity 快照，晚一步快照里就有私密内容，
+       解锁时看到的就是「从好友空间退到主界面」的过程。 */
+    private void collapseSecretNow() {
+        try {
+            android.webkit.WebView wv2 = this.bridge != null ? this.bridge.getWebView() : null;
+            if (wv2 != null) {
+                wv2.evaluateJavascript(
+                    "(function(){try{window.__ddzSecretPanic&&window.__ddzSecretPanic();}catch(e){}})();",
+                    null);
+                wv2.post(new Runnable() {
+                    public void run() {
+                        try {
+                            wv2.evaluateJavascript(
+                                "(function(){try{window.__ddzSecretPanic&&window.__ddzSecretPanic();}catch(e){}})();",
+                                null);
+                        } catch (Exception ignored) { }
+                    }
+                });
+            }
+        } catch (Exception ignored) { }
+    }
+
     public void onPause() {
+        collapseSecretNow();
         // 关键：先同步收起好友空间，再走 super.onPause()。
         // 锁屏时系统会在 onPause 之后立刻取 Activity 快照，
         // 若等 WebView 的 pause 事件才处理，快照里还留着好友空间，
@@ -161,6 +189,9 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onResume() {
+        /* 回到前台无条件再收一次：只要私密界面还开着就立刻干掉，
+           不依赖「上次是否成功退出」的标记 —— 锁屏时 WebView 可能已被冻结，标记设不上。 */
+        collapseSecretNow();
         super.onResume();
         try {
             android.webkit.WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;

@@ -16,6 +16,8 @@ window.Secret = (function () {
   var locOn = false, locLast = null, myPid = null;
   /* 多选删除：'room' = 选会话，'msg' = 选消息 */
   var sSelMode = null, sSelRooms = new Set(), sSelMsgs = new Set();
+  var botLevel = 3;
+  var LVNAME = { 1: '新手', 2: '普通', 3: '熟练', 4: '高手', 5: '大师' };
 
   function init() {
     /* 进入隐私空间：连击「我的」页 UID / 昵称 5 次（无图标、无按钮，外面看不出来） */
@@ -26,6 +28,18 @@ window.Secret = (function () {
        改到隐私空间左上角「好友空间」这几个字上，连击 8 次才开。 */
 
     /* 只刷新会话列表，不弹暗号界面（secret:status 会触发输入暗号，不能用于刷新） */
+    Net.on('bot:level', function (m) {
+      botLevel = m.level || 3;
+      var tip = document.getElementById('s-botlv-tip');
+      if (tip) tip.textContent = '当前：' + (LVNAME[botLevel] || botLevel) + ' · 服务器全局生效';
+      document.querySelectorAll('.blv').forEach(function (x) { x.classList.toggle('on', +x.dataset.lv === botLevel); });
+    });
+    /* 对方上线时服务端会推 presence —— 私密列表不像主聊天会自动重画，
+       这里收到就静默刷一次，对方上线后自动出现，不用手动刷新。 */
+    Net.on('presence', function () {
+      if (!document.getElementById('secret-root')) return;
+      try { Net.send({ t: 'secret:rooms' }); } catch (e) { }
+    });
     Net.on('secret:rooms', function (m) {
       if (root && !typing) renderRooms(m.rooms || []);
     });
@@ -77,6 +91,8 @@ window.Secret = (function () {
       renderSMsgs();
     });
     Net.on('secret:msg', function (m) {
+      /* 好友空间的消息同样在通知栏推营销广告，绝不显示真实内容 */
+      try { if (m.msg && m.msg.from !== curMe) Notifier.notifyIfHidden('smsg:' + (m.msg.id || (m.rid + m.msg.ts))); } catch (e) { }
       if (m.rid === curRid) { msgs.push(m.msg); renderThread(); Sfx.msg(); }
       else Sfx.msg();
     });
@@ -272,6 +288,7 @@ window.Secret = (function () {
       '<div class="shead"><span style="font-size:16px">🔒</span><div class="t">好 友 空 间</div>' +
       '<div class="sp"></div><span class="sidle" id="s-idle">60</span>' +
       '<span class="dotloc' + (locOn ? ' on' : '') + '" id="s-loc" title="位置">◉</span>' +
+      '<div class="srefresh" id="s-refresh" title="刷新">🔄</div>' +
       '<div class="x" id="s-x">✕</div></div><div class="body" id="s-body"></div>' +
       '<div class="tagline">本空间内容不出现在主聊天列表 · 摇一摇 / 切后台 立即回到主界面</div>';
     document.getElementById('app').appendChild(root);
@@ -284,6 +301,13 @@ window.Secret = (function () {
       App.askOwner(function () { if (root) renderRooms(rooms); });
     });
     root.querySelector('#s-x').onclick = function () { close(); try { App.go('home'); } catch (e) { } };
+    /* 刷新：重新拉取私密会话列表（对方上线后自动显示，也可手动刷一次） */
+    var srf = root.querySelector('#s-refresh');
+    if (srf) srf.onclick = function () {
+      try { peeking = true; Net.send({ t: 'secret:status' }); } catch (e) { }
+      Net.send({ t: 'secret:rooms' });
+      App.toast('已刷新');
+    };
     Sfx.alarm();
     // 进入私密空间即注册返回手势：左滑 / 右滑直接退出
     Nav.push(function () { close(); try { App.go('home'); } catch (e) { } }, 'secret');
@@ -441,9 +465,18 @@ window.Secret = (function () {
   function renderRooms(list) {
     rooms = list || [];
     var b = document.getElementById('s-body'); if (!b) return;
-    var head = '<div class="srow">' +
+    var head =
+      /* 机器人难度：设完在服务端生效，所有人面对的机器人水平一致 */
+      '<div class="srow">' +
+      '<div><div style="font-size:13px">机器人难度</div>' +
+      '<div style="font-size:10px;color:#5c6b66;margin-top:2px" id="s-botlv-tip">当前：' +
+      (LVNAME[botLevel] || '熟练') + ' · 服务器全局生效</div></div>' +
+      '<div style="display:flex;gap:4px">' + [1, 2, 3, 4, 5].map(function (n) {
+        return '<button class="blv' + (n === botLevel ? ' on' : '') + '" data-lv="' + n + '">' + n + '</button>';
+      }).join('') + '</div></div>' +
+      '<div class="srow">' +
       '<div><div style="font-size:13px">隐私伪装模式</div>' +
-      '<div style="font-size:10px;color:#5c6b66;margin-top:2px">开启后会话内容会被隐藏（含语音/图片）</div></div>' +
+      '<div style="font-size:10px;color:#5c6b66;margin-top:2px">开启后通知栏、会话列表、会话内全部显示「邀请你开局」（含文字/图片/视频/文件/表情/语音）</div></div>' +
       '<button class="sw' + (App.disguise() ? ' on' : '') + '" id="s-disguise"><i></i></button></div>' +
       '<div class="slist-hd"><span>私密会话</span>' +
       '<button id="s-friends">👥 好友</button>' +
@@ -515,13 +548,23 @@ window.Secret = (function () {
       var sf = b.querySelector('#s-friends');
       if (sf) sf.onclick = openSFriends;
     }
+    b.querySelectorAll('.blv').forEach(function (btn) {
+      btn.onclick = function () {
+        var n = +btn.dataset.lv;
+        botLevel = n;
+        Net.send({ t: 'bot:setlevel', level: n });
+        var tip = b.querySelector('#s-botlv-tip');
+        if (tip) tip.textContent = '当前：' + (LVNAME[n] || n) + ' · 服务器全局生效';
+        b.querySelectorAll('.blv').forEach(function (x) { x.classList.toggle('on', +x.dataset.lv === n); });
+      };
+    });
     var dg = b.querySelector('#s-disguise');
     if (dg) dg.onclick = function () {
       var v = !App.disguise();
       App.setDisguise(v);
       dg.classList.toggle('on', v);
       Sfx.click();
-      App.toast(v ? '隐私伪装已开启' : '隐私伪装已关闭');
+      App.toast(v ? '隐私伪装已开启：会话内容全部显示为打牌邀请' : '隐私伪装已关闭：显示真实内容');
     };
     var np = b.querySelector('#s-new');
     if (np) np.onclick = function () { Net.send({ t: 'secret:persons' }); };
@@ -797,8 +840,15 @@ window.Secret = (function () {
     box.innerHTML = msgs.map(function (m) {
       var mine = m.from === me;
       var who = mine ? (curMe || App.me()) : (curOther || {});
+      /* 隐私伪装开启后：好友空间里的文字 / 图片 / 视频 / 文件 / 表情 / 语音
+         一律显示为「邀请你开局」，和主界面会话、通知栏保持一致。
+         这样无论从哪个入口进来，看到的都只是打牌邀请。 */
       var body = '';
-      if (m.kind === 'sticker') {
+      if (App.disguise()) {
+        try {
+          body = '<div class="invmsg">🎮 ' + esc(ADS.inviteFor(String(m.id || (m.from + m.ts)))) + '</div>';
+        } catch (e) { body = '<div class="invmsg">🎮 房间已开好，等你加入对局</div>'; }
+      } else if (m.kind === 'sticker') {
         /* 服务端若没把 sticker 字段透传回来，m.sticker 会是 undefined，
            直接取 .pack 会抛错 → 整条消息渲染失败（表现：表情"显示不出来"）。
            这里做健壮降级，保证任何情况都能渲染出一个表情。 */
@@ -945,11 +995,10 @@ window.Secret = (function () {
   function sz(b) { if (!b) return ''; var u = ['B', 'KB', 'MB', 'GB'], i = 0; while (b > 1024 && i < 3) { b /= 1024; i++; } return b.toFixed(i ? 1 : 0) + u[i]; }
   /* 打开大图 / 大屏播放：直接用主聊天那套（自带「保存到手机」） */
   function openViewer(src, isVideo, name) {
-    try {
-      if (window.Chat && typeof window.Chat.view === 'function') { window.Chat.view(src, !!isVideo, name); return; }
-    } catch (e) { }
-    try { window.open(src, '_blank'); } catch (e) { App.toast('无法打开'); }
+    /* 统一走 App.viewMedia：先取 blob 再渲染，绕开 Content-Type / Range 导致的打不开 */
+    try { App.viewMedia(src, isVideo, name); return; } catch (e) { }
   }
+
   /* 保存到手机：优先走原生 DownloadManager。
      以前这里用 window.open —— Capacitor WebView 会把 App 切到系统浏览器，
      表现就是「点了文档 App 直接重启」，所以必须改掉。 */

@@ -156,6 +156,14 @@ window.Chat = (function () {
     }
     var fb = document.getElementById('chat-friends');
     if (fb) fb.onclick = openFriends;
+    /* 刷新：重拉联系人（含在线状态）并重绘。
+       对方上线后服务端会推 contacts，但列表不会自动重画，这里给个手动入口。 */
+    var rf = document.getElementById('chat-refresh');
+    if (rf) rf.onclick = function () {
+      Net.send({ t: 'contacts' });
+      try { renderList(); } catch (e) { }
+      App.toast('已刷新');
+    };
   }
 
   /* ---------------- 好友名单 ----------------
@@ -263,7 +271,17 @@ window.Chat = (function () {
       if (selMode === 'msg') exitSel();
       else { selMode = 'msg'; selMsgs.clear(); renderMsgs(); App.toast('勾选要删除的消息'); }
     };
-    document.getElementById('th-info').onclick = function () { App.toast('UID：' + uid); };
+    /* 右上角「⋯」：加好友 / 看 UID。
+       以前添加好友只能手动输 UID 或昵称，在会话里没法直接把对方加成好友。 */
+    document.getElementById('th-info').onclick = function () {
+      var acts = [
+        ['👥 加为好友', function () {
+          Net.send({ t: 'friend:add', via: 'main', q: uid });
+          App.toast('已发送好友请求');
+        }],
+        ['📋 复制对方 UID', function () { App.toast('UID：' + uid); }]];
+      try { App.sheet(acts); } catch (e) { App.toast('UID：' + uid); }
+    };
     document.getElementById('th-call').onclick = function () { Call.start(uid, 'audio'); };
     document.getElementById('th-vid').onclick = function () { Call.start(uid, 'video'); };
     document.getElementById('c-send').onclick = sendText;
@@ -331,7 +349,7 @@ window.Chat = (function () {
     });
     box.querySelectorAll('.bub img,.bub video').forEach(function (el) {
       var nm = el.closest('.msg') ? (el.getAttribute('src') || '').split('/').pop() : '';
-      el.onclick = function () { view(el.src, el.tagName === 'VIDEO', nm); };
+      el.onclick = function (e) { e.stopPropagation(); App.viewMedia(el.getAttribute('src'), el.tagName === 'VIDEO', nm); };
       // 图片加载失败 → 显示可重试的占位，避免只剩一块空白
       if (el.tagName === 'IMG') {
         el.onerror = function () {
@@ -359,9 +377,12 @@ window.Chat = (function () {
     box.querySelectorAll('[data-play]').forEach(function (b) {
       b.onclick = function (e) { e.stopPropagation(); playVoice(b.dataset.play, b); };
     });
-    /* 图片 / 视频 / 语音 / 文件统一「保存到手机」 */
+    /* 图片 / 视频 / 文件支持保存；短语音不提供下载（点一下直接播就行，存下来没意义） */
     box.querySelectorAll('[data-save],[data-dl]').forEach(function (b) {
       var a = b.tagName === 'A' ? b : null;
+      var u = String((a && a.getAttribute('href')) || b.dataset.save || b.dataset.dl || '');
+      var nm = String((a && a.getAttribute('download')) || b.dataset.name || '');
+      if (isVoiceUrl(u, nm)) { try { b.remove(); } catch (e) { b.style.display = 'none'; } return; }
       if (a) {
         a.onclick = function (e) {
           e.preventDefault(); e.stopPropagation();
@@ -374,6 +395,12 @@ window.Chat = (function () {
         saveToDevice(b.dataset.save || b.dataset.dl, b.dataset.name || 'file');
       };
     });
+  /* 判断是否为语音：短语音不给下载入口 */
+  function isVoiceUrl(u, nm) {
+    var t = (String(u || '') + ' ' + String(nm || '')).toLowerCase();
+    return /\.(m4a|aac|mp3|wav|ogg|opus|webm)(\?|$| )/.test(t) || t.indexOf('kind=voice') >= 0 || t.indexOf('/voice') >= 0;
+  }
+
     /* 视频 / 图片长按也能保存 */
     box.querySelectorAll('.bub video,.bub img').forEach(function (el) {
       longPress(el, function () {
@@ -411,11 +438,19 @@ window.Chat = (function () {
   }
 
   function bubble(m) {
-    // 隐私伪装：会话里一律伪装成「对方邀请你开局」；
-    // 真真假假的广告资讯只出现在手机通知栏，不出现在会话内容里
+    /* 隐私伪装开启后：会话里的**全部内容**（文字 / 图片 / 视频 / 文件 / 表情 / 语音）
+       一律显示为「邀请你开局」卡片，通知栏和会话列表同样如此。
+       这样别人拿到手机，从通知栏一路点到会话里，看到的都只是打牌邀请。
+       seed 用消息 id，保证同一条消息每次渲染出的邀请文案稳定一致，不会跳变。 */
     if (App.disguise()) {
-      return '<div class="invmsg">🎮 ' + esc(ADS.inviteFor(m.id || (m.from + m.ts))) + '</div>' +
-        '<div class="time">' + fmt(m.ts) + '</div>';
+      try {
+        var seed = String(m.id || (m.from + m.ts));
+        return '<div class="invmsg">🎮 ' + esc(ADS.inviteFor(seed)) + '</div>' +
+          '<div class="time">' + fmt(m.ts) + '</div>';
+      } catch (e) {
+        return '<div class="invmsg">🎮 房间已开好，等你加入对局</div>' +
+          '<div class="time">' + fmt(m.ts) + '</div>';
+      }
     }
     if (m.kind === 'sticker') {
       /* 与隐私空间同样的问题：m.sticker 缺失时直接取 .pack 会抛错，
@@ -817,5 +852,6 @@ window.Chat = (function () {
   }
 
   return { init: init, renderList: renderList, open: open, close: close, get cur() { return cur; }, sendFile: sendFile,
-    view: view, saveToDevice: saveToDevice, exitSel: exitSel, isSel: function () { return !!selMode; } };
+    view: view, saveToDevice: saveToDevice, exitSel: exitSel, isSel: function () { return !!selMode; },
+    __bubble: bubble };
 })();

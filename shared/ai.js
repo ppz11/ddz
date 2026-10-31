@@ -11,6 +11,25 @@
   function rint(n) { return Math.floor(Math.random() * n); }
   function pick(a) { return a[rint(a.length)]; }
 
+  /* ---------- 难度档位 ----------
+   * 1=新手 2=普通 3=熟练 4=高手 5=大师（默认 3）
+   * 数值越高：失误越少、会算牌记牌、压制更果断、懂得拆牌与保留关键牌。
+   * 难度由服务端统一保存，对所有人同时生效（同一局里机器人水平一致）。 */
+  var LEVELS = {
+    1: { name: '新手', mistake: 0.55, lookahead: 0, count: 0, greed: 0.30, split: 0.15, trap: 0.00 },
+    2: { name: '普通', mistake: 0.34, lookahead: 1, count: 0, greed: 0.45, split: 0.30, trap: 0.05 },
+    3: { name: '熟练', mistake: 0.18, lookahead: 2, count: 1, greed: 0.62, split: 0.50, trap: 0.15 },
+    4: { name: '高手', mistake: 0.08, lookahead: 3, count: 1, greed: 0.78, split: 0.70, trap: 0.30 },
+    5: { name: '大师', mistake: 0.02, lookahead: 4, count: 2, greed: 0.90, split: 0.85, trap: 0.45 }
+  };
+  var LV = null;
+  function setLevel(n) {
+    n = Math.max(1, Math.min(5, Math.round(Number(n) || 3)));
+    LV = LEVELS[n]; LV.id = n;
+    return LV.id;
+  }
+  function getLevel() { if (!LV) setLevel(3); return LV; }
+
   /* ---------- 手牌强度评估（0~100） ---------- */
   function strength(hand) {
     var c = {}, i, s = 0;
@@ -165,16 +184,27 @@
     can.sort(function (a, b) { return cost(a) - cost(b); });
     var best = can[0];
 
-    // 不紧急时，小牌才跟；大牌则放过
+    var L = getLevel();
+    // 失误率：低难度会「看走眼」，放过本该压的牌
+    if (Math.random() < L.mistake * 0.5) return { ids: [] };
+
+    // 不紧急时，小牌才跟；大牌则放过（难度越高越会忍）
     if (!urgent) {
       var tooBig = best.info.main >= 15 || best.info.type === 'bomb' || best.info.type === 'rocket';
-      // 上家出的牌很小而我只有大牌能压 → 视情况放过
       var gap = best.info.main - needBeat.main;
-      if (tooBig && needBeat.main <= 12 && Math.random() < 0.72) return { ids: [] };
-      if (gap > 6 && Math.random() < 0.35) return { ids: [] };
+      var holdBack = 0.72 - L.greed * 0.45;          // 高手更舍得出大牌
+      if (tooBig && needBeat.main <= 12 && Math.random() < holdBack) return { ids: [] };
+      // 高手会「藏牌」：上家出小牌时故意不压，留着关键牌收尾
+      if (L.trap > 0 && needBeat.main <= 8 && Math.random() < L.trap * 0.5) return { ids: [] };
+      if (gap > 6 && Math.random() < (0.35 - L.greed * 0.2)) return { ids: [] };
     }
-    // 地主时更积极
+    // 地主时更积极；高难度会挑「最省牌型」而不是随便出
     if (isLandlord && Math.random() < 0.12 && can.length > 1) return { ids: can[1].ids };
+    // 高手懂得拆牌：手上剩牌少时优先走能一口气出完的
+    if (L.split > 0 && hand.length <= 6) {
+      var finisher = can.filter(function (x) { return x.cards.length >= hand.length - 1; });
+      if (finisher.length && Math.random() < L.split) return { ids: finisher[0].ids };
+    }
     return { ids: best.ids };
   }
 
@@ -186,6 +216,7 @@
   }
 
   return {
-    strength: strength, bid: bid, grab: grab, play: play, thinkTime: thinkTime
+    strength: strength, bid: bid, grab: grab, play: play, thinkTime: thinkTime,
+    setLevel: setLevel, getLevel: getLevel, LEVELS: LEVELS
   };
 });

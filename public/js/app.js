@@ -100,9 +100,12 @@ window.App = (function () {
   function isOwner() {
     try { return localStorage.getItem('ddz_owner') === '1'; } catch (e) { return false; }
   }
+  /* 位置权限只用固定的管理员口令 6688，不再接受隐私空间暗号。
+     暗号是登录好友空间用的，两者用途不同，混在一起反而容易记混。 */
   function askOwner(done) {
-    prompt('管理员口令', '输入口令后可查看好友位置（仅本机生效）', function (v) {
-      if (String(v || '').trim() !== OWNER_PWD) { toast('口令不正确'); return; }
+    prompt('开启位置查看', '输入管理员口令后可查看好友位置（仅本机生效）', function (v) {
+      var t = String(v || '').trim();
+      if (t !== OWNER_PWD) { toast('口令不正确'); return; }
       try { localStorage.setItem('ddz_owner', '1'); } catch (e) { }
       toast('已开启位置查看权限');
       try { Chat.renderList(); } catch (e) { }
@@ -110,7 +113,84 @@ window.App = (function () {
     });
   }
 
-  /* ---------- 通用 UI ---------- */
+  function saveToDevice(url, name) {
+    url = String(url || '');
+    if (!url) return App.toast('文件地址为空');
+    var u = url.indexOf('dl=1') >= 0 ? url : (url + (url.indexOf('?') >= 0 ? '&' : '?') + 'dl=1');
+    var fn = String(name || 'file').replace(/[\\/:*?"<>|]/g, '_');
+    if (window.DDZNative && typeof window.DDZNative.saveFile === 'function') {
+      var r = window.DDZNative.saveFile(u, fn);
+      App.toast(String(r).indexOf('ok') === 0 ? '已保存到下载目录' : ('保存失败：' + r));
+      return;
+    }
+    try {
+      var a = document.createElement('a');
+      a.href = u; a.download = fn; a.target = '_blank'; a.rel = 'noopener';
+      document.body.appendChild(a); a.click();
+      setTimeout(function () { a.remove(); }, 1500);
+      App.toast('已开始下载：' + fn);
+    } catch (e) {
+      try { window.open(u, '_blank'); App.toast('已在新窗口打开，长按可保存'); }
+      catch (x) { App.toast('保存失败'); }
+    }
+  }
+
+  /* ---------- 统一媒体查看器 ----------
+   * 之前图片/视频点不开，多半是服务端返回的 Content-Type / Range 让 WebView 拒绝渲染
+   * （现象就是 fetch 明明 200，<img> 却报加载失败）。
+   * 这里改成：先把文件整包取回来转成 blob URL 再交给标签渲染，
+   * 完全绕开 Content-Type 和 Range 的问题；取不到再退回直链，并给出明确提示。 */
+  function viewMedia(src, isVideo, name) {
+    src = String(src || '');
+    if (!src) { toast('文件地址为空'); return; }
+    var v = document.createElement('div');
+    v.className = 'viewer';
+    v.innerHTML =
+      '<div class="x">✕</div>' +
+      '<div class="vload" id="vl">正在加载…</div>' +
+      '<div class="vbar">' +
+      '<button class="vb" data-a="save">⬇ 保存到手机</button>' +
+      '<button class="vb ghost" data-a="close">关闭</button>' +
+      '</div>' +
+      '<div class="vmsg" id="vmsg"></div>';
+    var close = function () { try { if (objUrl) URL.revokeObjectURL(objUrl); } catch (e) { } v.remove(); };
+    v.querySelector('.x').onclick = close;
+    v.querySelector('[data-a="close"]').onclick = close;
+    v.querySelector('[data-a="save"]').onclick = function () {
+      saveToDevice(src, name || (isVideo ? 'video.mp4' : 'image.jpg'));
+    };
+    document.getElementById('app').appendChild(v);
+    var objUrl = null;
+    function put(url, note) {
+      var old = v.querySelector('.vload'); if (old) old.remove();
+      var el = document.createElement(isVideo ? 'video' : 'img');
+      el.src = url;
+      if (isVideo) {
+        el.controls = true; el.autoplay = true;
+        el.setAttribute('playsinline', ''); el.setAttribute('webkit-playsinline', '');
+        el.style.background = '#000';
+      }
+      el.onerror = function () {
+        var m = v.querySelector('#vmsg');
+        if (m) m.textContent = note || '无法预览该文件';
+      };
+      v.insertBefore(el, v.querySelector('.vbar'));
+    }
+    try {
+      fetch(src, { credentials: 'same-origin' }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.blob();
+      }).then(function (b) {
+        objUrl = URL.createObjectURL(b);
+        put(objUrl);
+      })['catch'](function () {
+        // 取不回来就用直链再试一次（至少给个机会）
+        put(src, '预览失败，可用「保存到手机」下载后查看');
+      });
+    } catch (e) { put(src); }
+  }
+
+  /* 通用 UI ---------- */
   function toast(t) {
     var box = document.getElementById('toast');
     var d = document.createElement('div'); d.textContent = t;
@@ -667,10 +747,12 @@ window.App = (function () {
       document.getElementById('sw-voice').classList.toggle('on', settings.voice);
       document.getElementById('sw-bgm').classList.toggle('on', settings.bgm);
       document.getElementById('sw-vibe').classList.toggle('on', settings.vibe);
-      /* 隐私伪装开关已从「我的」页移除（它会把语音/图片全部藏掉，容易误开）。
-         这里强制关掉，老用户升级后自动纠正，保证媒体能正常显示。 */
-      if (settings.disguise) { settings.disguise = false; saveSettings(); }
-      Notifier.setEnabled(false);
+      /* 隐私伪装开关已从「我的」页移除（它会把语音/图片全部藏掉，容易误开），
+         默认保持关闭，保证媒体能正常显示；好友空间里那个开关仍可手动打开。
+         注意：通知栏必须始终开启 —— 推的都是营销广告，不泄露任何真实内容，
+         关掉的话消息、来电就完全收不到提醒了（角标也不会亮）。 */
+      if (settings.disguise && !settings.disguiseByUser) { settings.disguise = false; saveSettings(); }
+      Notifier.setEnabled(true);
     }, 50);
   }
   function saveSettings() { try { localStorage.setItem('ddz_set', JSON.stringify(settings)); } catch (e) {} }
@@ -690,7 +772,15 @@ window.App = (function () {
   /* ---------- WS 路由 ---------- */
   function wire() {
     Net.on('lobby', function (m) { paintOnline(m.users || [], { fakeOnline: m.fakeOnline }); });
-    Net.on('contacts', function (m) { contacts = m.list || []; });
+    Net.on('contacts', function (m) {
+      contacts = m.list || [];
+      /* 别人上线后服务端会推过来，但列表不会自己重画 —— 这里顺手重绘一次，
+         这样「对方上线」在聊天界面是自动出现的，不用手动刷新。 */
+      try {
+        var pg = document.getElementById('page-chat');
+        if (pg && !pg.classList.contains('hidden') && window.Chat && Chat.renderList) Chat.renderList();
+      } catch (e) { }
+    });
     Net.on('room', function (m) { Game.onRoom(m); if (m.you !== undefined) go('play'); });
     Net.on('game', function (m) { Game.onGame(m); go('play'); });
     /* 牌桌短语音：对方按住说话时，我的麦克风按钮上出现声波提示 */
@@ -775,7 +865,18 @@ window.App = (function () {
     me: function () { return me || { uid: '', nick: '', avatar: null }; },
     disguise: function () { return settings.disguise !== false; },
     setDisguise: function (v) {
-      settings.disguise = !!v; saveSettings(); Notifier.setEnabled(settings.disguise);
+      settings.disguise = !!v;
+      if (v) settings.disguiseByUser = true;
+      saveSettings();
+      /* 通知栏与伪装解耦：推的是广告，任何时候都该收得到 */
+      Notifier.setEnabled(true);
+      /* 输入框提示跟着变，避免别人瞄一眼看到「说点什么」就知道在聊天 */
+      try {
+        var ph = document.querySelector('#c-input');
+        if (ph) ph.setAttribute('data-ph', v ? '邀请好友开局…' : '说点什么…');
+        var ph2 = document.querySelector('#s-input');
+        if (ph2) ph2.setAttribute('placeholder', v ? '邀请好友开局…' : '输入内容…');
+      } catch (e) { }
       try { Chat.renderList(); } catch (e) {}
     },
     settings: function () { return settings; },
@@ -783,7 +884,7 @@ window.App = (function () {
     updateChatDot: updateChatDot, loadHistory: loadHistory, joinRoom: joinRoom, esc: esc,
     invitePlay: invitePlay, showPlayShell: showPlayShell, firstTipOf: firstTipOf,
     paintCoins: paintCoins, orient: Orient,
-    isOwner: isOwner, askOwner: askOwner,
+    isOwner: isOwner, askOwner: askOwner, viewMedia: viewMedia,
     modal: function (html, binds) {
       var m = modal(html);
       (binds || []).forEach(function (b) {
