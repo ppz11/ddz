@@ -4,6 +4,8 @@
  */
 window.Sfx = (function () {
   var ctx = null, on = true, voiceOn = true, bgmOn = true;
+  /* 出牌语音播报的语速 / 音调：设置页滑钮可调，试听听到的就是调后的效果 */
+  var tRate = 1.08, tPitch = 1.0;
   var bgmSrc = null, bgmGain = null, bgmBuf = null, bgmCtx = null;
   /* 后台状态：切后台 → 停 BGM + 挂起 AudioContext；回前台 → 恢复 */
   var hidden = false, wasPlaying = false;
@@ -187,6 +189,18 @@ window.Sfx = (function () {
   function nativeTtsSpeak(txt) {
     try { window.DDZNative.speak(String(txt)); return true; } catch (e) { return false; }
   }
+  /* 语速 / 音调：Web 语音设到 utterance 上，原生 TTS 通过桥接设到引擎上。
+     两条路都要设，否则「手机上听着没变化」。 */
+  function setTune(rate, pitch) {
+    if (typeof rate === 'number' && isFinite(rate)) tRate = Math.max(0.5, Math.min(2.0, rate));
+    if (typeof pitch === 'number' && isFinite(pitch)) tPitch = Math.max(0.4, Math.min(2.0, pitch));
+    try {
+      if (window.DDZNative && typeof window.DDZNative.ttsTune === 'function') {
+        window.DDZNative.ttsTune(tRate, tPitch);
+      }
+    } catch (e) {}
+  }
+  function getTune() { return { rate: tRate, pitch: tPitch }; }
   /* 给设置页/试听用：告诉用户当前到底走的哪条路 */
   function ttsInfo() {
     var nat = 'unavailable', why = '';
@@ -223,10 +237,14 @@ window.Sfx = (function () {
     }
     try {
       if (!window.speechSynthesis) return;
+      /* 关键：引擎可能停在 paused 状态（切后台/旋转后被系统挂起），
+         不 resume 的话队列里的句子永远不出来 —— 表现就是「打牌界面没语音」。 */
+      try { if (speechSynthesis.paused) speechSynthesis.resume(); } catch (x) { }
+      try { speechSynthesis.cancel(); } catch (x) { }
       var u = new SpeechSynthesisUtterance(String(txt));
       u.lang = 'zh-CN';
-      u.rate = 0.92;         // 放慢，咬字清楚
-      u.pitch = 1.0;
+      u.rate = tRate;       // 默认 1.08（0.92 太慢听起来拖沓），设置页滑钮可调
+      u.pitch = tPitch;
       u.volume = 1.0;        // 拉满
       duckBgm(true);
       var finished = false;
@@ -244,7 +262,9 @@ window.Sfx = (function () {
   }
 
   function announce(info) {
-    if (!on) return;
+    /* 出牌/叫分提示音归「出牌语音播报」管。
+       以前挂在总音效开关上：关掉音效后打牌时一点声音都没有。 */
+    if (!voiceOn) return;
     var t = info && info.type;
     /* 音效与语音错开 200ms：同时响的话音效会把人声盖掉，听着就是「嗡一下」 */
     var say = function (txt) { setTimeout(function () { speakText(txt); }, 200); };
@@ -264,7 +284,7 @@ window.Sfx = (function () {
     if (t === 'rocket') { rocketSfx(); say('王炸'); return; }
     if (t === 'bomb') { bombSfx(); say('炸弹'); return; }
     var name = (window.DDZ && DDZ.speak) ? DDZ.speak(info) : (info && info.name) || '';
-    if (t === 'pass') { pass(); say('不要'); return; }
+    if (t === 'pass') { pass(); say('过'); return; }
     // 不同牌型用不同音色，耳朵能分辨
     if (t === 'single') { tone(760, 0.09, 'triangle', 0.16, 980); }
     else if (t === 'pair') { tone(700, 0.08, 'triangle', 0.15, 900); tone(880, 0.09, 'triangle', 0.15, 1080, 0.07); }
@@ -474,7 +494,10 @@ window.Sfx = (function () {
     if (s === scene && bgmSrc) return;
     scene = s;
     /* 主音效开关关掉后，切换界面绝不能再起音乐 —— 原来这里漏了 !on 判断 */
-    if (!on || !bgmOn || hidden) { stopBgm(); return; }
+    if (!bgmOn || hidden) { stopBgm(); return; }
+    /* 大厅背景音乐属于「界面声音」，受总音效开关管；
+       牌桌背景音乐只认「牌桌背景音乐」开关。 */
+    if (scene !== 'table' && !on) { stopBgm(); return; }
     stopBgm();
     bgmBuf = bgmBufs[scene] || null;
     startBgm();
@@ -507,6 +530,7 @@ window.Sfx = (function () {
   }
   /* 出牌提示音：拍牌声 + 短促滑音，出牌/对手出牌都用它，耳朵能立刻分辨 */
   function cardDrop(strong) {
+    if (!voiceOn) return;   // 归「出牌语音播报」管
     noise(0.075, strong ? 0.42 : 0.3, 2400);
     tone(strong ? 300 : 420, 0.07, 'square', strong ? 0.16 : 0.1, strong ? 150 : 260);
     noise(0.05, 0.18, 900, 0.035);
@@ -514,13 +538,22 @@ window.Sfx = (function () {
 
   var S = {
     unlock: function () { ac(); if (on && bgmOn && !hidden) startBgm(); },
+    /* 总音效开关只管「主界面 / 好友空间」的界面声音。
+       牌桌背景音乐、出牌语音播报各归各的开关，互不影响。 */
     set: function (v) {
       on = !!v;
-      if (!on) { stopBgm(); try { window.speechSynthesis && speechSynthesis.cancel(); } catch (e) { } }
-      else if (bgmOn && !hidden) startBgm();
+      if (!on) {
+        if (scene !== 'table') stopBgm();
+      } else if (bgmOn && !hidden && (scene === 'table' || on)) startBgm();
     },
     setVoice: function (v) { voiceOn = !!v; if (!v) { try { speechSynthesis.cancel(); } catch (e) { } } },
+    setTune: setTune, getTune: getTune,
     setBgm: function (v) { bgmOn = !!v; if (v && on && !hidden) startBgm(); else stopBgm(); },
+    /* 看门狗：牌桌页被原生旋转/切后台打断后，音乐常常起不来。
+       只要开关是开的又不在后台，就把它重新拉起来。 */
+    ensure: function () {
+      try { if (!bgmOn || hidden) return; if (scene !== 'table' && !on) return; ac(); if (!bgmSrc && !liveTimer) startBgm(); } catch (e) { }
+    },
     setScene: setScene, cardDrop: cardDrop,
     bgm: startBgm, stopBgm: stopBgm, duck: duck,
     announce: announce, speak: speakText, ttsInfo: ttsInfo, nativeTtsReady: nativeTtsReady,

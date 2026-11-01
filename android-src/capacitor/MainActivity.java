@@ -77,6 +77,10 @@ public class MainActivity extends BridgeActivity {
         } catch (Exception e) { ttsErr = "no_tts"; }
     }
 
+    /* 是否正在用系统文件选择器（选图/视频/文件）。
+       此时 Activity 会短暂 onPause，不能当成「切后台」把好友空间收起。 */
+    private volatile boolean pickingFile = false;
+
     private MediaRecorder recorder = null;
     private String recPath = null;
     private long recStart = 0;
@@ -232,22 +236,40 @@ public class MainActivity extends BridgeActivity {
        系统在 onPause 之后就会取 Activity 快照，晚一步快照里就有私密内容，
        解锁时看到的就是「从好友空间退到主界面」的过程。 */
     private void collapseSecretNow() {
+        /* 正在用系统文件选择器 → 不收起。
+           否则选完图回来好友空间已被关掉、curRid 丢失，
+           点发送就报「会话已失效，请重新进入」。 */
+        if (pickingFile) return;
         try {
             android.webkit.WebView wv2 = this.bridge != null ? this.bridge.getWebView() : null;
             if (wv2 != null) {
-                wv2.evaluateJavascript(
-                    "(function(){try{window.__ddzSecretPanic&&window.__ddzSecretPanic();}catch(e){}})();",
-                    null);
+                /* 关键：evaluateJavascript 是异步的，靠它「赶在截图前执行」根本不靠谱 ——
+                   这就是为什么锁屏后解锁还能看到「好友空间 → 主界面」的收起过程。
+                   这里改用 loadUrl("javascript:")（UI 线程同步排队执行），
+                   再加一道硬保险：直接把 WebView 隐藏掉，
+                   系统快照里就不可能有任何私密内容。 */
+                wv2.loadUrl("javascript:(function(){try{window.__ddzSecretPanic&&window.__ddzSecretPanic();}catch(e){}})();");
+                wv2.setVisibility(android.view.View.GONE);
                 wv2.post(new Runnable() {
                     public void run() {
                         try {
-                            wv2.evaluateJavascript(
-                                "(function(){try{window.__ddzSecretPanic&&window.__ddzSecretPanic();}catch(e){}})();",
-                                null);
+                            wv2.loadUrl("javascript:(function(){try{window.__ddzSecretPanic&&window.__ddzSecretPanic();}catch(e){}})();");
                         } catch (Exception ignored) { }
                     }
                 });
             }
+        } catch (Exception ignored) { }
+    }
+    /* 回到前台：确认已收起后再把 WebView 显示出来，
+       这样解锁看到的第一帧就是主界面，不会闪过收起动画。 */
+    private void revealAfterCollapse() {
+        try {
+            android.webkit.WebView wv = this.bridge != null ? this.bridge.getWebView() : null;
+            if (wv == null) return;
+            if (!pickingFile) {
+                wv.loadUrl("javascript:(function(){try{window.__ddzSecretPanic&&window.__ddzSecretPanic();}catch(e){}})();");
+            }
+            wv.setVisibility(android.view.View.VISIBLE);
         } catch (Exception ignored) { }
     }
 
@@ -257,14 +279,6 @@ public class MainActivity extends BridgeActivity {
         // 锁屏时系统会在 onPause 之后立刻取 Activity 快照，
         // 若等 WebView 的 pause 事件才处理，快照里还留着好友空间，
         // 解锁后就会看到「好友空间 → 主界面」这段收起过程。
-        try {
-            android.webkit.WebView wv0 = (getBridge() != null) ? getBridge().getWebView() : null;
-            if (wv0 != null) {
-                wv0.evaluateJavascript(
-                    "(function(){try{window.__ddzSecretPanic&&window.__ddzSecretPanic();}catch(e){}})();",
-                    null);
-            }
-        } catch (Throwable ignored) { }
         super.onPause();
         evalJs("(window.__ddzPause&&window.__ddzPause())");
         try {
@@ -283,6 +297,7 @@ public class MainActivity extends BridgeActivity {
             android.webkit.WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;
             if (wv != null) wv.onResume();
         } catch (Throwable ignored) { }
+        revealAfterCollapse();
         evalJs("(window.__ddzResume&&window.__ddzResume())");
     }
 
@@ -371,6 +386,35 @@ public class MainActivity extends BridgeActivity {
             });
         }
 
+        /* 横屏打牌时隐藏系统状态栏（沉浸全屏），竖屏时恢复显示。
+           JS 侧在 Orient.landscape()/portrait() 里调用。 */
+        @JavascriptInterface
+        public void setImmersive(final boolean on) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        android.view.Window w = getWindow();
+                        android.view.View dec = w.getDecorView();
+                        if (android.os.Build.VERSION.SDK_INT >= 19) {
+                            int flags = android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                    | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                    | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                    | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                    | android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                                    | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                            if (on) {
+                                dec.setSystemUiVisibility(flags);
+                            } else {
+                                dec.setSystemUiVisibility(android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                        | android.view.View.SYSTEM_UI_FLAG_VISIBLE);
+                            }
+                        }
+                    } catch (Throwable ignored) { }
+                }
+            });
+        }
+
         @JavascriptInterface
         public void minimizeApp() {
             runOnUiThread(new Runnable() {
@@ -381,6 +425,33 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public String hasNative() { return "1"; }
+
+        /* ---------- 原生震动 ----------
+           WebView 的 navigator.vibrate 在不少 ROM 上被禁（需要用户手势 + 权限），
+           表现就是「开了出牌震动但打牌时完全不震」。这里走系统 Vibrator，可靠得多。 */
+        @JavascriptInterface
+        public void vibrate(final int ms) {
+            try {
+                android.os.Vibrator v = (android.os.Vibrator) getSystemService(android.content.Context.VIBRATOR_SERVICE);
+                if (v == null) return;
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    v.vibrate(android.os.VibrationEffect.createOneShot(Math.max(1, ms),
+                            android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+                } else {
+                    v.vibrate(Math.max(1, ms));
+                }
+            } catch (Exception ignored) { }
+        }
+
+        /* ---------- 系统文件选择器标记 ----------
+           选图片/选视频/选文件会拉起系统选择器，我们的 Activity 会走一次
+           onPause → onResume。如果这时按「切后台」处理，好友空间会被收起、
+           curRid 丢失，随后点发送就报「会话已失效」。
+           所以 JS 在拉起选择器前置 1，选完置 0；原生据此跳过收起动作。 */
+        @JavascriptInterface
+        public void setPicking(final boolean on) {
+            pickingFile = on;
+        }
 
         /* ---------- 后台保活（方案 A）：前台服务 ---------- */
 
@@ -564,6 +635,18 @@ public class MainActivity extends BridgeActivity {
         @android.webkit.JavascriptInterface
         public void stopSpeak() {
             try { if (tts != null) tts.stop(); } catch (Exception ignored) { }
+        }
+
+        /* 语速 / 音调：设置页滑钮调完立刻生效，试听听到的就是调后的效果。
+           注意：这是自定义桥接方法，父类没有同名方法，不能加 @Override，
+           加了会报「method does not override or implement a method from a supertype」。 */
+        @android.webkit.JavascriptInterface
+        public void ttsTune(float rate, float pitch) {
+            if (!ttsOk || tts == null) return;
+            try {
+                if (rate > 0f) tts.setSpeechRate(rate);
+                if (pitch > 0f) tts.setPitch(pitch);
+            } catch (Exception ignored) { }
         }
 }
 

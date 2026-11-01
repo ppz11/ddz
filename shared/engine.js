@@ -120,18 +120,34 @@
     11: 'J', 12: 'Q', 13: 'K', 14: 'A', 15: '2', 16: '小王', 17: '大王' };
   function rankName(v) { return RANK_NAME[v] || String(v); }
   /* 返回适合朗读的中文短语，如「一张 5」「对 K」「三带一」「5 到 10 的顺子」 */
+  /* 从「牌组」里找出带的翅膀（三带一/三带二/四带二要念出具体点数，
+     以前只说「三带一」，听的人根本不知道带的是什么）。 */
+  function wingText(cards, mainV, take) {
+    if (!cards || !cards.length) return '';
+    var cnt = counts(cards);
+    var kv = Object.keys(cnt).map(Number).filter(function (v) { return v !== mainV; })
+      .sort(function (a, b) { return a - b; });
+    if (!kv.length) return '';
+    var parts = kv.map(function (v) {
+      var c = cnt[v];
+      if (c >= 2 && take === 2) return '一对' + rankName(v);
+      if (c >= 2) return rankName(v);
+      return rankName(v);
+    });
+    return parts.join('、');
+  }
   function speak(info, cards) {
     if (!info) return '过';
     var n = info.name, t = info.type, m = info.main;
     if (t === 'rocket') return '王炸';
     if (t === 'bomb') return '炸弹';
     if (t === 'single') return (m >= 16 ? '' : '一张 ') + rankName(m);
-    if (t === 'pair') return '对' + rankName(m);
+    if (t === 'pair') return '一对' + rankName(m);
     if (t === 'triple') return '三张' + rankName(m);
-    if (t === 'triple1') return '三带一';
-    if (t === 'triple2') return '三带一对';
-    if (t === 'four2') return '四带二';
-    if (t === 'four2p') return '四带两对';
+    if (t === 'triple1') { var w1 = wingText(cards, m, 1); return '三张' + rankName(m) + '带一张' + (w1 || rankName(m)); }
+    if (t === 'triple2') { var w2 = wingText(cards, m, 2); return '三张' + rankName(m) + '带一对' + (w2 || rankName(m)); }
+    if (t === 'four2') { var w3 = wingText(cards, m, 1); return '四个' + rankName(m) + '带两张' + (w3 || rankName(m)); }
+    if (t === 'four2p') { var w4 = wingText(cards, m, 2); return '四个' + rankName(m) + '带两对' + (w4 || rankName(m)); }
     if (t === 'straight') {
       var lo = m - info.len + 1;
       return rankName(lo) + '到' + rankName(m) + '的顺子';
@@ -201,6 +217,43 @@
           res.push(seg.map(function (v) { return pick(v, 1)[0]; }));
           if (seg.every(function (v) { return cnt[v] >= 2; })) res.push(seg.reduce(function (a, v) { return a.concat(pick(v, 2)); }, []));
           if (seg.every(function (v) { return cnt[v] >= 3; })) res.push(seg.reduce(function (a, v) { return a.concat(pick(v, 3)); }, []));
+        }
+      }
+    }
+    /* 四带二 / 四带两对：以前这里完全没枚举，
+       对手出四带二时提示永远说「没有能压过的牌」，实际手上有也压不了。 */
+    vals.forEach(function (v) {
+      if (cnt[v] !== 4) return;
+      var q = pick(v, 4);
+      var w = rest([v], 2);
+      if (w && w.length === 2) res.push(q.concat(w));
+      var pw = rest([v], 4);
+      if (pw && pw.length === 4) {
+        var pc = counts(byId(hand, pw));
+        var ks = Object.keys(pc).map(Number);
+        if (ks.length === 2 && pc[ks[0]] === 2 && pc[ks[1]] === 2) res.push(q.concat(pw));
+      }
+    });
+    /* 飞机带单 / 飞机带对：同样漏了枚举 */
+    var tri = vals.filter(function (v) { return cnt[v] >= 3 && v <= 14; });
+    for (i = 0; i < tri.length; i++) {
+      var run = [tri[i]];
+      for (j = i + 1; j < tri.length; j++) {
+        if (tri[j] === run[run.length - 1] + 1) run.push(tri[j]); else break;
+      }
+      if (run.length < 2) continue;
+      for (var take = 2; take <= run.length; take++) {
+        var seg2 = run.slice(0, take);
+        var body = seg2.reduce(function (a, v) { return a.concat(pick(v, 3)); }, []);
+        /* 纯飞机（不带翅膀）：上面那条顺子循环从 5 连起步，
+           而飞机只要 2 连三张 —— 所以以前手里有飞机也提示不出来。 */
+        res.push(body);
+        var w1 = rest(seg2, take);
+        if (w1 && w1.length === take) res.push(body.concat(w1));
+        var w2 = rest(seg2, take * 2);
+        if (w2 && w2.length === take * 2) {
+          var wc = counts(byId(hand, w2));
+          if (Object.keys(wc).every(function (k) { return wc[k] === 2; })) res.push(body.concat(w2));
         }
       }
     }

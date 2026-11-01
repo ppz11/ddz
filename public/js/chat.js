@@ -172,15 +172,15 @@ window.Chat = (function () {
     Net.send({ t: 'friend:list', via: 'main' });
     var box = document.createElement('div');
     box.className = 'modal'; box.id = 'friend-box';
-    box.innerHTML = '<div class="box" style="max-width:340px">' +
+    /* 添加好友 + 好友列表放在同一个弹窗里：上面一行紧凑的添加条，下面直接是好友。
+       以前标题+两行说明+大输入框占掉半个屏，好友得往下翻才看得到。 */
+    box.innerHTML = '<div class="box frbox" style="max-width:340px">' +
       '<h3>好友</h3>' +
-      '<p style="margin-bottom:8px">删掉会话后好友仍在这里<br>' +
-      '<span style="font-size:11px;opacity:.75">输入对方 UID 或昵称即可添加</span></p>' +
-      '<div class="row" style="margin-bottom:10px">' +
-      '<input id="fr-q" placeholder="输入 UID 或昵称" style="flex:1;margin:0">' +
+      '<div class="fr-addrow">' +
+      '<input id="fr-q" placeholder="输入 UID 或昵称">' +
       '<button class="btn jade" id="fr-add">添加</button></div>' +
       '<div class="fr-list" id="fr-list"><div class="fr-empty">加载中…</div></div>' +
-      '<div class="row" style="margin-top:12px"><button class="btn ghost" id="fr-close">关闭</button></div></div>';
+      '<div class="row" style="margin-top:10px"><button class="btn ghost" id="fr-close">关闭</button></div></div>';
     document.body.appendChild(box);
     box.querySelector('#fr-close').onclick = function () { box.remove(); };
     box.querySelector('#fr-add').onclick = function () {

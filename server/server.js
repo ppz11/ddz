@@ -14,6 +14,9 @@ const ID = require('./identity');
 const DDZ = require('../shared/engine.js');
 const AI = require('../shared/ai.js');
 const ADS = require('../shared/ads.js');
+const StickerStore = require('./stickers.js');
+/* 服务器表情包的管理口令，与位置权限开关同款；可用环境变量改成自己的 */
+const STICKER_KEY = process.env.DDZ_STICKER_KEY || '6688';
 
 const PORT = process.env.PORT || 8080;
 const PUBLIC = path.join(__dirname, '..', 'public');
@@ -273,6 +276,44 @@ const server = http.createServer(async (req, res) => {
       refreshIdentity(u, !!u.test); personOf(u); u.coins = coinsOf(u);
       return json(res, 200, { uid: u.uid, token: u.token, me: pub(u), coins: u.coins | 0 });
     }
+    /* 换个身份：昵称 / 头像 / UID 一起换。
+       好友以「真人 pid」为单位存，所以换号后好友天然还在；
+       聊天记录以 uid 存的，这里把旧 uid 的历史迁移到新 uid 上，
+       这样跟同一个人还能接着聊，会话不会出现两个分身。 */
+    if (p === '/api/reroll' && req.method === 'POST') {
+      const b = JSON.parse((await body(req, 4096)).toString() || '{}');
+      const u = userByToken(b.token);
+      if (!u) return json(res, 401, { err: '登录已失效，请重新进入' });
+      if (u.test) return json(res, 400, { err: '测试号不支持换身份' });
+      const oldUid = u.uid;
+      const newUid = uid();
+      delete db.users[oldUid];
+      u.uid = newUid;
+      db.users[newUid] = u;
+      u.token = tok();
+      refreshIdentity(u);            // 新昵称 + 新头像
+      const p = personOf(u);
+      p.uids = (p.uids || []).map(x => (x === oldUid ? newUid : x));
+      if (p.uids.indexOf(newUid) < 0) p.uids.push(newUid);
+      /* 会话迁移：from / to 里的旧 uid 全部换成新的，聊天记录不断档 */
+      (db.messages || []).forEach(m => {
+        if (m.from === oldUid) m.from = newUid;
+        if (m.to === oldUid) m.to = newUid;
+      });
+      /* 单向隐藏记录同样跟着换，否则删过的消息会重新冒出来 */
+      const hv = db.hidden && db.hidden[oldUid];
+      if (hv) { db.hidden[newUid] = hv; delete db.hidden[oldUid]; }
+      /* 牌局名单：换号后仍能看到自己的历史战绩 */
+      (db.games || []).forEach(g => {
+        if (Array.isArray(g.players)) g.players = g.players.map(x => (x === oldUid ? newUid : x));
+      });
+      /* 在线状态：online 是 Map<uid, ws>，原地换 key，别把自己踢下线 */
+      if (online.has(oldUid)) { const w = online.get(oldUid); online.delete(oldUid); online.set(newUid, w); }
+      /* 防止同一次连接里残留旧 uid 导致后续消息发不出去 */
+      for (const [ws2, c] of clients) if (c && c.u === oldUid) c.u = newUid;
+      store.save();
+      return json(res, 200, { uid: u.uid, token: u.token, me: pub(u), coins: coinsOf(u) | 0 });
+    }
     if (p === '/api/me') {
       const u = userByToken(url.searchParams.get('token'));
       return u ? json(res, 200, { me: pub(u) }) : json(res, 401, { err: 'no' });
@@ -284,6 +325,19 @@ const server = http.createServer(async (req, res) => {
       if (buf.length > MAX_UPLOAD) return json(res, 413, { err: '文件太大（上限 300MB）' });
       const rec = store.putUpload(b.name || 'file', b.mime || 'application/octet-stream', buf, { kind: b.kind, dur: b.dur });
       return json(res, 200, { id: rec.id, url: '/api/file/' + rec.id, name: rec.name, size: rec.size, mime: rec.mime });
+    }
+    /* 服务器统一表情包：房主上传一次，所有玩家登录后自动拉取到同样的包 */
+    if (p === '/api/stickers') return json(res, 200, { packs: StickerStore.list() });
+    if (p === '/api/stickers/pack' && req.method === 'POST') {
+      const b = JSON.parse((await body(req, 2 << 20)).toString() || '{}');
+      if (String(b.admin || '') !== STICKER_KEY) return json(res, 403, { err: '口令不对' });
+      if (!b.items || !b.items.length) return json(res, 400, { err: '没有表情' });
+      return json(res, 200, { pack: StickerStore.upsert(b) });
+    }
+    if (p === '/api/stickers/del' && req.method === 'POST') {
+      const b = JSON.parse((await body(req, 4096)).toString() || '{}');
+      if (String(b.admin || '') !== STICKER_KEY) return json(res, 403, { err: '口令不对' });
+      return json(res, 200, { ok: StickerStore.del(String(b.id || '')) });
     }
     /* 文件服务：必须支持 HTTP Range（206 Partial Content）。
        Android WebView / Chrome 的音视频播放器会先发 Range 请求，
@@ -1158,18 +1212,18 @@ function handle(ws, st, m) {
       /* 给好友留出加入时间。
          邀请真人时不再自动补机器人开局 —— 用户正在选人，冷不丁被塞两个机器人
          直接开打。改成超时后只提示，由用户自己点「直接开局」决定。 */
-      if (m.invite) {
-        clearBotTimers(room);
-        const t = setTimeout(() => {
-          if (!rooms.has(room.gid) || room.game) return;
-          if (room.seats.every(x => x)) return tryStart(room);
-          send(ws, { t: 'room:wait', gid: room.gid,
-                     msg: '好友还没来，可点「直接开局」用机器人补位' });
-        }, 45000);
-        room.botTimers.push(t);
-      } else {
-        scheduleAutoFill(room, 9000);
-      }
+      /* 建房后一律不自动开局：
+         不管是「先邀请真人」还是「补机器人」，都必须由房主点「开始游戏」才发牌。
+         以前无 invite 时会 scheduleAutoFill(9000) 自动补机器人开局，
+         用户正在选人就被塞两个机器人直接开打了。 */
+      clearBotTimers(room);
+      const t = setTimeout(() => {
+        if (!rooms.has(room.gid) || room.game) return;
+        if (room.seats.every(x => x)) return; // 人满了等房主点开始
+        send(ws, { t: 'room:wait', gid: room.gid,
+                   msg: '好友还没来：可点「补机器人(N)」再点「开始游戏」' });
+      }, 45000);
+      room.botTimers.push(t);
       break;
     }
     /* 用户主动点「直接开局」：用机器人补满并立即开始 */
@@ -1180,7 +1234,7 @@ function handle(ws, st, m) {
       clearBotTimers(room);
       fillBots(room);
       pushRoom(room);
-      tryStart(room);
+      /* 只补位，不自动开局 —— 房主还要点「开始游戏」 */
       break;
     }
     /* 机器人难度：查询 / 设置（服务端持久化，对所有人同时生效） */
@@ -1212,7 +1266,7 @@ function handle(ws, st, m) {
       leaveRoom(u);
       room.seats[free] = u;
       pushRoom(room);
-      tryStart(room);
+      /* 不自动开局：等房主点「开始游戏」 */
       break;
     }
     case 'room:joinbot': {
@@ -1329,7 +1383,7 @@ function handle(ws, st, m) {
       clearBotTimers(room);
       room.seats[free] = u;
       pushRoom(room);
-      tryStart(room);
+      /* 不自动开局：等房主点「开始游戏」 */
       break;
     }
 

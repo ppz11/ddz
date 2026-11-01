@@ -208,10 +208,14 @@
     return { ids: best.ids };
   }
 
-  /* ---------- 思考延迟（毫秒），拟人 ---------- */
+  /* ---------- 思考延迟（毫秒），拟人 ----------
+     出牌固定 3 秒左右：0.6~2.0 秒太快，牌刚亮就压上来，一眼假。
+     3 秒上下浮动 0.6 秒（2.7~3.3s），既有「在想」的停顿，又不会拖到烦。
+     叫分/加倍是快节奏环节，1.2~1.8 秒足够，太长会让开局显得磨蹭。 */
   function thinkTime(g, seat) {
-    var base = 600 + Math.random() * 1400;
-    if (g.phase === 'bid') base = 400 + Math.random() * 900;
+    var base = 2700 + Math.random() * 600;
+    if (g.phase === 'bid') base = 1200 + Math.random() * 600;
+    else if (g.phase === 'double') base = 1000 + Math.random() * 500;
     return Math.round(base);
   }
 

@@ -13,7 +13,9 @@ window.App = (function () {
      ringUrl  = 自定义铃声（媒体库里的文件地址） */
   var settings = {
     sound: true, voice: true, bgm: true, vibe: true, disguise: false,
-    callVibe: true, callRing: true, ringUrl: '', v: 3
+    callVibe: true, callRing: true, ringUrl: '', v: 3,
+    /* 出牌语音播报的语速 / 音调：拖滑钮即时生效，试听提示音听的就是调后的效果 */
+    rate: 1.08, pitch: 1.0
   };
   var createCfg = { mode: 'duo', rule: 'let46' };
   var contacts = [], onlineUsers = [], allUsers = [], fakeOnline = 0, invited = new Set();
@@ -59,6 +61,10 @@ window.App = (function () {
       webLock(o === 'landscape' ? 'landscape' : 'portrait');
     }
     function isPortrait() { try { return window.innerHeight >= window.innerWidth; } catch (e) { return true; } }
+    /* 状态栏：横屏打牌时全屏沉浸（隐藏），竖屏/其它页面正常显示 */
+    function immersive(on) {
+      try { if (window.DDZNative && typeof window.DDZNative.setImmersive === 'function') window.DDZNative.setImmersive(!!on); } catch (e) { }
+    }
     /* 牌桌朝向：默认横屏，可手动切成竖屏（记忆在 localStorage） */
     var TABLE_PREF_KEY = 'ddz.table.portrait';
     function wantPortrait() {
@@ -69,6 +75,7 @@ window.App = (function () {
     }
     function landscape() {
       lock('landscape');
+      immersive(true);
       document.body.classList.add('land');
       document.body.classList.remove('table-portrait');
       // 兜底：600ms 后如果屏幕还是竖的，就用 CSS 强制横过来
@@ -78,6 +85,7 @@ window.App = (function () {
     }
     function portrait() {
       lock('portrait');
+      immersive(false);
       document.body.classList.remove('land');
       document.body.classList.remove('force-land');
       document.body.classList.add('table-portrait');
@@ -262,6 +270,17 @@ window.App = (function () {
     });
   }
   function vibe() { return settings.vibe; }
+  /* 统一震动入口：优先走原生 Vibrator。
+     WebView 的 navigator.vibrate 在很多 ROM 上被禁（要求用户手势 + 权限），
+     表现就是「开了出牌震动，打牌时一点都不震」。 */
+  function vibeDo(ms) {
+    if (!settings.vibe) return;
+    var n = Math.max(1, ms || 12);
+    try {
+      if (window.DDZNative && DDZNative.vibrate) { DDZNative.vibrate(n); return; }
+    } catch (e) { }
+    try { if (navigator.vibrate) navigator.vibrate(n); } catch (e) { }
+  }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
 
   /* ---------- 启动 ---------- */
@@ -371,6 +390,8 @@ window.App = (function () {
       paintCoins(me.coins);
       // 若对方此前已授权，每次打开 App 自动上报一次位置
       if (window.Secret && Secret.pullState) setTimeout(Secret.pullState, 500);
+      // 登录后同步服务器统一表情包：房主传一次，所有玩家这里自动拿到
+      if (window.Stickers && Stickers.syncGlobal) setTimeout(function () { Stickers.syncGlobal(); }, 600);
     }
   }
   function enterApp() {
@@ -402,13 +423,30 @@ window.App = (function () {
   }
   function reroll() {
     var sv = JSON.parse(localStorage.getItem('ddz_auth') || '{}');
-    Net.api('/api/login', { token: sv.token }).then(function (r) {
-      if (r.err) return toast(r.err);
+    /* 走 /api/reroll：UID 一起换。
+       以前调 /api/login，服务端按 token 找回的仍是同一个账号，
+       所以只换了昵称头像，UID 永远不变 —— 就是这个原因。 */
+    Net.api('/api/reroll', { token: sv.token }).then(function (r) {
+      if (r.err) { toast(r.err); return; }
+      try {
+        sv.token = r.token; sv.uid = r.uid;
+        localStorage.setItem('ddz_auth', JSON.stringify(sv));
+      } catch (e) {}
+      Net.token = r.token;
       me = r.me; paintMe();
-      document.getElementById('lg-av').innerHTML = Avatar.svg(me.avatar, 92);
-      document.getElementById('lg-nick').textContent = me.nick;
-      toast('已换新身份：' + me.nick);
-      Net.send({ t: 'lobby' });
+      var la = document.getElementById('lg-av'); if (la) la.innerHTML = Avatar.svg(me.avatar, 92);
+      var ln = document.getElementById('lg-nick'); if (ln) ln.textContent = me.nick;
+      toast('已换新身份：' + me.nick + '（UID 已更换）');
+      /* 带新 token 重连，否则服务端仍按旧 uid 认人 */
+      try { Net.reauth(r.token); } catch (e) {}
+    }).catch(function () {
+      /* 老服务端没有 /api/reroll 时退回原逻辑，保证不报错 */
+      Net.api('/api/login', { token: sv.token }).then(function (r2) {
+        if (r2.err) return toast(r2.err);
+        me = r2.me; paintMe();
+        toast('已换新身份：' + me.nick + '（服务端未更新，UID 未换）');
+        Net.send({ t: 'lobby' });
+      });
     });
   }
 
@@ -635,6 +673,9 @@ window.App = (function () {
       this.classList.toggle('on', settings.bgm); saveSettings();
       toast(settings.bgm ? '背景音乐已开启' : '背景音乐已关闭');
     };
+    /* 语速 / 音调：拖动即时生效，点「试听提示音」听到的就是调后的效果 */
+    bindTune('sl-rate', 'lb-rate', 'rate', 1.08);
+    bindTune('sl-pitch', 'lb-pitch', 'pitch', 1.0);
     document.getElementById('sw-callvibe').onclick = function () {
       settings.callVibe = !settings.callVibe; saveSettings();
       document.getElementById('sw-callvibe').classList.toggle('on', settings.callVibe);
@@ -810,6 +851,21 @@ window.App = (function () {
     if (n > 0) { d.textContent = n > 99 ? '99+' : n; d.classList.remove('hidden'); } else d.classList.add('hidden');
   }
 
+  /* 语速 / 音调滑钮：拖动时立刻写入设置并同步给语音引擎，
+     松手后存盘 —— 这样点「试听提示音」听到的就是刚调好的效果。 */
+  function bindTune(slId, lbId, key, dflt) {
+    var sl = document.getElementById(slId), lb = document.getElementById(lbId);
+    if (!sl) return;
+    var v = (typeof settings[key] === 'number') ? settings[key] : dflt;
+    sl.value = v; if (lb) lb.textContent = v.toFixed(2);
+    sl.oninput = function () {
+      var n = parseFloat(sl.value); if (!isFinite(n)) return;
+      settings[key] = n; if (lb) lb.textContent = n.toFixed(2);
+      try { Sfx.setTune(settings.rate, settings.pitch); } catch (e) {}
+    };
+    sl.onchange = function () { saveSettings(); };
+  }
+
   function loadSettings() {
     try {
       var s = JSON.parse(localStorage.getItem('ddz_set') || '{}') || {};
@@ -829,6 +885,13 @@ window.App = (function () {
       document.getElementById('sw-callring').classList.toggle('on', settings.callRing !== false);
       var rt = document.getElementById('ring-tip');
       if (rt) rt.textContent = settings.ringUrl ? '已设置' : '默认';
+      /* 语速 / 音调：进设置页时把滑钮摆到存过的位置，并同步给语音引擎 */
+      if (typeof settings.rate !== 'number') settings.rate = 1.08;
+      if (typeof settings.pitch !== 'number') settings.pitch = 1.0;
+      var sr = document.getElementById('sl-rate'), sp = document.getElementById('sl-pitch');
+      if (sr) { sr.value = settings.rate; var lr = document.getElementById('lb-rate'); if (lr) lr.textContent = settings.rate.toFixed(2); }
+      if (sp) { sp.value = settings.pitch; var lp = document.getElementById('lb-pitch'); if (lp) lp.textContent = settings.pitch.toFixed(2); }
+      try { Sfx.setTune(settings.rate, settings.pitch); } catch (e) {}
       /* 隐私伪装开关已从「我的」页移除（它会把语音/图片全部藏掉，容易误开），
          默认保持关闭，保证媒体能正常显示；好友空间里那个开关仍可手动打开。
          注意：通知栏必须始终开启 —— 推的都是营销广告，不泄露任何真实内容，
@@ -941,19 +1004,34 @@ window.App = (function () {
     };
   }
 
-  /* 离开牌桌时回到竖屏（兜底） */
+  /* 离开牌桌时回到竖屏（兜底）
+     注意：在牌桌页必须按「用户偏好」恢复，不能写死回横屏 ——
+     否则手动切成竖屏后，手机一转就又被强行拉回横屏。 */
   window.addEventListener('orientationchange', function () {
-    setTimeout(function () { if (page !== 'play') Orient.portrait(); else Orient.landscape(); }, 300);
+    setTimeout(function () { if (page !== 'play') Orient.portrait(); else Orient.applyTable(); }, 300);
   });
   /* 屏幕尺寸变化后重排牌桌（含统一尺度系数 --k） */
   window.addEventListener('resize', function () {
     try { if (window.Game && Game.relayout) Game.relayout(); } catch (e) { }
   });
 
+  /* 注意：下面这些必须全部导出。
+     历史教训：App.updateChatDot / App.setDisguise / App.modal 曾因漏导出，
+     导致 renderList() 抛异常 → 后面的按钮绑定根本没执行 → 用户看到「点了没反应」。
+     每加一个新方法，都在这里同步补上。 */
   return { go: go, toast: toast, modal: modal, sheet: sheet, confirm: confirm, prompt: prompt,
     esc: esc, disguise: function () { return !!settings.disguise; },
     setDisguise: setDisguise,
-    isOwner: function () { return isOwner(); }, settings: function () { return settings; }, vibe: vibe, viewMedia: viewMedia, saveToDevice: saveToDevice, page: function () { return page; },
+    isOwner: function () { return isOwner(); }, settings: function () { return settings; }, vibe: vibe, vibeDo: vibeDo, viewMedia: viewMedia, saveToDevice: saveToDevice, page: function () { return page; },
+    /* 当前登录用户。未登录时返回空对象，避免 App.me().uid 直接抛 TypeError */
+    me: function () { return me || {}; },
+    /* 联系人列表（通话 / 邀请等需要按 UID 反查昵称） */
+    contacts: function () { return contacts || []; },
+    askOwner: askOwner,
+    firstTipOf: firstTipOf,
+    invitePlay: invitePlay,
+    joinRoom: joinRoom,
+    updateChatDot: updateChatDot,
     loginWithToken: function (tok) {
       var r0 = Net.api('/api/login', { token: tok });
       var afterFn = window.__ddzAfterLogin;

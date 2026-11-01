@@ -49,7 +49,7 @@ window.Nav = (function () {
     if (Date.now() - st > 900) { tracking = false; return; }
     fired = true; tracking = false;
     if (back()) {
-      try { if (navigator.vibrate && window.App && App.vibe()) navigator.vibrate(8); } catch (x) { }
+      try { if (window.App && App.vibeDo) App.vibeDo(8); } catch (x) { }
       if (e.cancelable) e.preventDefault();
     }
   }

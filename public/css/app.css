@@ -256,6 +256,13 @@ input,textarea{font-family:inherit}
 .blv.on{background:var(--gold);color:#3a2600;border-color:transparent}
 /* 好友列表 */
 .fr-list{max-height:52vh;overflow-y:auto;-webkit-overflow-scrolling:touch;margin:0 -4px}
+/* 好友弹窗：标题 + 紧凑添加条 + 列表，一屏内都能看到，不用往下翻 */
+.frbox h3{font-size:15px;margin:0 0 8px}
+.frbox .fr-addrow{display:flex;gap:6px;align-items:center;margin:0 0 10px}
+.frbox .fr-addrow input{flex:1 1 auto;min-width:0;margin:0;padding:8px 10px;font-size:12px;
+  border-radius:10px;background:rgba(255,255,255,.08);border:1px solid var(--line);
+  color:var(--txt);outline:none}
+.frbox .fr-addrow .btn{flex:0 0 auto;padding:7px 12px;font-size:12px;border-radius:10px;min-width:0}
 .fr-item{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:12px;
   margin-bottom:5px;background:rgba(255,255,255,.06);cursor:pointer}
 .fr-item:active{background:rgba(255,255,255,.12)}
@@ -496,6 +503,20 @@ body.land .tablevoice{bottom:calc(108px + var(--safe-b) + 8px)}
 .sw.on{background:var(--jade)}
 .sw i{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:.2s}
 .sw.on i{left:21px}
+/* 语速 / 音调滑钮：一行内「标签 + 数值 + 滑块」，滑块占满剩余宽度 */
+.rowset.tune{gap:10px;font-size:13px}
+.rowset.tune b{min-width:44px;text-align:right;font-variant-numeric:tabular-nums;color:var(--jade);font-size:12px;flex:0 0 auto}
+.rowset.tune input[type=range]{flex:1 1 auto;min-width:0;height:26px;margin:0;
+  -webkit-appearance:none;appearance:none;background:transparent;outline:none}
+.rowset.tune input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;
+  background:linear-gradient(90deg,var(--jade),rgba(255,255,255,.14))}
+.rowset.tune input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+  width:18px;height:18px;margin-top:-7px;border-radius:50%;background:#fff;
+  border:2px solid var(--jade);box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.rowset.tune input[type=range]::-moz-range-track{height:4px;border-radius:2px;
+  background:linear-gradient(90deg,var(--jade),rgba(255,255,255,.14))}
+.rowset.tune input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
+  background:#fff;border:2px solid var(--jade)}
 
 /* ---------- 私密空间 ---------- */
 .secret{position:absolute;inset:0;z-index:60;background:var(--ink);display:flex;flex-direction:column;overflow:hidden}
@@ -579,8 +600,20 @@ body.land .tablevoice{bottom:calc(108px + var(--safe-b) + 8px)}
 .rulesel .rs b{font-size:13px;display:block}
 .rulesel .rs span{font-size:11px;color:var(--sub);line-height:1.5;display:block;margin-top:3px}
 .tip-line{font-size:11px;color:var(--sub);margin-top:10px;line-height:1.6;padding-left:2px}
-.waitbox{margin:0 14px;padding:16px;border-radius:16px;text-align:center;background:rgba(0,0,0,.25);border:1px solid var(--line)}
+.waitbox{margin:0 14px;padding:16px;border-radius:16px;text-align:center;background:rgba(0,0,0,.25);border:1px solid var(--line);
+  max-height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .waitbox .num{font-size:30px;font-weight:800;color:var(--gold);letter-spacing:5px;margin:6px 0}
+/* 房间号 + 复制按钮：一行居中，号再长也不会被裁掉 */
+.waitbox .ridrow{display:flex;align-items:center;justify-content:center;gap:8px;margin:6px 0;flex-wrap:nowrap}
+.waitbox .rid{font-size:24px;font-weight:800;color:var(--gold);letter-spacing:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:70%}
+.waitbox .ridrow .btn{flex:0 0 auto;padding:4px 10px;font-size:11px}
+/* 横屏牌桌中间区域高度有限：等待房间压缩留白，保证房间号完整可见 */
+body.land .waitbox{padding:8px 12px;margin:0 8px}
+body.land .waitbox .rid{font-size:20px;letter-spacing:2px}
+body.land .waitbox .seatsrow{margin-top:6px}
+body.land .waitbox .seatsrow .ss{padding:5px 4px}
+body.land .waitbox .seatsrow .ss .a{width:28px;height:28px}
 .waitbox .st{font-size:12px;color:var(--sub);margin-top:6px}
 .seatsrow{display:flex;gap:8px;margin-top:12px}
 .seatsrow .ss{flex:1;padding:10px 6px;border-radius:12px;background:rgba(255,255,255,.05);text-align:center}
@@ -621,14 +654,19 @@ body.land .tablevoice{bottom:calc(108px + var(--safe-b) + 8px)}
 /* 左上角标：大字「大」/「小」，一眼分清大王小王 */
 .pc.joker .jk-corner{position:absolute;top:calc(var(--card-w) * .06);left:calc(var(--card-w) * .10);
   font-size:calc(var(--card-w) * .21);line-height:1;font-weight:900;opacity:.92}
-/* 大王：金红; 小王：墨蓝 */
-.pc.joker.red .jk-w,.pc.joker.red .jk-corner,.pc.joker.red .jk-en{color:#d0272f}
-.pc.joker.black .jk-w,.pc.joker.black .jk-corner,.pc.joker.black .jk-en{color:#1e3a5f}
+/* 大王：红色图案 + 红字；小王：黑色图案 + 黑字（造型完全相同，只换配色） */
+.pc.joker.red .jk-w,.pc.joker.red .jk-corner,.pc.joker.red .jk-en{color:#c81e28}
+.pc.joker.black .jk-w,.pc.joker.black .jk-corner,.pc.joker.black .jk-en{color:#17181c}
+/* 内描边跟着配色走：大王红、小王黑 */
+.pc.joker.red::before{border-color:rgba(200,30,40,.42)}
+.pc.joker.black::before{border-color:rgba(23,24,28,.38)}
 .pc.joker.b-red{color:#d62b34}
 /* 小尺寸王牌（出牌区 / 底牌）：皇冠换成小角标，保证小到看不清时也能分辨 */
 .pc.joker .jk-mini{position:relative;display:flex;align-items:center;justify-content:center;
-  width:100%;height:100%;font-weight:900;line-height:1}
-.pc.joker .jk-mini .jk-w{font-size:calc(var(--card-w) * .42)}
+  gap:calc(var(--card-w) * .03);width:100%;height:100%;font-weight:900;line-height:1}
+/* 小尺寸王牌也带皇冠图案，只是缩小一点，保证跟大牌一个造型 */
+.pc.joker .jk-mini .jk-crown{width:calc(var(--card-w) * .30);height:auto;display:block;flex:0 0 auto}
+.pc.joker .jk-mini .jk-w{font-size:calc(var(--card-w) * .38)}
 .pc.joker .jk-mini .jk-tag{position:absolute;top:calc(var(--card-w) * .04);left:calc(var(--card-w) * .08);
   font-size:calc(var(--card-w) * .20);opacity:.92}
 
@@ -1368,3 +1406,44 @@ body.land .tablerail{bottom:auto}
 .quick-panel .sp-i img{max-width:100%;max-height:100%;object-fit:contain;display:block}
 .quick-panel .sp-i:active{background:rgba(255,255,255,.18)}
 .float-say .fl-img{height:30px;width:auto;vertical-align:middle}
+
+/* 身份徽标：独立一行渲染，不再塞进会被裁剪的 .nm 里。
+   以前放在 .nm 内部，而 .nm 有 overflow:hidden + nowrap，
+   昵称一长徽标就被切掉 —— 看着像「只显示我的身份」。 */
+.ts .rl,.myinfo .rl,.seatleft .rl,.seatright .rl{
+  flex:0 0 auto;white-space:nowrap;align-self:flex-start;margin-top:2px;
+  font-size:12px;line-height:1;padding:3px 8px;border-radius:9px;font-weight:800;
+}
+#page-play .seatcol .ts .rl{font-size:12px;padding:3px 8px}
+
+/* 认输：右上角常驻，放在竖屏切换按钮左边 */
+.resignbtn{position:absolute;right:74px;top:6px;z-index:60;
+  padding:5px 10px;border-radius:12px;font-size:11px;font-weight:700;
+  background:rgba(0,0,0,.35);color:#ffd7d7;border:1px solid rgba(255,120,120,.5)}
+.resignbtn.hidden{display:none}
+
+/* ---- 牌桌聊天面板：只占右半边、整体压小，不再铺满屏幕挡牌桌 ---- */
+.tchat{max-height:42% !important;left:56% !important;right:6px !important;
+  font-size:11px;border-radius:12px}
+.tchat .tc-msgs{min-height:56px;max-height:96px;padding:6px 8px;gap:4px}
+.tchat .tc-msgs .m{font-size:11px;line-height:1.4}
+.tchat .tc-msgs .m .st{font-size:17px}
+.tchat .tc-quick{max-height:58px}
+.tchat .tc-quick button{padding:4px 9px;font-size:10px}
+.tchat .tc-bar{padding:5px 6px;gap:4px}
+.tchat .tc-bar input{padding:5px 9px;font-size:12px;border-radius:14px}
+.tchat .tc-bar .ic{width:26px;height:26px;font-size:13px}
+.tchat .tc-emoji button{font-size:17px;padding:2px}
+
+/* ---- 其它玩家出的牌：以前太小看不清点数，统一放大 ---- */
+/* 对手出的牌：跟着牌桌尺度系数 --k 一起放大，
+   否则在平板/大屏上（k>1）牌桌整体放大而对手的牌不变小，反而显得更小。 */
+#page-play .seatcol .pcards .pc{width:calc(36px * var(--k,1));height:calc(51px * var(--k,1))}
+#page-play .seatcol .pcards .pc .pt{font-size:calc(19px * var(--k,1))}
+#page-play .seatcol .pcards .pc .ps{font-size:calc(13px * var(--k,1))}
+#page-play .pmine .pcards .pc{width:calc(36px * var(--k,1));height:calc(51px * var(--k,1))}
+/* 小屏不再单独缩小：--k 已经按屏幕尺度缩放过了，再叠一层会小到看不清点数 */
+@media (max-width:760px){
+  #page-play .seatcol .pcards .pc{width:calc(36px * var(--k,1));height:calc(50px * var(--k,1))}
+  #page-play .seatcol .pcards .pc .pt{font-size:calc(19px * var(--k,1))}
+}

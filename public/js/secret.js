@@ -112,6 +112,19 @@ window.Secret = (function () {
   var _iT = 0, _iLT = 0;
   function markInteract() { _iT = Date.now(); }
   function markInteractLong() { _iLT = Date.now(); _iT = Date.now(); }
+  /* 系统文件选择器标记：告诉原生层「这不是切后台，别收起好友空间」。
+     没有它，选图时 Activity 走 onPause → 好友空间被收起 → curRid 丢失
+     → 回来点发送就报「会话已失效，请重新进入」。 */
+  function setPicking(v) {
+    try { if (window.DDZNative && DDZNative.setPicking) DDZNative.setPicking(!!v); } catch (e) { }
+  }
+  function pickSys(id) {
+    var el = document.getElementById(id); if (!el) return;
+    markInteractLong(); setPicking(true);
+    try { el.click(); } catch (e) { setPicking(false); }
+    clearTimeout(pickSys._t);
+    pickSys._t = setTimeout(function () { setPicking(false); }, 40000);
+  }
   function interactBusy() {
     var now = Date.now();
     return (now - _iT) < 2500 || (now - _iLT) < 30000;
@@ -244,7 +257,7 @@ window.Secret = (function () {
     close();
     try { App.go('home'); } catch (e) { }
     homeSafe = true;
-    if (App.vibe() && navigator.vibrate) { try { navigator.vibrate(10); } catch (e) { } }
+    App.vibeDo(12);
   }
 
   /* ---------- 无操作 60 秒自动退出到主界面 ---------- */
@@ -409,15 +422,14 @@ window.Secret = (function () {
     Net.send({ t: 'friend:list', via: 'secret' });
     var box = document.createElement('div');
     box.className = 'modal'; box.id = 'sfriend-box';
-    box.innerHTML = '<div class="box" style="max-width:340px">' +
+    /* 跟主界面好友一致：一行紧凑的添加条 + 下面的好友列表，同一个弹窗内搞定 */
+    box.innerHTML = '<div class="box frbox" style="max-width:340px">' +
       '<h3>隐私好友</h3>' +
-      '<p style="margin-bottom:8px">这里的专属好友，不会出现在主聊天<br>' +
-      '<span style="font-size:11px;opacity:.75">输入对方 UID 或昵称即可添加</span></p>' +
-      '<div class="row" style="margin-bottom:10px">' +
-      '<input id="sfr-q" placeholder="输入 UID 或昵称" style="flex:1;margin:0">' +
+      '<div class="fr-addrow">' +
+      '<input id="sfr-q" placeholder="输入 UID 或昵称">' +
       '<button class="btn jade" id="sfr-add">添加</button></div>' +
       '<div class="fr-list" id="sfr-list"><div class="fr-empty">加载中…</div></div>' +
-      '<div class="row" style="margin-top:12px"><button class="btn ghost" id="sfr-close">关闭</button></div></div>';
+      '<div class="row" style="margin-top:10px"><button class="btn ghost" id="sfr-close">关闭</button></div></div>';
     document.body.appendChild(box);
     box.querySelector('#sfr-close').onclick = function () { box.remove(); };
     box.querySelector('#sfr-add').onclick = function () {
@@ -909,13 +921,13 @@ window.Secret = (function () {
     });
     b.querySelector('#s-add').onclick = function () {
       markInteract();
-      App.sheet([['🖼 图片', function () { markInteractLong(); document.getElementById('s-img').click(); }],
-        ['🎬 视频', function () { markInteractLong(); document.getElementById('s-vid').click(); }],
-        ['📎 文件', function () { markInteractLong(); document.getElementById('s-file').click(); }]]);
+      App.sheet([['🖼 图片', function () { pickSys('s-img'); }],
+        ['🎬 视频', function () { pickSys('s-vid'); }],
+        ['📎 文件', function () { pickSys('s-file'); }]]);
     };
-    document.getElementById('s-img').onchange = function (e) { up(e.target.files[0], 'image'); };
-    document.getElementById('s-vid').onchange = function (e) { up(e.target.files[0], 'video'); };
-    document.getElementById('s-file').onchange = function (e) { up(e.target.files[0], 'file'); };
+    document.getElementById('s-img').onchange = function (e) { setPicking(false); up(e.target.files[0], 'image'); };
+    document.getElementById('s-vid').onchange = function (e) { setPicking(false); up(e.target.files[0], 'video'); };
+    document.getElementById('s-file').onchange = function (e) { setPicking(false); up(e.target.files[0], 'file'); };
     // 会话内返回：左滑 / 右滑 → 回列表（不重输暗号）
     Nav.push(backToList, 'secret-thread');
     renderSMsgs();

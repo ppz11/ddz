@@ -87,6 +87,13 @@ window.Net = (function () {
     on: on, send: send, connect: connect, api: api, upload: upload, abs: abs,
     /* 诊断与手动改地址（必须导出，否则 app.js 里永远是 undefined） */
     setServer: setServer, serverLabel: serverLabel,
+    /* 换身份后 token 变了：必须带着新 token 重连，否则后续所有消息都被服务端拒绝 */
+    setToken: function (t) { token = t || token; },
+    reauth: function (t) {
+      token = t || token; retry = 0; queue.length = 0;
+      try { if (ws) ws.close(); } catch (e) {}
+      ws = null; connect(token);
+    },
     /* 当前实际使用的地址（供诊断展示） */
     currentServer: function () { return SERVER || ''; },
     get open() { return opened && ws && ws.readyState === 1; },

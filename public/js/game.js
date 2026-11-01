@@ -13,18 +13,29 @@ window.Game = (function () {
   /* 大王小王：手绘 SVG 皇冠 + 角标 + 描边大字。
      原来用 ♛♕ 字符，不同手机上字体渲染差异很大（有的显示成方块），看着就丑。
      改成内联 SVG，任何手机都是同一个精致造型。 */
-  var CROWN_SVG =
-    '<svg class="jk-crown" viewBox="0 0 24 18" aria-hidden="true">' +
-    '<defs><linearGradient id="ckg" x1="0" y1="0" x2="0" y2="1">' +
-    '<stop offset="0" stop-color="#ffe9a8"/><stop offset="1" stop-color="#c9962f"/>' +
-    '</linearGradient></defs>' +
-    '<path d="M2.2 15.5 L3.6 5.2 L7.6 10.2 L12 2.6 L16.4 10.2 L20.4 5.2 L21.8 15.5 Z" ' +
-    'fill="url(#ckg)" stroke="#8a6318" stroke-width="0.7" stroke-linejoin="round"/>' +
-    '<rect x="1.6" y="15.2" width="20.8" height="2.1" rx="0.9" fill="url(#ckg)" stroke="#8a6318" stroke-width="0.7"/>' +
-    '<circle cx="12" cy="1.2" r="1.1" fill="#ffe9a8" stroke="#8a6318" stroke-width="0.5"/>' +
-    '<circle cx="3.6" cy="4.2" r="1" fill="#ffe9a8" stroke="#8a6318" stroke-width="0.5"/>' +
-    '<circle cx="20.4" cy="4.2" r="1" fill="#ffe9a8" stroke="#8a6318" stroke-width="0.5"/>' +
-    '</svg>';
+  /* 皇冠造型：大王红色、小王黑色，形状完全相同，只换配色。
+     注意：同一张牌桌会同时出现多张王，SVG 的渐变 id 必须各不相同，
+     否则后渲染的会覆盖前面的定义，导致两张王颜色一样。 */
+  var jkSeq = 0;
+  function crownSVG(big) {
+    var gid = 'ckg' + (++jkSeq);
+    var c1 = big ? '#ff8a8a' : '#c3c9d4';   // 高光
+    var c2 = big ? '#d71f2a' : '#2b3240';   // 主色
+    var c3 = big ? '#8e0f18' : '#11161f';   // 暗部
+    var ln = big ? '#7d1119' : '#0b0f16';   // 描边
+    return '<svg class="jk-crown" viewBox="0 0 24 18" aria-hidden="true">' +
+      '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + c1 + '"/><stop offset=".55" stop-color="' + c2 + '"/>' +
+      '<stop offset="1" stop-color="' + c3 + '"/>' +
+      '</linearGradient></defs>' +
+      '<path d="M2.2 15.5 L3.6 5.2 L7.6 10.2 L12 2.6 L16.4 10.2 L20.4 5.2 L21.8 15.5 Z" ' +
+      'fill="url(#' + gid + ')" stroke="' + ln + '" stroke-width="0.7" stroke-linejoin="round"/>' +
+      '<rect x="1.6" y="15.2" width="20.8" height="2.1" rx="0.9" fill="url(#' + gid + ')" stroke="' + ln + '" stroke-width="0.7"/>' +
+      '<circle cx="12" cy="1.2" r="1.1" fill="' + c1 + '" stroke="' + ln + '" stroke-width="0.5"/>' +
+      '<circle cx="3.6" cy="4.2" r="1" fill="' + c1 + '" stroke="' + ln + '" stroke-width="0.5"/>' +
+      '<circle cx="20.4" cy="4.2" r="1" fill="' + c1 + '" stroke="' + ln + '" stroke-width="0.5"/>' +
+      '</svg>';
+  }
   function jokerInner(c, small) {
     var big = c.joker === 'big';
     var tag = big ? '大' : '小';
@@ -32,11 +43,12 @@ window.Game = (function () {
       /* 小尺寸（出牌区 / 底牌）：皇冠 + 一个「王」字 + 左上角标 */
       return '<div class="ctr jk-mini' + (big ? ' b' : '') + '">' +
         '<span class="jk-tag">' + tag + '</span>' +
+        crownSVG(big) +
         '<span class="jk-w">王</span></div>';
     }
     return '<div class="ctr jk-full' + (big ? ' b' : '') + '">' +
       '<span class="jk-corner">' + tag + '</span>' +
-      CROWN_SVG +
+      crownSVG(big) +
       '<div class="jk-w">王</div>' +
       '<div class="jk-en">JOKER</div></div>';
   }
@@ -79,7 +91,10 @@ window.Game = (function () {
     var cw = wrap ? wrap.clientWidth : 0;
     // 首帧容器可能还没布局（宽度 0）→ 回退到窗口宽度，否则手牌会缩成最小尺寸
     var avail = (cw > 40) ? (cw - 8) : ((window.innerWidth || 640) - 60);
-    var wByW = (avail - 4) / (0.38 * n + 0.62);
+    /* 手牌间距：叠 62% 时牌面只露出 38%，点数花色被下一张压住看不清。
+       改成叠 50%（露出一半），宽度公式的系数同步从 0.38 提到 0.50。 */
+    var OV = 0.50;
+    var wByW = (avail - 4) / (OV * n + (1 - OV));
     var vh = 0;
     try { vh = window.innerHeight || 0; } catch (e) { }
     if (!vh) vh = (document.documentElement && document.documentElement.clientHeight) || 640;
@@ -104,7 +119,7 @@ window.Game = (function () {
       if (!h) return;
       h.style.setProperty('--card-w', Math.round(w0) + 'px');
       h.style.setProperty('--card-h', Math.round(w0 * 1.42) + 'px');
-      h.style.setProperty('--ov', '-' + Math.round(w0 * 0.62) + 'px');
+      h.style.setProperty('--ov', '-' + Math.round(w0 * OV) + 'px');
     }
     apply(w);
     /* 渲染后再量一次：上面是估算，遇到窄屏 / 牌特别多时会偏大。
@@ -123,6 +138,9 @@ window.Game = (function () {
   /* ---------- 牌桌短语音：按住说话，松手自动发送 ----------
      按住期间会广播「正在说话」，对方麦克风按钮上出现声波提示，
      这样忽然听到声音不会觉得突兀。 */
+  /* 超时托管：第一次超时默认不出，之后本局由机器人代打，
+     玩家一手动点「出牌/不出/提示」立刻收回控制权。 */
+  var autoPlay = false;
   var speaking = false;
   function bindTableVoice() {
     var btn = document.getElementById('btn-table-voice');
@@ -172,7 +190,7 @@ window.Game = (function () {
     bindRailRelayout();
   }
   function reset() {
-    sel = {}; over = false; dealAnim = true; S = null; myRoom = null; gid = null;
+    sel = {}; over = false; autoPlay = false; dealAnim = true; S = null; myRoom = null; gid = null;
     hintCycle = 0; lastHintKey = ''; tcMsgs = []; closeTableChat(true);
     tipShownFor = '';
     clearInterval(timer);
@@ -219,7 +237,7 @@ window.Game = (function () {
     gid = m.gid; rule = m.rule;
     if (!m.phase || m.phase === 'wait') { renderWaiting(m); showRuleTip(m); return; }
   }
-  var prevBidTurn = -1;
+  var prevBidTurn = -1, prevBidKey = '';
   function onGame(m) {
     var prevTurn = S ? S.turn : -1;
     var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',')) : '';
@@ -246,6 +264,17 @@ window.Game = (function () {
       if (nowBid === mySeat && prevBidTurn !== mySeat) Sfx.yourTurn();
       prevBidTurn = nowBid;
     }
+    /* 别人叫分也要念出来。以前只播自己点的那一下，
+       机器人叫了 3 分你只能看字幕，听声根本不知道叫了几分。 */
+    var bidKey = m.bid ? (m.bid.by + ':' + m.bid.score) : '';
+    if (bidKey && bidKey !== prevBidKey) {
+      var byMe2 = m.bid.by === mySeat;
+      if (!byMe2 && App.settings().voice) {
+        Sfx.bid(m.bid.score || 0);
+        Sfx.speak(m.bid.score ? ('叫' + m.bid.score + '分') : '不叫');
+      }
+    }
+    if (bidKey) prevBidKey = bidKey;
     render();
     showRuleTip(m);
     if (m.phase === 'over' && !over) { over = true; showResult(m); }
@@ -355,7 +384,7 @@ window.Game = (function () {
       var act = (S.phase === 'play' && S.turn === i) ? ' act' : '';
       return '<div class="ts' + act + (cls ? ' ' + cls : '') + '">' +
         '<div class="av">' + (u ? Avatar.svg(u.avatar, 26) : '') + '</div>' +
-        '<div class="ts-i"><div class="nm">' + (u ? esc(shortName(u, '空位')) : '空位') + roleTag(i) + '</div>' +
+        '<div class="ts-i"><div class="nm">' + (u ? esc(shortName(u, '空位')) : '空位') + '</div>' + roleTag(i) +
         '<div class="cnt">' + needTxt + '</div></div>' +
         (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
         '</div>';
@@ -366,7 +395,7 @@ window.Game = (function () {
       var act = (S.phase === 'play' && S.turn === me) ? ' act' : '';
       return '<div class="ts me' + act + '">' +
         '<div class="av">' + Avatar.svg(meU && meU.avatar, 26) + '</div>' +
-        '<div class="ts-i"><div class="nm">' + esc(shortName(meU, '我')) + roleTag(me) + '</div>' +
+        '<div class="ts-i"><div class="nm">' + esc(shortName(meU, '我')) + '</div>' + roleTag(me) +
         '<div class="cnt">剩 ' + cnt + ' 张</div></div>' +
         (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
         '</div>';
@@ -404,7 +433,7 @@ window.Game = (function () {
       elMyP.classList.remove('hidden2');
       elMy.innerHTML =
         '<div class="av">' + Avatar.svg(meU && meU.avatar, 28) + '</div>' +
-        '<div><div class="nm">' + esc(shortName(meU, '我')) + roleTag(me) + '</div>' +
+        '<div><div class="nm">' + esc(shortName(meU, '我')) + '</div>' + roleTag(me) +
         '<div class="cnt">剩 ' + S.counts[me] + ' 张</div></div><div class="sp"></div>' +
         '<div class="mult">×' + S.multiplier + (S.letCount ? ' · 让' + S.letCount : '') + '</div>';
       var myRow3 = myPlayedHTML();
@@ -447,6 +476,10 @@ window.Game = (function () {
 
     renderHand();
     renderActions();
+    renderResignBtn();
+    /* 牌桌背景音乐看门狗：每次状态刷新都确认一次，
+       被原生旋转/切后台打断后能自动把音乐拉回来 */
+    try { Sfx.setScene('table'); Sfx.ensure(); } catch (x) { }
     startTimer();
     fitPlayed();
     /* 所有座位/手牌都渲染完后再定位快捷栏。
@@ -624,12 +657,47 @@ window.Game = (function () {
     }
     document.getElementById('action-zone').innerHTML =
       '<div class="bidwrap" style="flex-wrap:wrap">' + btns + '</div>';
+    var rid = (m && m.gid) ? m.gid : (gid || '');
+    /* 房间号单独一行 + 复制按钮。
+       以前只用一个大字横排，牌桌中间区域高度不够时会被直接裁掉，房主看不到房间号。 */
     document.getElementById('played').innerHTML =
-      '<div class="waitbox" style="margin-top:4px"><div class="st">等待玩家就位</div>' +
-      '<div class="num">' + (m && m.gid ? m.gid : '') + '</div>' +
+      '<div class="waitbox" style="margin-top:2px">' +
+      '<div class="st">等待玩家就位</div>' +
+      '<div class="ridrow"><span class="rid" id="rid-num">' + rid + '</span>' +
+      '<button class="btn ghost sm" id="rid-copy">复制</button></div>' +
       '<div class="st">已就位 ' + filled + '/' + n + '</div>' +
       '<div class="seatsrow">' + cards + '</div>' +
       '<div style="font-size:11px;color:var(--sub);margin-top:6px">把房间号发给好友，或直接在大厅邀请在线好友</div></div>';
+    var cb = document.getElementById('rid-copy');
+    if (cb) cb.onclick = function () {
+      copyText(rid, '房间号已复制：' + rid);
+    };
+  }
+
+  /* 复制房间号：优先用系统剪贴板，Web 上不可用 / 非安全上下文时回落到隐藏输入框，
+     两条路都失败再提示手动复制 —— 不会点了没反应。 */
+  function copyText(txt, okMsg) {
+    txt = String(txt || '');
+    var done = function () { try { App.toast(okMsg || ('已复制：' + txt)); } catch (e) {} };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(done, fallback); return;
+      }
+    } catch (e) {}
+    fallback();
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = txt; ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+        document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, txt.length);
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) {}
+        ta.remove();
+        if (ok) { done(); return; }
+      } catch (e) {}
+      try { App.toast('复制失败，房间号：' + txt); } catch (e) {}
+    }
   }
 
   function selectedCards() { return S ? S.hand.filter(function (c) { return sel[c.id]; }) : []; }
@@ -663,9 +731,9 @@ window.Game = (function () {
     if (S.phase === 'double') { z.innerHTML = doubleHTML(); bindDouble(); return; }
     if (S.phase === 'over') { z.innerHTML = ''; return; }
     if (S.turn !== mySeat) {
+      /* 认输已移到右上角常驻按钮，不再每轮都占一次操作区的位置 */
       z.innerHTML = '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.6">等待' +
-        (S.seats[S.turn] ? esc(S.seats[S.turn].nick) : '对手') + '出牌…</div>' +
-        '<button class="btn ghost" style="flex:0 0 92px" onclick="Game.resign()">认输</button></div>';
+        (S.seats[S.turn] ? esc(S.seats[S.turn].nick) : '对手') + '出牌…</div></div>';
       return;
     }
     var need = (S.last && S.last.by !== mySeat) ? S.last.info : null;
@@ -742,6 +810,7 @@ window.Game = (function () {
 
   /* ---------------- 操作 ---------------- */
   function play() {
+    autoPlay = false;                     // 手动操作 → 立刻解除托管
     if (!canPlay()) { Sfx.warn(); return toast('这手牌打不过上家'); }
     var cs = selectedCards();
     var info = DDZ.parse(cs);
@@ -749,11 +818,12 @@ window.Game = (function () {
     Sfx.cardDrop(!!(info && (info.type === 'bomb' || info.type === 'rocket')));
     if (info) Sfx.announce(info);
     if (info && (info.type === 'bomb' || info.type === 'rocket')) shake();
-    if (App.vibe() && navigator.vibrate) navigator.vibrate(12);
+    App.vibeDo(18);   // 出牌震动：走原生 Vibrator，不再依赖常被禁用的 navigator.vibrate
     sel = {};
     Net.send({ t: 'game:play', ids: cs.map(function (c) { return c.id; }) });
   }
   function pass() {
+    autoPlay = false;                     // 手动操作 → 立刻解除托管
     var need = (S.last && S.last.by !== mySeat) ? S.last.info : null;
     if (!need) { toast('你是先手，必须出牌'); return; }
     Sfx.pass();
@@ -767,8 +837,14 @@ window.Game = (function () {
     if (key !== lastHintKey) { lastHintKey = key; hintCycle = 0; }
     var h = DDZ.hint(S.hand, need, { cycle: hintCycle, urgent: urgentNow() });
     if (!h) {
-      toast('没有能压过的牌'); Sfx.warn();
-      Net.send({ t: 'game:play', ids: [] }); return;
+      /* 关键：以前这里会「顺手替玩家过牌」，手上明明有能压的牌（引擎漏枚举
+         四带二 / 飞机带翅膀）时就被自动过了，等于白丢一轮。
+         现在只提示，绝不代劳；要过牌请自己点「不出」。 */
+      toast(need ? '没有能压过的牌，可点「不出」' : '没有可出的牌');
+      Sfx.warn();
+      hintCycle = 0;
+      sel = {}; renderHand(); updateActions();
+      return;
     }
     hintCycle++;
     sel = {}; h.ids.forEach(function (i) { sel[i] = 1; });
@@ -786,6 +862,22 @@ window.Game = (function () {
       Sfx.speak(txt);
     }
     Net.send({ t: 'game:bid', act: act });
+  }
+  /* 认输：右上角常驻（竖屏按钮左边），只在牌局进行中显示，
+     不再每轮出牌都弹一次占地方。 */
+  function renderResignBtn() {
+    var host = document.getElementById('page-play');
+    if (!host) return;
+    var b = document.getElementById('btn-resign');
+    var show = !!(S && (S.phase === 'play' || S.phase === 'bid' || S.phase === 'double'));
+    if (!b) {
+      b = document.createElement('button');
+      b.id = 'btn-resign'; b.className = 'resignbtn';
+      b.textContent = '认输';
+      b.onclick = function () { App.confirm('确定认输吗？', '认输将直接判负', function () { Net.send({ t: 'game:resign' }); }); };
+      host.appendChild(b);
+    }
+    b.classList.toggle('hidden', !show);
   }
   function resign() { App.confirm('确定认输吗？', '认输将直接判负', function () { Net.send({ t: 'game:resign' }); }); }
   function leave() { Net.send({ t: 'room:leave' }); App.go('home'); toast('已离开房间'); }
@@ -873,7 +965,8 @@ window.Game = (function () {
   function startBidTimer() {
     clearInterval(timer);
     if (!S || S.phase !== 'bid' || S.bidTurn !== mySeat) return;
-    var leftBid = 20;
+    /* 叫分默认 8 秒：超时一律「不叫」 */
+    var leftBid = 8;
     timer = setInterval(function () {
       leftBid--;
       if (leftBid > 0) return;
@@ -881,26 +974,37 @@ window.Game = (function () {
       if (!S || S.phase !== 'bid' || S.bidTurn !== mySeat) return;
       if (S.rule === 'let46') Net.send({ t: 'game:bid', act: S.landlord < 0 ? { type: 'bid' } : { type: 'pass' } });
       else Net.send({ t: 'game:bid', act: { type: 'pass' } });
-      toast('超时未操作，已自动处理');
+      toast('超时未叫分，默认不叫');
     }, 1000);
   }
 
   function startTimer() {
     clearInterval(timer);
     if (!S || S.phase !== 'play') return;
-    left = 25;
+    /* 出牌默认 30 秒 */
+    left = 30;
     if (S.turn === mySeat) {
       timer = setInterval(function () {
         left--;
-        if (left <= 0) {
-          clearInterval(timer);
-          var need = (S.last && S.last.by !== mySeat) ? S.last.info : null;
-          if (need) { toast('超时，自动不出'); Net.send({ t: 'game:play', ids: [] }); }
+        if (left > 0) return;
+        clearInterval(timer);
+        var need = (S.last && S.last.by !== mySeat) ? S.last.info : null;
+        /* 第一次超时：默认「不出」（先手则出最小的一手）。
+           之后本局进入机器人托管，直到玩家自己再动手出牌。 */
+        if (!autoPlay) {
+          autoPlay = true;
+          if (need) { toast('超时，默认不出'); Net.send({ t: 'game:play', ids: [] }); }
           else {
-            var h = DDZ.hint(S.hand, null, { urgent: urgentNow() });
-            Net.send({ t: 'game:play', ids: h ? h.ids : [] }); sel = {};
+            var h0 = DDZ.hint(S.hand, null, { urgent: urgentNow() });
+            Net.send({ t: 'game:play', ids: h0 ? h0.ids : [] }); sel = {};
           }
+          return;
         }
+        /* 托管中：由机器人按牌型自动出牌 */
+        var h = (need ? DDZ.hint(S.hand, need, { urgent: urgentNow() })
+                      : DDZ.hint(S.hand, null, { urgent: urgentNow() }));
+        if (need && !h) { Net.send({ t: 'game:play', ids: [] }); }
+        else { Net.send({ t: 'game:play', ids: h ? h.ids : [] }); sel = {}; }
       }, 1000);
     }
   }
@@ -911,9 +1015,16 @@ window.Game = (function () {
     '别走开，马上回来', '合作愉快', '这把稳了', '好牌，佩服', '你是我的偶像'];
   function toggleTableChat() {
     var el = document.getElementById('tchat');
+    if (!el) { renderTableChat(); el = document.getElementById('tchat'); if (!el) return; }
     tcOpen = !tcOpen;
     el.classList.toggle('hidden', !tcOpen);
-    if (tcOpen) renderTableChat();
+    if (tcOpen) {
+      renderTableChat();
+      setTimeout(function () {
+        var i = document.getElementById('tc-in');
+        if (i) { try { i.focus(); } catch (x) { } }
+      }, 60);
+    }
   }
   function closeTableChat(hard) {
     tcOpen = false;
@@ -930,7 +1041,7 @@ window.Game = (function () {
       '</div>' +
       '<div class="tc-bar">' +
       '<div class="ic" id="tc-voice">🎙</div>' +
-      '<input id="tc-in" placeholder="说点什么…">' +
+      '<input id="tc-in" placeholder="说点什么…" inputmode="text" enterkeyhint="send">' +
       '<div class="ic" id="tc-emo">😊</div>' +
       '<div class="ic send" id="tc-send">➤</div>' +
       '</div>' +
@@ -978,6 +1089,9 @@ window.Game = (function () {
   function tcSend(msg) { Net.send({ t: 'room:chat', msg: msg }); }
   /* 发表情后表情栏自动收起 */
   function tcSendSticker(emoji, panel) {
+    if (tcSendSticker._lock) return;          // 防止一次点击发两条
+    tcSendSticker._lock = true;
+    setTimeout(function () { tcSendSticker._lock = false; }, 350);
     tcSend({ kind: 'sticker', emoji: emoji });
     Sfx.send();
     if (panel) panel.classList.add('hidden');
@@ -1067,15 +1181,25 @@ window.Game = (function () {
       return '<button class="qk" data-i="' + i + '">' + esc(t) + '</button>';
     }).join('');
     document.getElementById('page-play').appendChild(p);
+    /* 防重入：一次点击只发一条。
+       以前 touch/click 双通道 + 面板未及时移除，会被触发两次，对方收到两条。 */
     p.querySelectorAll('.qk').forEach(function (b) {
-      b.onclick = function () {
+      var sent = false;
+      var fire = function (e) {
+        if (e) { e.preventDefault(); e.stopPropagation(); }
+        if (sent) return; sent = true;
         var txt = QUICK[+b.dataset.i] || '';
         tcSend({ kind: 'text', text: txt, quick: true, voice: txt });
-        Sfx.send();
-        try { Sfx.speak(txt); } catch (e) { }
+        try { Sfx.send(); } catch (x) { }
+        /* 快捷语要念出来：语音开关没开时给个提示，避免「以为坏了」 */
+        try {
+          if (App.settings().voice) Sfx.speak(txt);
+          else App.toast('出牌语音播报已关闭，可在「我的」里打开');
+        } catch (x) { }
         floatSay('我', txt, 'quick');
-        p.remove();
+        if (p.parentNode) p.remove();
       };
+      b.onclick = fire;
     });
     setTimeout(function () { if (p.parentNode) p.remove(); }, 8000);
   }

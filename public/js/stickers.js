@@ -103,20 +103,33 @@ window.Stickers = (function () {
    * 导入后存 localStorage，并把新包设为默认，方便马上使用。
    * ============================================================ */
   var LS_KEY = 'ddz_sticker_packs', LS_DEF = 'ddz_sticker_default', LS_BIG = 'ddz_sticker_big';
+  var LS_GLOBAL = 'ddz_sticker_global';
   var USER_PACKS = [];
+  /* 服务器统一下发的包：房主上传一次，所有玩家登录后自动同步，
+     排在列表最前、自动设为默认、不允许本地删除（删了下次同步还会回来）。 */
+  var GLOBAL_PACKS = [];
   var DEFAULT_PACK = '';
 
   var BIG = false;
   function isBig() { return BIG; }
   function setBig(v) { BIG = !!v; try { localStorage.setItem(LS_BIG, BIG ? '1' : '0'); } catch (e) { } }
 
+  function allPacks() { return GLOBAL_PACKS.concat(USER_PACKS); }
+
   function loadPacks() {
     try {
       USER_PACKS = JSON.parse(localStorage.getItem(LS_KEY) || '[]') || [];
     } catch (e) { USER_PACKS = []; }
+    try {
+      GLOBAL_PACKS = (JSON.parse(localStorage.getItem(LS_GLOBAL) || '[]') || []).map(function (pk) {
+        pk.global = true; return pk;
+      });
+    } catch (e) { GLOBAL_PACKS = []; }
     try { BIG = localStorage.getItem(LS_BIG) === '1'; } catch (e) { BIG = false; }
     try { DEFAULT_PACK = localStorage.getItem(LS_DEF) || ''; } catch (e) { DEFAULT_PACK = ''; }
     if (DEFAULT_PACK && !packById(DEFAULT_PACK)) DEFAULT_PACK = '';
+    /* 服务器包优先级最高：没手动选过就用它，保证每个人打开都一样 */
+    if (!DEFAULT_PACK && GLOBAL_PACKS.length) DEFAULT_PACK = GLOBAL_PACKS[0].id;
     if (!DEFAULT_PACK && USER_PACKS.length) DEFAULT_PACK = USER_PACKS[0].id;
   }
   function savePacks() {
@@ -125,8 +138,33 @@ window.Stickers = (function () {
       localStorage.setItem(LS_DEF, DEFAULT_PACK || '');
     } catch (e) { }
   }
+  /* 从服务器拉取统一表情包。返回是否拉到了包。 */
+  function syncGlobal(cb) {
+    var N = window.Net;
+    if (!N || !N.api) { cb && cb(0); return; }
+    N.api('/api/stickers').then(function (r) {
+      var list = (r && r.packs) || [];
+      GLOBAL_PACKS = list.map(function (pk) {
+        var items = (pk.items || []).filter(function (it) { return it && it.url; }).map(function (it) {
+          return {
+            id: it.id, name: it.name,
+            /* 服务器存的是 /api/file/xxx 相对路径，按当前连的服务器补全。
+               必须先判空再补全：abs('') 会变成光秃秃的服务器地址，反而成了有效值 */
+            url: (window.Net && Net.abs) ? Net.abs(it.url) : it.url,
+            anim: !!it.anim
+          };
+        });
+        return { id: pk.id, name: pk.name || '服务器表情', items: items, global: true, ts: pk.ts };
+      }).filter(function (pk) { return pk.items.length; });
+      try { localStorage.setItem(LS_GLOBAL, JSON.stringify(GLOBAL_PACKS)); } catch (e) { }
+      if (GLOBAL_PACKS.length) DEFAULT_PACK = GLOBAL_PACKS[0].id;
+      savePacks();
+      cb && cb(GLOBAL_PACKS.length);
+    }).catch(function () { cb && cb(0); });
+  }
   function packById(id) {
-    for (var i = 0; i < USER_PACKS.length; i++) if (USER_PACKS[i].id === id) return USER_PACKS[i];
+    var all = allPacks();
+    for (var i = 0; i < all.length; i++) if (all[i].id === id) return all[i];
     return null;
   }
   function newId() { return 'up' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
@@ -143,9 +181,13 @@ window.Stickers = (function () {
     return pk;
   }
   function removePack(id) {
+    /* 服务器下发的包不能本地删 —— 删了下一次同步又会回来，
+       不如直接不给删，避免误以为没删干净 */
+    if (GLOBAL_PACKS.some(function (x) { return x.id === id; })) return false;
     USER_PACKS = USER_PACKS.filter(function (x) { return x.id !== id; });
-    if (DEFAULT_PACK === id) DEFAULT_PACK = USER_PACKS.length ? USER_PACKS[0].id : '';
+    if (DEFAULT_PACK === id) DEFAULT_PACK = USER_PACKS.length ? USER_PACKS[0].id : (GLOBAL_PACKS[0] ? GLOBAL_PACKS[0].id : '');
     savePacks();
+    return true;
   }
   function setDefault(id) { DEFAULT_PACK = id; savePacks(); }
 
@@ -293,13 +335,16 @@ window.Stickers = (function () {
     var box = document.createElement('div');
     box.className = 'modal'; box.id = 'stk-import';
     function packsHTML() {
-      if (!USER_PACKS.length) return '<div style="text-align:center;color:var(--sub);font-size:12px;padding:10px 0">还没有导入的表情包</div>';
-      return USER_PACKS.map(function (pk) {
+      var all = allPacks();
+      if (!all.length) return '<div style="text-align:center;color:var(--sub);font-size:12px;padding:10px 0">还没有导入的表情包</div>';
+      return all.map(function (pk) {
         var on = (pk.id === DEFAULT_PACK) ? ' on' : '';
         return '<div class="spk' + on + '" data-id="' + pk.id + '">' +
-          '<div class="th"><img src="' + pk.items[0].url + '"></div>' +
-          '<div class="nm">' + (pk.name || '我的表情') + '（' + pk.items.length + '）</div>' +
-          '<div class="op"><button data-a="def">设为默认</button><button data-a="del">删除</button></div></div>';
+          '<div class="th"><img src="' + (pk.items[0] && pk.items[0].url) + '"></div>' +
+          '<div class="nm">' + (pk.global ? '☁ ' : '') + (pk.name || '我的表情') + '（' + pk.items.length + '）</div>' +
+          '<div class="op"><button data-a="def">设为默认</button>' +
+          (pk.global ? '<span style="font-size:10px;opacity:.6;padding:0 6px">服务器</span>'
+            : '<button data-a="del">删除</button>') + '</div></div>';
       }).join('');
     }
     function gridHTML() {
@@ -423,10 +468,13 @@ window.Stickers = (function () {
     PACK_FACE: PACK_FACE, PACK_OBJ: PACK_OBJ, EMOJI: EMOJI,
     svgOf: svgOf, render: render, html: html,
     /* 导入相关 */
-    get packs() { return USER_PACKS; },
+    get packs() { return allPacks(); },
     get defaultId() { return DEFAULT_PACK; },
     addPack: addPack, removePack: removePack, setDefault: setDefault,
     fromFiles: fromFiles, fromJSON: fromJSON, packById: packById,
+    /* 服务器统一表情包：登录后调一次，所有玩家拿到同样的包 */
+    syncGlobal: syncGlobal,
+    get globalPacks() { return GLOBAL_PACKS; },
     packItemHTML: packItemHTML, packThumb: packThumb, reload: loadPacks,
     openImport: openImport, dataURLtoFile: dataURLtoFile,
     isBig: isBig, setBig: setBig
