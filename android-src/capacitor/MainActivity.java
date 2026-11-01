@@ -83,8 +83,9 @@ public class MainActivity extends BridgeActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final int REQ_PERM = 1002;
 
-    @Override
-    /* 在这些目录写 .nomedia，阻止系统媒体库扫描（相册/文件管理/管家类 App） */
+    /* 在这些目录写 .nomedia，阻止系统媒体库扫描（相册/文件管理/管家类 App）
+       注意：这是自定义私有方法，父类没有同名方法，不能加 @Override
+       —— 加了会报「method does not override or implement a method from a supertype」。 */
     private void hideCacheFromGallery() {
         File[] roots = new File[]{
                 getFilesDir(),
