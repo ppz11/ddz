@@ -167,6 +167,9 @@ window.Game = (function () {
     if (b) b.onclick = toggleTableChat;
     var q = document.getElementById('btn-table-quick');
     if (q) q.onclick = toggleQuickPanel;
+    var sk = document.getElementById('btn-table-stick');
+    if (sk) sk.onclick = toggleStickPanel;
+    bindRailRelayout();
   }
   function reset() {
     sel = {}; over = false; dealAnim = true; S = null; myRoom = null; gid = null;
@@ -446,6 +449,89 @@ window.Game = (function () {
     renderActions();
     startTimer();
     fitPlayed();
+    /* 所有座位/手牌都渲染完后再定位快捷栏。
+       注意：牌桌页可能此刻还是隐藏的（getBoundingClientRect 全是 0），
+       所以要等页面真正显示出来再量 —— 用 rAF + 短延时双保险。 */
+    scheduleRailLayout();
+  }
+  /* 快捷栏（快捷语 / 快捷表情 / 语音 / 文字）定位
+     原来是死值 bottom:120px 往上排四颗按钮，实测 8 种屏有 7 种
+     正好压在右侧玩家的头像昵称上。
+     现在改成：先量出「右侧玩家信息块下沿」和「手牌顶部」，
+     把整条栏放进这两者之间的缝里；缝不够就自动降级排布
+     （竖排 → 2×2 → 横排）并缩小按钮，保证既不压对手也不压手牌。 */
+  function layoutRail() {
+    var rail = document.getElementById('table-rail');
+    if (!rail) return;
+    var vh = window.innerHeight || document.documentElement.clientHeight;
+    var vw = window.innerWidth || document.documentElement.clientWidth;
+    var seat = document.querySelector('.seatcol.right .ts') ||
+               document.querySelector('.seatright .ts') ||
+               document.querySelector('.seatright') ||
+               document.querySelector('.seatcol.right');
+    var handTop = vh;
+    var hw = document.querySelector('.handwrap');
+    if (hw) { var hr = hw.getBoundingClientRect(); if (hr.height > 0) handTop = hr.top; }
+    var seatBottom = 0;
+    if (seat) { var sr = seat.getBoundingClientRect(); if (sr.height > 0) seatBottom = sr.bottom; }
+    var top = seatBottom + 8;
+    var avail = Math.max(24, handTop - top - 6);
+
+    var MODES = [
+      [], ['compact'], ['tiny'],
+      ['grid2'], ['grid2', 'compact'], ['grid2', 'tiny'],
+      ['rowmode'], ['rowmode', 'compact'], ['rowmode', 'tiny']
+    ];
+    var pick = null, pickH = 0;
+    for (var i = 0; i < MODES.length; i++) {
+      rail.className = 'tablerail' + (MODES[i].length ? ' ' + MODES[i].join(' ') : '');
+      var h = rail.offsetHeight || 0, w = rail.offsetWidth || 0;
+      if (h > 0 && h <= avail && w <= vw - 8) { pick = MODES[i]; pickH = h; break; }
+      if (h > 0 && (!pickH || h < pickH)) { pickH = h; pick = MODES[i]; }
+    }
+    if (!pick) pick = ['rowmode', 'tiny'];
+    rail.className = 'tablerail' + (pick.length ? ' ' + pick.join(' ') : '');
+    var hh = rail.offsetHeight || 120;
+    if (top + hh > handTop - 6) top = Math.max(seatBottom + 2, handTop - hh - 6);
+    if (top + hh > vh - 4) top = Math.max(0, vh - hh - 4);
+    if (top < 0) top = 0;
+
+    /* 坐标换算：牌桌可能被整体缩放（transform: scale），而且 rail 的
+       定位父元素也不是视口。直接把视口像素写进 style.top 会整体偏掉。
+       这里先置 0 量一次，用「视口位移 / 缩放比」反推真正该写的 css 值。 */
+    rail.style.top = '0px';
+    rail.style.bottom = 'auto';
+    var r0 = rail.getBoundingClientRect();
+    var scale = rail.offsetHeight > 0 ? (r0.height / rail.offsetHeight) : 1;
+    if (!(scale > 0.01) || !isFinite(scale)) scale = 1;
+    var cssTop = (top - r0.top) / scale;
+    if (!isFinite(cssTop)) cssTop = 0;
+    rail.style.top = Math.round(cssTop) + 'px';
+    /* 兜底：写完再量一次，偏差过大就直接按差值修正一次 */
+    var r1 = rail.getBoundingClientRect();
+    var diff = top - r1.top;
+    if (Math.abs(diff) > 2) {
+      rail.style.top = Math.round(cssTop + diff / scale) + 'px';
+    }
+  }
+
+  var railTimer = null;
+  function scheduleRailLayout() {
+    try { layoutRail(); } catch (e) { }
+    try {
+      if (window.requestAnimationFrame) requestAnimationFrame(function () {
+        try { layoutRail(); } catch (e) { }
+      });
+    } catch (e) { }
+    clearTimeout(railTimer);
+    railTimer = setTimeout(function () { try { layoutRail(); } catch (e) { } }, 80);
+  }
+  /* 页面尺寸/方向变化时重新定位 */
+  function bindRailRelayout() {
+    var t = null;
+    var go = function () { clearTimeout(t); t = setTimeout(function () { try { layoutRail(); } catch (e) { } }, 120); };
+    try { window.addEventListener('resize', go); } catch (e) { }
+    try { window.addEventListener('orientationchange', go); } catch (e) { }
   }
 
   /* 出牌区自适应：先按比例叠好，渲染后测量一次。
@@ -522,14 +608,22 @@ window.Game = (function () {
     }
     var filled = seats.filter(Boolean).length;
     var need = n - filled;
-    // 不出现「机器人」字样：一律表述为「邀请在线玩家」
-    var inviteBtn = need > 0
-      ? '<button class="btn jade" onclick="Game.addBot()">邀请在线玩家</button>' +
-      ((need > 1) ? '<button class="btn" onclick="Game.fillAll()">全部邀请</button>' : '')
-      : '';
+    /* 流程改为：先邀请真人 → 人不满再补机器人 → 点「开始游戏」才发牌。
+       之前是「补满即开局」，房主还在邀请好友时牌已经发下去了。 */
+    var isOwner = mySeat === 0;
+    var btns = '<button class="btn ghost" onclick="Game.leave()">离开房间</button>';
+    if (isOwner) {
+      if (need > 0) {
+        btns += '<button class="btn" onclick="Game.addBot()">邀请好友</button>';
+        btns += '<button class="btn" onclick="Game.fillAll()">补机器人(' + need + ')</button>';
+      }
+      // 满员才允许开始
+      btns += need === 0
+        ? '<button class="btn jade" onclick="Game.startNow()">▶ 开始游戏</button>'
+        : '<button class="btn jade" style="opacity:.45;pointer-events:none">▶ 开始游戏（还差' + need + '人）</button>';
+    }
     document.getElementById('action-zone').innerHTML =
-      '<div class="bidwrap" style="flex-wrap:wrap">' +
-      '<button class="btn ghost" onclick="Game.leave()">离开房间</button>' + inviteBtn + '</div>';
+      '<div class="bidwrap" style="flex-wrap:wrap">' + btns + '</div>';
     document.getElementById('played').innerHTML =
       '<div class="waitbox" style="margin-top:4px"><div class="st">等待玩家就位</div>' +
       '<div class="num">' + (m && m.gid ? m.gid : '') + '</div>' +
@@ -760,7 +854,13 @@ window.Game = (function () {
   function fillAll() {
     var n = myRoom ? myRoom.n : 2;
     var filled = myRoom ? myRoom.seats.filter(Boolean).length : 1;
-    for (var i = 0; i < n - filled; i++) Net.send({ t: 'room:joinbot', gid: gid });
+    /* auto:false → 只补位，不自动开局，等房主点「开始游戏」 */
+    for (var i = 0; i < n - filled; i++) Net.send({ t: 'room:joinbot', gid: gid, auto: false });
+  }
+  /* 房主手动开局 */
+  function startNow() {
+    if (!gid) return;
+    Net.send({ t: 'room:start', gid: gid });
   }
   function kickBot() { Net.send({ t: 'room:kickbot', gid: gid }); }
   function rematch() { Net.send({ t: 'game:rematch' }); over = false; dealAnim = true; }
@@ -980,6 +1080,80 @@ window.Game = (function () {
     setTimeout(function () { if (p.parentNode) p.remove(); }, 8000);
   }
 
+  /* 快捷表情：与快捷语分开的独立入口，点一下直接发出去 */
+  var QSTICK = ['😂', '👍', '👏', '😎', '😍', '😡', '😭', '🎉', '🙏', '🤔', '💪', '❤️'];
+  /* 快捷表情面板：Emoji + 已导入的表情包（默认包排在最前）。
+     动图按动图渲染预览，预览尺寸刻意做小（34px），避免占满牌桌。 */
+  function stickPacks() {
+    try {
+      if (!window.Stickers || !Stickers.packs) return [];
+      var ps = Stickers.packs.slice();
+      var def = Stickers.defaultId || '';
+      ps.sort(function (a, b) {
+        if (a.id === def) return -1;
+        if (b.id === def) return 1;
+        return 0;
+      });
+      return ps;
+    } catch (e) { return []; }
+  }
+  function toggleStickPanel() {
+    var old = document.getElementById('stick-panel');
+    if (old) { old.remove(); return; }
+    var packs = stickPacks();
+    var p = document.createElement('div');
+    p.id = 'stick-panel'; p.className = 'quick-panel stick';
+    var tabs = '<div class="sp-tabs">' +
+      '<span class="sp-tab on" data-p="">Emoji</span>' +
+      packs.map(function (pk) {
+        return '<span class="sp-tab" data-p="' + esc(pk.id) + '">' + esc((pk.name || '表情').slice(0, 6)) + '</span>';
+      }).join('') + '</div>';
+    var grid = document.createElement('div');
+    grid.className = 'sp-grid';
+    p.innerHTML = tabs;
+    p.appendChild(grid);
+    function show(pid) {
+      p.querySelectorAll('.sp-tab').forEach(function (t) {
+        t.classList.toggle('on', (t.dataset.p || '') === (pid || ''));
+      });
+      if (!pid) {
+        grid.innerHTML = QSTICK.map(function (e, i) {
+          return '<button class="sp-e" data-i="' + i + '">' + e + '</button>';
+        }).join('');
+        grid.querySelectorAll('.sp-e').forEach(function (b) {
+          b.onclick = function () { sendOne(QSTICK[+b.dataset.i] || '🙂'); };
+        });
+        return;
+      }
+      var pk = null;
+      packs.forEach(function (x) { if (x.id === pid) pk = x; });
+      var items = (pk && pk.items) || [];
+      grid.innerHTML = items.map(function (it, i) {
+        return '<button class="sp-i" data-i="' + i + '" title="' + esc(it.name || '') + '">' +
+          '<img src="' + esc(it.url) + '" alt=""></button>';
+      }).join('') || '<div style="font-size:11px;color:var(--sub);padding:8px">这个包还是空的</div>';
+      grid.querySelectorAll('.sp-i').forEach(function (b) {
+        b.onclick = function () { var it = items[+b.dataset.i]; if (it) sendSticker(it); };
+      });
+    }
+    function sendOne(em) {
+      tcSend({ kind: 'text', text: em, quick: true });
+      Sfx.send(); floatSay('我', em, 'sticker'); p.remove();
+    }
+    function sendSticker(it) {
+      tcSend({ kind: 'sticker', url: it.url, name: it.name || '', anim: !!it.anim, quick: true });
+      Sfx.send();
+      floatSay('我', '<img src="' + esc(it.url) + '" class="fl-img">', 'sticker');
+      p.remove();
+    }
+    p.querySelectorAll('.sp-tab').forEach(function (t) {
+      t.onclick = function () { show(t.dataset.p || ''); };
+    });
+    document.getElementById('page-play').appendChild(p);
+    show(packs.length ? packs[0].id : '');
+    setTimeout(function () { if (p.parentNode) p.remove(); }, 8000);
+  }
+
   /* 短语音（按住说话，松开发送，最长 15 秒）—— 原生录音优先 */
   function bindTcVoice(btn) {
     if (!btn) return;
@@ -1039,8 +1213,11 @@ window.Game = (function () {
     init: init, onRoom: onRoom, onGame: onGame, onResult: onResult, reset: reset,
     play: play, pass: pass, hint: hint, bid: bid, leave: leave, resign: resign, rematch: rematch,
     backHome: backHome, addBot: addBot, fillAll: fillAll, kickBot: kickBot,
-    onTableChat: onTableChat, closeTableChat: closeTableChat, onSpeaking: onSpeaking,
-    relayout: function () { try { setScale(); if (S) { fitHand(S.hand.length); render(); } } catch (e) { } },
-    get state() { return S; }, get seat() { return mySeat; }, get gid() { return gid; }, get room() { return myRoom; }
+    onTableChat: onTableChat, closeTableChat: closeTableChat, onSpeaking: onSpeaking, startNow: startNow,
+    relayout: function () { try { setScale(); if (S) { fitHand(S.hand.length); render(); } layoutRail(); } catch (e) { } },
+    get state() { return S; }, get seat() { return mySeat; }, get gid() { return gid; }, get room() { return myRoom; },
+    __set: function (st) { S = st; mySeat = st.mySeat | 0; try { render(); renderHand(); } catch (e) { } },
+    __quick: function () { return QUICK; }, __stick: function () { return QSTICK; },
+    __layoutRail: function () { layoutRail(); }, __railRect: function () { var r = document.getElementById('table-rail'); return r ? { top: Math.round(r.getBoundingClientRect().top), h: r.offsetHeight, cls: r.className, inline: r.style.top } : null; }
   };
 })();

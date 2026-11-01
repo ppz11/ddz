@@ -206,7 +206,49 @@
     }
     return res.filter(function (m) { return m && m.length && parse(byId(hand, m)); });
   }
-  /* 候选打分：越小越优先（兼顾「不拆牌 / 不大材小用 / 能顺出去」） */
+  /* 手牌结构评估：把牌尽量拆成「成型牌型」，拆不出来的散牌越多越差。
+     以前只看「这一手有没有拆同点数」，所以经常出现：
+     手上有 3-4-5-6-7 的顺子，提示却让你出一张 5 —— 顺子就这么被拆散了。
+     这里改成看「出完这一手之后，剩下的牌还剩多少成型牌型」。 */
+  var STRUCT_CACHE = {};
+  function shapeOf(arr) {
+    var key = arr.map(function (c) { return c.v; }).sort(function (a, b) { return a - b; }).join(',');
+    if (STRUCT_CACHE[key]) return STRUCT_CACHE[key];
+    var cnt = counts(arr);
+    var vs = Object.keys(cnt).map(Number).sort(function (a, b) { return a - b; });
+    var left = {}; vs.forEach(function (v) { left[v] = cnt[v]; });
+    var meld = 0, orph = 0;
+    // 1) 炸弹
+    vs.forEach(function (v) { if (left[v] === 4) { meld++; left[v] = 0; } });
+    // 2) 顺子：从最长的开始拿，避免贪心把长顺拆成两个短顺
+    for (var len = 12; len >= 5; len--) {
+      var found = true;
+      while (found) {
+        found = false;
+        for (var i = 0; i + len <= vs.length; i++) {
+          var ok = true;
+          for (var j = 0; j < len; j++) {
+            if (vs[i + j] !== vs[i] + j || left[vs[i + j]] < 1) { ok = false; break; }
+          }
+          if (!ok) continue;
+          for (var k = 0; k < len; k++) left[vs[i + k]]--;
+          meld++; found = true; break;
+        }
+      }
+    }
+    // 3) 剩下按点数成组
+    vs.forEach(function (v) {
+      var n = left[v];
+      if (n === 3) meld++;                       // 三张（可带牌）
+      else if (n === 2) meld += 0.5;             // 对子
+      else if (n === 1) orph++;                  // 散牌：最差
+    });
+    var r = { meld: meld, orph: orph };
+    STRUCT_CACHE[key] = r;
+    return r;
+  }
+
+  /* 候选打分：越小越优先（兼顾「不拆牌 / 不大材小用 / 能顺出去 / 保住成型牌型」） */
   function moveCost(hand, m, info, prev) {
     var cnt = counts(hand);
     var use = {};
@@ -234,6 +276,19 @@
     if (t === 'triple1' || t === 'triple2' || t === 'four2' || t === 'four2p') s -= 3;
     // 跟牌时：刚好压过最好，差距越大越亏
     if (prev && prev.type === t) s += Math.max(0, (main - prev.main)) * 3.2;
+
+    /* 结构惩罚：出完这一手后，剩下的牌被拆得越散越亏。
+       以前只看单点拆牌，长顺子被拆、三张被拆都判不出来。 */
+    try {
+      var rest = hand.filter(function (c) { return m.indexOf(c.id) < 0; });
+      var sh0 = shapeOf(hand), sh1 = shapeOf(rest);
+      // 成型牌型变少 → 罚；散牌变多 → 重罚
+      s += (sh0.meld - sh1.meld) * 16;
+      s += (sh1.orph - sh0.orph) * 9;
+      // 剩的牌越少，结构越不重要（快出完了就别抠结构）
+      var ratio = rest.length / Math.max(1, hand.length);
+      s *= (0.45 + 0.55 * ratio);
+    } catch (e) { }
     return s;
   }
 

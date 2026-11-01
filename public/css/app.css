@@ -294,6 +294,7 @@ input,textarea{font-family:inherit}
 .sk-grid .stk:active{background:rgba(243,201,107,.18);border-color:rgba(243,201,107,.4)}
 .sk-grid .stk img{max-width:100%;max-height:100%;object-fit:contain;display:block}
 /* 牌桌短语音按钮：放在聊天按钮上方，两者垂直分开，不会误触 */
+.tablerail .tablevoice{position:static;right:auto;bottom:auto;}
 .tablevoice{position:absolute;right:10px;bottom:calc(126px + var(--safe-b) + 8px);z-index:8;
   width:42px;height:42px;border-radius:50%;font-size:18px;background:rgba(0,0,0,.42);
   border:1px solid var(--line);backdrop-filter:blur(6px);display:none;place-items:center;
@@ -546,8 +547,17 @@ body.land .tablevoice{bottom:calc(108px + var(--safe-b) + 8px)}
 .topseats .ts-i{min-width:0;flex:1}
 .topseats .ts .nm{font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .topseats .ts .cnt{font-size:10px;color:var(--gold);margin-top:2px}
-.ts .rl{font-size:9px;padding:1px 5px;border-radius:7px;background:var(--red);color:#fff;margin-left:4px;vertical-align:1px}
-.ts .rl.f,.ts .rl.farmer{background:linear-gradient(180deg,#7fd6a0,#3f9c6c);color:#04281f}
+/* 身份徽标：以前只有 9px 一小块，混在昵称后面根本看不出谁是谁。
+   现在放大到 12px + 更实的底色 + 描边，一眼能分辨地主/农民。 */
+.ts .rl{font-size:12px;line-height:1;padding:3px 8px;border-radius:9px;background:var(--red);
+  color:#fff;margin-left:6px;vertical-align:1px;font-weight:800;letter-spacing:.3px;
+  box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.ts .rl.f,.ts .rl.farmer{background:linear-gradient(180deg,#8ee0ab,#3f9c6c);color:#04281f;
+  border:1px solid rgba(160,240,190,.55)}
+.ts .rl.lord{background:linear-gradient(180deg,#ffd97a,#c9962f);color:#3a2600;
+  border:1px solid rgba(255,235,180,.6);box-shadow:0 0 7px rgba(243,201,107,.4)}
+/* 我的信息行（三人场底部）也同步放大 */
+.myinfo .rl,.myplayed .rl{font-size:12px;padding:3px 8px;border-radius:9px;margin-left:6px;font-weight:800}
 .ts .rl.lord{background:linear-gradient(180deg,#f3c96b,#c9962f);color:#3a2600}
 .topseats .ts .clock{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;flex:0 0 auto;
   background:conic-gradient(var(--gold) 60%,rgba(255,255,255,.14) 0)}
@@ -1077,7 +1087,7 @@ body.force-land #app{
 #page-play .seatcol .ts .cnt{
   font-size:calc(8.5px * var(--k,1));color:var(--gold);margin-top:calc(1px * var(--k,1));white-space:nowrap}
 #page-play .seatcol .ts.right .ts-i{text-align:right}
-#page-play .seatcol .ts .rl{font-size:calc(9px * var(--k,1));padding:0 calc(4px * var(--k,1));
+#page-play .seatcol .ts .rl{font-size:calc(12px * var(--k,1));padding:calc(3px * var(--k,1)) calc(8px * var(--k,1));
   border-radius:calc(8px * var(--k,1));margin-left:calc(4px * var(--k,1))}
 /* 牌桌身份徽标：地主金底黑字 + 皇冠，农民绿底 —— 一眼分清谁是谁 */
 #page-play .rl.lord{background:linear-gradient(180deg,#f3c96b,#c9962f);color:#3a2600;
@@ -1302,3 +1312,59 @@ body.land #page-play .myinfo .cnt{
 #page-play .seatcol .ts .av,
 body.land #page-play .seatcol .ts .av{
   width:calc(24px * var(--k,1));height:calc(24px * var(--k,1))}
+
+/* ---- 会话缩略图（图片 / 视频） ----
+   会话里只显示缩略图，点一下才看大图；
+   尺寸统一限制，长图/大视频也不会把会话撑爆。 */
+.thumb{position:relative;display:inline-block;width:120px;height:120px;
+  border-radius:12px;overflow:hidden;background:#0e1a16;cursor:pointer;
+  vertical-align:top;border:1px solid rgba(255,255,255,.10)}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.thumb .tload{position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;color:#7fa79a;font-size:12px}
+.thumb.vid .tplay{position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;font-size:28px;color:#fff;text-shadow:0 2px 6px rgba(0,0,0,.6);
+  pointer-events:none}
+.thumb .tbadge{position:absolute;left:6px;bottom:6px;padding:1px 6px;border-radius:8px;
+  background:rgba(0,0,0,.55);color:#cfe6dd;font-size:10px;pointer-events:none}
+@media (max-width:360px){ .thumb{width:96px;height:96px} }
+
+/* ---- 牌桌右侧竖排工具栏 ----
+   四个入口竖向排列、等间距，彻底避免横向挤在一起互相重叠。
+   位置从手牌上方往上排，避开底部导航栏。 */
+.tablerail{position:absolute;right:8px;bottom:calc(120px + var(--safe-b,0px));
+  display:flex;flex-direction:column;gap:7px;z-index:9}
+.railbtn{width:42px;height:42px;border-radius:21px;border:1px solid rgba(255,255,255,.18);
+  background:rgba(0,0,0,.55);color:#eaf5f0;font-size:18px;line-height:1;
+  display:grid;place-items:center;cursor:pointer;padding:0}
+.railbtn:active{background:rgba(0,0,0,.75);transform:scale(.94)}
+.railbtn.on{background:rgba(212,175,55,.30);border-color:var(--gold, #d4af37)}
+body.land .tablerail{bottom:auto}
+/* 空间不足时自动降级：竖排 → 2×2 → 横排，并缩小按钮。
+   手机横屏「对手信息块下沿 ~ 手牌顶」只有 67~99px，竖排四颗放不下。 */
+.tablerail{--rb:42px;--rg:7px}
+.tablerail.compact{--rb:36px;--rg:5px}
+.tablerail.tiny{--rb:31px;--rg:3px}
+.railbtn{width:var(--rb,42px);height:var(--rb,42px);border-radius:calc(var(--rb,42px)/2);
+  font-size:calc(var(--rb,42px) * 0.43)}
+.tablerail{gap:var(--rg,7px);--rb:42px;--rg:7px}
+.tablerail.grid2{flex-flow:row wrap;width:calc(2 * var(--rb) + var(--rg))}
+.tablerail.rowmode{flex-flow:row nowrap;width:calc(4 * var(--rb) + 3 * var(--rg))}
+.tablerail.rowmode .railbtn{flex:0 0 auto}
+/* 矮屏：缩小按钮并收紧间距，保证四个入口整体不出屏 */
+
+/* 快捷表情面板：分类标签 + 小尺寸动图预览 */
+.quick-panel .sp-tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}
+.quick-panel .sp-tab{font-size:10px;padding:3px 7px;border-radius:8px;cursor:pointer;
+  background:rgba(255,255,255,.08);color:var(--sub);max-width:76px;overflow:hidden;white-space:nowrap}
+.quick-panel .sp-tab.on{background:rgba(80,200,140,.28);color:#dff5ea}
+.quick-panel .sp-grid{display:flex;flex-wrap:wrap;gap:4px;max-height:150px;overflow-y:auto;
+  -webkit-overflow-scrolling:touch}
+.quick-panel .sp-e{width:30px;height:30px;line-height:30px;font-size:16px;text-align:center;
+  border-radius:8px;background:rgba(255,255,255,.08);cursor:pointer;padding:0;border:none;color:#fff}
+.quick-panel .sp-i{width:34px;height:34px;padding:2px;border-radius:8px;cursor:pointer;
+  background:rgba(255,255,255,.08);border:none;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.quick-panel .sp-i img{max-width:100%;max-height:100%;object-fit:contain;display:block}
+.quick-panel .sp-i:active{background:rgba(255,255,255,.18)}
+.float-say .fl-img{height:30px;width:auto;vertical-align:middle}

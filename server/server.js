@@ -330,7 +330,11 @@ const server = http.createServer(async (req, res) => {
       const kind = String((rec.meta && rec.meta.kind) || '');
       const isVoice = (kind === 'voice');
       const isVideo = (kind === 'video');
-      if (isVoice && audioByExt) mime = audioByExt;
+      const isRing = (kind === 'ring');
+      /* 自定义来电铃声：一律按音频给，否则 WebView 会拒绝播放 */
+      if (isRing && audioByExt) mime = audioByExt;
+      else if (isRing) mime = 'audio/mpeg';
+      else if (isVoice && audioByExt) mime = audioByExt;
       else if (isVideo && videoByExt) mime = videoByExt;
       else if (imageByExt) mime = imageByExt;
       else if (videoByExt && !audioByExt) mime = videoByExt;
@@ -1222,7 +1226,21 @@ function handle(ws, st, m) {
       if (free < 0) return send(ws, { t: 'err', msg: '座位已满' });
       room.seats[free] = makeBot();
       pushRoom(room);
-      if (room.seats.every(x => x)) tryStart(room);
+      /* 不再「补满即开局」：房主可能还想继续邀请真人，
+         直接开起来会把真人挡在门外。开局交给房主点「开始游戏」。
+         只有明确要求自动开局（m.auto）时才沿用旧行为。 */
+      if (m.auto && room.seats.every(x => x)) tryStart(room);
+      break;
+    }
+    /* 房主手动开局：先邀请真人，人不满再补机器人，最后点「开始」才发牌。
+       满员才能开，避免带着空座发牌。 */
+    case 'room:start': {
+      const room = rooms.get(String(m.gid));
+      if (!room) return send(ws, { t: 'err', msg: '房间不存在' });
+      if (room.game) return send(ws, { t: 'err', msg: '对局已开始' });
+      if (seatOf(room, u) !== 0) return send(ws, { t: 'err', msg: '只有房主可以开始' });
+      if (!room.seats.every(x => x)) return send(ws, { t: 'err', msg: '还有空位，请先补满或邀请好友' });
+      tryStart(room);
       break;
     }
     case 'room:kickbot': {
@@ -1595,6 +1613,15 @@ function handle(ws, st, m) {
       const la = Number(m.lat), ln = Number(m.lng);
       if (!isFinite(la) || !isFinite(ln) || Math.abs(la) > 90 || Math.abs(ln) > 180) return;
       p.loc = { lat: la, lng: ln, acc: Number(m.acc) || 0, ts: Date.now() };
+      /* 历次上报：每次上报都留一条，方便对方查看历史轨迹。
+         saved=true 的不会被自动清理（用户手动保存过的）。 */
+      if (!Array.isArray(p.locHist)) p.locHist = [];
+      p.locHist.push({ id: mid(), lat: la, lng: ln, acc: Number(m.acc) || 0, ts: Date.now(), saved: false });
+      const MAXH = 200;
+      if (p.locHist.length > MAXH) {
+        const keep = p.locHist.filter(x => x.saved);
+        p.locHist = p.locHist.slice(-MAXH).concat(keep.filter(x => p.locHist.indexOf(x) < 0));
+      }
       store.save();
       send(ws, { t: 'loc:state', on: true, at: p.locAt || 0, last: p.loc });
       break;
@@ -1612,6 +1639,92 @@ function handle(ws, st, m) {
       send(ws, { t: 'loc:res', ok: true, nick: op.nick,
         loc: { lat: op.loc.lat, lng: op.loc.lng, acc: op.loc.acc, ts: op.loc.ts },
         onAt: op.locAt || 0 });
+      break;
+    }
+    /* ---- 位置记录：查看历次上报 / 保存到服务器 / 删除 ---- */
+    case 'loc:hist': {
+      const me = personOf(u).pid;
+      const other = String(m.pid || '').trim();
+      if (!other || !db.persons[other]) return send(ws, { t: 'loc:hist', ok: false, err: '无此好友' });
+      const r = getSecretByRid(ridOf(me, other));
+      if (!r) return send(ws, { t: 'loc:hist', ok: false, err: '需先建立私密会话' });
+      const op = db.persons[other];
+      if (!op.locOn) return send(ws, { t: 'loc:hist', ok: false, off: true, err: '对方未开启位置上报' });
+      const hist = (op.locHist || []).slice().sort(function (a, b) { return b.ts - a.ts; });
+      send(ws, { t: 'loc:hist', ok: true, pid: other, nick: op.nick,
+        cur: op.loc || null, list: hist.slice(0, 200).map(x => ({ id: x.id, lat: x.lat, lng: x.lng, acc: x.acc, ts: x.ts, saved: !!x.saved })) });
+      break;
+    }
+    case 'loc:histsave': {
+      const me = personOf(u).pid;
+      const other = String(m.pid || '').trim();
+      const id = String(m.id || '').trim();
+      if (!other || !db.persons[other]) return send(ws, { t: 'loc:hist', ok: false, err: '无此好友' });
+      const r = getSecretByRid(ridOf(me, other));
+      if (!r) return send(ws, { t: 'loc:hist', ok: false, err: '需先建立私密会话' });
+      const op = db.persons[other];
+      const it = (op.locHist || []).find(x => x.id === id);
+      if (!it) return send(ws, { t: 'loc:hist', ok: false, err: '记录不存在' });
+      it.saved = true; store.save();
+      const hist = (op.locHist || []).slice().sort(function (a, b) { return b.ts - a.ts; });
+      send(ws, { t: 'loc:hist', ok: true, pid: other, nick: op.nick, cur: op.loc || null,
+        list: hist.slice(0, 200).map(x => ({ id: x.id, lat: x.lat, lng: x.lng, acc: x.acc, ts: x.ts, saved: !!x.saved })),
+        toast: '已保存到服务器' });
+      break;
+    }
+    case 'loc:histdel': {
+      const me = personOf(u).pid;
+      const other = String(m.pid || '').trim();
+      const id = String(m.id || '').trim();
+      if (!other || !db.persons[other]) return send(ws, { t: 'loc:hist', ok: false, err: '无此好友' });
+      const r = getSecretByRid(ridOf(me, other));
+      if (!r) return send(ws, { t: 'loc:hist', ok: false, err: '需先建立私密会话' });
+      const op = db.persons[other];
+      op.locHist = (op.locHist || []).filter(x => x.id !== id);
+      store.save();
+      const hist = (op.locHist || []).slice().sort(function (a, b) { return b.ts - a.ts; });
+      send(ws, { t: 'loc:hist', ok: true, pid: other, nick: op.nick, cur: op.loc || null,
+        list: hist.slice(0, 200).map(x => ({ id: x.id, lat: x.lat, lng: x.lng, acc: x.acc, ts: x.ts, saved: !!x.saved })),
+        toast: '已删除' });
+      break;
+    }
+    /* ---- 收藏：只在好友空间可用，按分类 + 时间存到服务器 ---- */
+    case 'fav:add': {
+      const p = personOf(u);
+      if (!Array.isArray(p.favs)) p.favs = [];
+      const kind = String(m.kind || 'text');
+      const item = { id: mid(), kind: kind, ts: Date.now(), ...(m.item || {}) };
+      p.favs.push(item);
+      if (p.favs.length > 3000) p.favs = p.favs.slice(-3000);
+      store.save();
+      send(ws, { t: 'fav:ok', ok: true, added: item, count: p.favs.length });
+      break;
+    }
+    case 'fav:list': {
+      const p = personOf(u);
+      const list = (p.favs || []).slice().sort(function (a, b) { return b.ts - a.ts; });
+      const kind = String(m.kind || '').trim();
+      send(ws, { t: 'fav:list', ok: true, count: list.length,
+        list: kind ? list.filter(x => x.kind === kind) : list });
+      break;
+    }
+    case 'fav:del': {
+      const p = personOf(u);
+      const id = String(m.id || '').trim();
+      p.favs = (p.favs || []).filter(x => x.id !== id);
+      store.save();
+      send(ws, { t: 'fav:list', ok: true, count: (p.favs || []).length,
+        list: (p.favs || []).slice().sort(function (a, b) { return b.ts - a.ts; }), toast: '已取消收藏' });
+      break;
+    }
+    case 'fav:clear': {
+      const p = personOf(u);
+      const kind = String(m.kind || '').trim();
+      if (kind) p.favs = (p.favs || []).filter(x => x.kind !== kind);
+      else p.favs = [];
+      store.save();
+      send(ws, { t: 'fav:list', ok: true, count: (p.favs || []).length,
+        list: (p.favs || []).slice().sort(function (a, b) { return b.ts - a.ts; }), toast: '已清空' });
       break;
     }
     case 'secret:persons': {

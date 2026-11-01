@@ -102,12 +102,56 @@ window.Call = (function () {
        { sel: '#ck-yes', fn: function () { stopRing(); accept(); } }]);
   }
 
+  /* 来电提示：
+     - 震动开关打开 → 来电时按「长-短-长」节奏震动，直到接听或拒绝
+     - 铃声开关打开 → 播放自定义铃声（没设就用默认响铃）；关闭则完全不响，
+       退回原来的逻辑：由通知栏推一条营销广告，不惊动旁人
+     - 两个开关都关 → 既不震也不响，只走通知栏 */
+  var vibeTimer = null, ringAudio = null;
+
   function ring() {
     stopRing();
-    Sfx.alarm();
-    ringTimer = setInterval(function () { try { Sfx.alarm(); } catch (e) { } }, 2600);
+    var st = (window.App && App.settings) ? App.settings() : {};
+    var wantVibe = st.callVibe !== false;
+    var wantRing = st.callRing !== false;
+
+    if (wantRing) {
+      var url = st.ringUrl || '';
+      if (url) {
+        /* 自定义铃声：用媒体库里的文件，播不了就退回默认响铃 */
+        try {
+          ringAudio = new Audio(url);
+          ringAudio.loop = true;
+          var p0 = ringAudio.play();
+          if (p0 && p0.catch) p0.catch(function () { ringAudio = null; Sfx.alarm(); });
+        } catch (e) { ringAudio = null; Sfx.alarm(); }
+      } else {
+        Sfx.alarm();
+      }
+      ringTimer = setInterval(function () {
+        try { if (!ringAudio) Sfx.alarm(); } catch (e) { }
+      }, 2600);
+    }
+
+    if (wantVibe) {
+      /* 长-短-长循环：第一次立刻震，之后按节奏继续，直到接听/拒绝。
+         注意第一项不能是 0 —— 否则首次不震，用户以为开关没生效。 */
+      var pat = [600, 200, 400, 200, 600, 200];
+      var i = 0;
+      var step = function () {
+        if (i >= pat.length) { i = 0; }
+        var ms = pat[i++];
+        if (ms) { try { App.vibe(ms); } catch (e) { } }
+      };
+      step();
+      vibeTimer = setInterval(step, 1800);
+    }
   }
-  function stopRing() { clearInterval(ringTimer); ringTimer = null; }
+  function stopRing() {
+    clearInterval(ringTimer); ringTimer = null;
+    clearInterval(vibeTimer); vibeTimer = null;
+    try { if (ringAudio) { ringAudio.pause(); ringAudio = null; } } catch (e) { }
+  }
 
   function accept() {
     Net.send({ t: 'call:accept', to: peer, mode: mode, rtc: useRtc });
@@ -342,5 +386,5 @@ window.Call = (function () {
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
 
-  return { init: init, start: start, hangup: hangup, get state() { return state; } };
+  return { init: init, start: start, hangup: hangup, get state() { return state; }, __ring: ring, __stopRing: stopRing };
 })();

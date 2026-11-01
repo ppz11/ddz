@@ -41,6 +41,13 @@ window.Secret = (function () {
       try { Net.send({ t: 'secret:rooms' }); } catch (e) { }
     });
     Net.on('secret:rooms', function (m) {
+      rooms = m.list || [];
+      if (pending && !curRid && rooms.length) {
+        curRid = rooms[0].rid || rooms[0];
+        Net.send({ t: 'secret:send', rid: curRid, msg: pending });
+        pending = null; App.toast('已发送');
+      }
+      if (pending && !curRid) { pending = null; App.toast('会话已失效，请重新进入'); }
       if (root && !typing) renderRooms(m.rooms || []);
     });
     Net.on('friend:list', function (m) {
@@ -58,6 +65,7 @@ window.Secret = (function () {
       else openSetPin();
     });
     Net.on('secret:ok', function (m) {
+      try { var rr=(m.rooms||[])[0]; window.__lastSecretOk = rr && rr.other ? rr.other.pid : null; } catch(e){}
       typing = false; blurInput();
       if (mode === 'set') App.toast('暗号已设置');
       openShell();
@@ -151,11 +159,12 @@ window.Secret = (function () {
          回到主界面 App.go('home') 已经足够，不需要再把 App 最小化。 */
     }
     function onShow() {
-      /* 解锁 / 切回前台：无条件确保是主界面。
-         原来只在 homeSafe 时才收起 —— 如果锁屏时系统先冻结了 WebView、
-         pause 事件没来得及触发（homeSafe 仍是 false），解锁后好友空间
-         会原样还在，用户就看到了「好友空间 → 主界面」这一段收起过程。
-         现在只要回来时好友空间还开着，立刻收起，视觉上直接就是主界面。 */
+      /* 解锁 / 切回前台：确保是主界面，避免看到「好友空间 → 主界面」的收起过程。
+         但有一个例外必须放过：选图片/选视频会打开系统文件选择器，
+         App 会短暂 hidden 再回来 —— 这时若无条件收起，好友空间被关掉、
+         curRid 丢失，随后点发送就会报「会话不存在」并退回主界面。
+         所以：还在选文件/输入的保护窗口内，就不收起。 */
+      if (interactBusy()) { homeSafe = false; return; }
       if (root) {
         try { root.style.display = 'none'; root.style.visibility = 'hidden'; } catch (e) { }
         close();
@@ -478,7 +487,9 @@ window.Secret = (function () {
       '<div><div style="font-size:13px">隐私伪装模式</div>' +
       '<div style="font-size:10px;color:#5c6b66;margin-top:2px">开启后通知栏、会话列表、会话内全部显示「邀请你开局」（含文字/图片/视频/文件/表情/语音）</div></div>' +
       '<button class="sw' + (App.disguise() ? ' on' : '') + '" id="s-disguise"><i></i></button></div>' +
+      /* 收藏入口只在好友空间，主界面任何地方都没有 */
       '<div class="slist-hd"><span>私密会话</span>' +
+      '<button id="s-fav">⭐ 收藏</button>' +
       '<button id="s-friends">👥 好友</button>' +
       '<button id="s-manage">管理</button></div>';
     if (!rooms.length) {
@@ -539,6 +550,8 @@ window.Secret = (function () {
       });
       paintRoomSel();
       /* 顶部「管理」：一键进入多选删除，不必靠长按才发现 */
+      var sf = b.querySelector('#s-fav');
+      if (sf) sf.onclick = function () { favCurKind = ''; openFav(''); };
       var sb = b.querySelector('#s-manage');
       if (sb) {
         sb.textContent = sSelMode === 'room' ? '完成' : '管理';
@@ -561,8 +574,10 @@ window.Secret = (function () {
     var dg = b.querySelector('#s-disguise');
     if (dg) dg.onclick = function () {
       var v = !App.disguise();
-      App.setDisguise(v);
+      if (App.setDisguise) App.setDisguise(v);
       dg.classList.toggle('on', v);
+      /* 主聊天输入框的提示语也要跟着变，否则「说点什么…」会暴露在聊天 */
+      try { if (window.Chat && Chat.__syncDisguise) Chat.__syncDisguise(); } catch (e) { }
       Sfx.click();
       App.toast(v ? '隐私伪装已开启：会话内容全部显示为打牌邀请' : '隐私伪装已关闭：显示真实内容');
     };
@@ -645,10 +660,163 @@ window.Secret = (function () {
       '<span style="color:#5c6b66;font-size:11px">对方已授权上报，非实时持续定位</span>' +
       '</p>' +
       '<div class="row"><button class="btn ghost" id="lc-no">关闭</button>' +
-      '<button class="btn" id="lc-map">地图查看</button></div>',
+      '<button class="btn ghost" id="lc-h">历次记录</button>' +
+      '<button class="btn" id="lc-map">地图查看</button></div>' +
+      '<div style="text-align:center;margin-top:8px"><span id="lc-fav" style="font-size:12px;color:var(--gold);cursor:pointer">⭐ 收藏这个位置</span></div>',
       [{ sel: '#lc-no', fn: null },
+       { sel: '#lc-h', fn: function () { setTimeout(function () { openLocHist(curOther && curOther.pid); }, 120); } },
        { sel: '#lc-map', fn: function () { window.open(url, '_blank'); } }]);
+    var fw = document.getElementById('lc-fav');
+    if (fw) fw.onclick = function () {
+      favAdd({ loc: { lat: m.loc.lat, lng: m.loc.lng, acc: m.loc.acc, ts: m.loc.ts },
+        fromName: m.nick || '', text: m.nick + ' 的位置' });
+    };
   }
+
+  /* ---------- 收藏（只在好友空间有，主界面任何地方都不出现） ----------
+     把文字 / 图片 / 视频 / 文件 / 语音 / 位置 分类存到服务器，按时间倒序。 */
+  var FAV_KINDS = { text: '文字', image: '图片', video: '视频', file: '文件', voice: '语音', loc: '位置', sticker: '表情' };
+  function favKindOf(m) {
+    if (!m) return 'text';
+    if (m.loc) return 'loc';
+    if (m.file && m.file.kind === 'image') return 'image';
+    if (m.file && m.file.kind === 'video') return 'video';
+    if (m.file && m.file.kind === 'voice') return 'voice';
+    if (m.file) return 'file';
+    if (m.sticker) return 'sticker';
+    return 'text';
+  }
+  function favAdd(m) {
+    if (!m) { App.toast('这条不能收藏'); return; }
+    var k = favKindOf(m);
+    Net.send({ t: 'fav:add', kind: k, item: {
+      text: m.text || '', sticker: m.sticker || null,
+      file: m.file || null, loc: m.loc || null,
+      fromName: m.fromName || '', fromPid: m.fromPid || '', ts0: m.ts || Date.now()
+    } });
+    App.toast('已收藏（' + (FAV_KINDS[k] || '内容') + '）');
+  }
+  function openFav(kind) {
+    Net.send({ t: 'fav:list', kind: kind || '' });
+  }
+  function renderFav(m) {
+    var list = m.list || [];
+    if (!list.length) {
+      App.modal('<h3>⭐ 我的收藏</h3><p style="font-size:12px;color:var(--sub)">还没有收藏内容<br>长按好友空间里的消息即可收藏</p>' +
+        '<div class="row"><button class="btn" id="fv-x">关闭</button></div>', [{ sel: '#fv-x', fn: null }]);
+      return;
+    }
+    /* 分类标签 */
+    var kinds = {};
+    list.forEach(function (x) { kinds[x.kind] = (kinds[x.kind] || 0) + 1; });
+    var tabs = '<div class="sp-tabs" style="margin-bottom:8px">' +
+      '<span class="sp-tab' + (!favCurKind ? ' on' : '') + '" data-fk="">全部 ' + list.length + '</span>' +
+      Object.keys(kinds).map(function (k) {
+        return '<span class="sp-tab' + (favCurKind === k ? ' on' : '') + '" data-fk="' + k + '">' +
+          (FAV_KINDS[k] || k) + ' ' + kinds[k] + '</span>';
+      }).join('') + '</div>';
+    var items = list.filter(function (x) { return !favCurKind || x.kind === favCurKind; });
+    var body = items.slice(0, 120).map(function (x) {
+      var t = new Date(x.ts);
+      var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
+      var ts = (t.getMonth() + 1) + '/' + t.getDate() + ' ' + pad(t.getHours()) + ':' + pad(t.getMinutes());
+      var inner = '';
+      if (x.kind === 'image' && x.file) inner = '<img src="' + App.esc(x.file.url || x.file.src || '') + '" style="max-width:100%;max-height:120px;border-radius:8px">';
+      else if (x.kind === 'video' && x.file) inner = '<video src="' + App.esc(x.file.url || x.file.src || '') + '" style="max-width:100%;max-height:120px;border-radius:8px" controls playsinline></video>';
+      else if (x.kind === 'voice') inner = '🔊 语音消息';
+      else if (x.kind === 'file' && x.file) inner = '📎 ' + App.esc(x.file.name || '文件');
+      else if (x.kind === 'loc' && x.loc) inner = '📍 ' + Number(x.loc.lat).toFixed(5) + ', ' + Number(x.loc.lng).toFixed(5);
+      else if (x.kind === 'sticker') inner = '<span style="font-size:22px">' + (x.sticker || '') + '</span>';
+      else inner = App.esc(x.text || '(空)');
+      return '<div class="favrow" data-fid="' + x.id + '" style="border-bottom:1px solid rgba(255,255,255,.08);padding:8px 4px">' +
+        '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--sub)">' +
+        '<span>' + (FAV_KINDS[x.kind] || x.kind) + '</span><span>' + ts + '</span></div>' +
+        '<div style="font-size:13px;margin-top:4px;word-break:break-all">' + inner + '</div>' +
+        '<div style="text-align:right;margin-top:4px"><span class="favdel" data-fdel="' + x.id + '" style="font-size:11px;color:#e08a8a;cursor:pointer">删除</span></div>' +
+        '</div>';
+    }).join('');
+    App.modal('<h3>⭐ 我的收藏</h3>' + tabs +
+      '<div style="max-height:46vh;overflow:auto;text-align:left">' + (body || '<p style="font-size:12px;color:var(--sub)">该分类暂无内容</p>') + '</div>' +
+      '<div class="row"><button class="btn ghost" id="fv-c">清空当前分类</button><button class="btn" id="fv-x">关闭</button></div>',
+      [{ sel: '#fv-x', fn: null },
+       { sel: '#fv-c', fn: function () {
+           App.confirm('清空收藏？', '服务器上的收藏会一并删除', function () { Net.send({ t: 'fav:clear', kind: favCurKind || '' }); });
+         } }]);
+    var dlg = document.querySelector('.modal');
+    if (dlg) {
+      dlg.querySelectorAll('[data-fk]').forEach(function (e) {
+        e.onclick = function () { favCurKind = e.dataset.fk || ''; openFav(favCurKind); };
+      });
+      dlg.querySelectorAll('[data-fdel]').forEach(function (e) {
+        e.onclick = function () { Net.send({ t: 'fav:del', id: e.dataset.fdel }); };
+      });
+    }
+  }
+  Net.on('fav:ok', function (m) { if (m && m.toast) App.toast(m.toast); });
+  Net.on('fav:list', function (m) { renderFav(m); });
+  var favCurKind = '';
+
+  /* ---------- 位置记录：本次 + 历次，可删除 / 可保存 ---------- */
+  function openLocHist(pid) {
+    if (!pid) { App.toast('请先选择好友'); return; }
+    Net.send({ t: 'loc:hist', pid: pid });
+  }
+  function renderLocHist(m) {
+    if (!m.ok) { App.toast(m.err || '暂时无法查看'); return; }
+    var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
+    var fmt = function (ts) { var t = new Date(ts);
+      return (t.getMonth() + 1) + '月' + t.getDate() + '日 ' + pad(t.getHours()) + ':' + pad(t.getMinutes()); };
+    var cur = m.cur ? '<div class="favrow" style="padding:8px 4px;border-bottom:1px solid rgba(255,255,255,.1)">' +
+      '<div style="font-size:10px;color:var(--gold)">本次上报</div>' +
+      '<div style="font-size:13px;margin-top:3px">' + fmt(m.cur.ts) + ' · 精度 ' + Math.round(m.cur.acc || 0) + ' 米</div>' +
+      '<div style="font-size:11px;color:var(--sub);margin-top:2px">' + Number(m.cur.lat).toFixed(5) + ', ' + Number(m.cur.lng).toFixed(5) + '</div>' +
+      '<div style="text-align:right;margin-top:4px"><span data-lmap="' + m.cur.lng + ',' + m.cur.lat + '" style="font-size:11px;color:var(--gold);cursor:pointer">地图查看</span></div>' +
+      '</div>' : '';
+    var list = m.list || [];
+    var hist = list.map(function (x) {
+      return '<div class="favrow" data-lid="' + x.id + '" style="padding:8px 4px;border-bottom:1px solid rgba(255,255,255,.06)">' +
+        '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--sub)">' +
+        '<span>' + fmt(x.ts) + (x.saved ? ' · <b style="color:var(--gold)">已保存</b>' : '') + '</span>' +
+        '<span>精度 ' + Math.round(x.acc || 0) + ' 米</span></div>' +
+        '<div style="font-size:11px;margin-top:3px;color:var(--sub)">' + Number(x.lat).toFixed(5) + ', ' + Number(x.lng).toFixed(5) + '</div>' +
+        '<div style="text-align:right;margin-top:4px">' +
+        '<span class="lh-s" data-lsave="' + x.id + '" style="font-size:11px;color:var(--gold);cursor:pointer;margin-right:12px">' + (x.saved ? '已保存' : '保存') + '</span>' +
+        '<span class="lh-f" data-lfav="' + x.id + '" data-llat="' + x.lat + '" data-llng="' + x.lng + '" data-lacc="' + (x.acc || 0) + '" data-lts="' + x.ts + '" style="font-size:11px;color:var(--gold);cursor:pointer;margin-right:12px">收藏</span>' +
+        '<span class="lh-m" data-lmap="' + x.lng + ',' + x.lat + '" style="font-size:11px;color:var(--gold);cursor:pointer;margin-right:12px">地图</span>' +
+        '<span class="lh-d" data-ldel="' + x.id + '" style="font-size:11px;color:#e08a8a;cursor:pointer">删除</span>' +
+        '</div></div>';
+    }).join('');
+    App.modal('<h3>📍 ' + App.esc(m.nick || '好友') + ' 的位置记录</h3>' +
+      '<div style="max-height:48vh;overflow:auto;text-align:left">' +
+      (cur || '<p style="font-size:12px;color:var(--sub)">还没有本次上报</p>') +
+      '<div style="font-size:11px;color:var(--sub);margin:8px 0 4px">历次上报 ' + list.length + ' 条</div>' +
+      (hist || '<p style="font-size:12px;color:var(--sub)">暂无历史记录</p>') + '</div>' +
+      '<div class="row"><button class="btn" id="lh-x">关闭</button></div>',
+      [{ sel: '#lh-x', fn: null }]);
+    var dlg = document.querySelector('.modal');
+    if (!dlg) return;
+    var pid = m.pid;
+    dlg.querySelectorAll('[data-lsave]').forEach(function (e) {
+      e.onclick = function () { Net.send({ t: 'loc:histsave', pid: pid, id: e.dataset.lsave }); };
+    });
+    dlg.querySelectorAll('[data-ldel]').forEach(function (e) {
+      e.onclick = function () { Net.send({ t: 'loc:histdel', pid: pid, id: e.dataset.ldel }); };
+    });
+    dlg.querySelectorAll('[data-lfav]').forEach(function (e) {
+      e.onclick = function () {
+        favAdd({ loc: { lat: Number(e.dataset.llat), lng: Number(e.dataset.llng), acc: Number(e.dataset.lacc) || 0, ts: Number(e.dataset.lts) || Date.now() },
+          fromName: m.nick || '', text: (m.nick || '好友') + ' 的位置' });
+      };
+    });
+    dlg.querySelectorAll('[data-lmap]').forEach(function (e) {
+      e.onclick = function () {
+        var ll = (e.dataset.lmap || '').split(',');
+        window.open('https://uri.amap.com/marker?position=' + ll[0] + ',' + ll[1], '_blank');
+      };
+    });
+  }
+
+  Net.on('loc:hist', function (m) { renderLocHist(m); });
 
   /* ---------- 选择一位真人建会话 ---------- */
   function renderPick() {
@@ -863,16 +1031,14 @@ window.Secret = (function () {
           }
         } catch (e) { body = '<div style="font-size:40px">🙂</div>'; }
       } else if (m.kind === 'image') {
-        /* 图片：可点开看大图。加载失败给一个能重试的占位，
-           否则 WebView 里只剩一块空白，根本不知道是没发出来还是被拦了。 */
-        body = '<img src="' + Net.abs(m.url) + '" style="max-width:200px;border-radius:12px;cursor:pointer" ' +
-          'data-simg="' + Net.abs(m.url) + '" data-sname="' + esc(m.name || 'image.jpg') + '">';
+        /* 图片：缩略图显示，点开看大图。渲染走 blob，绕开 Content-Type 导致的失败 */
+        body = '<div class="thumb" data-src="' + Net.abs(m.url) + '" data-name="' + esc(m.name || 'image.jpg') + '" data-kind="image">' +
+          '<div class="tload">…</div></div>';
       } else if (m.kind === 'video') {
-        /* 视频：playsinline 必须有，否则安卓 WebView 会交给系统播放器接管 → 全屏黑屏。
-           同时挂 data-svid，点击直接打开大图播放（缩放状态下 <video> 太小不好点）。 */
-        body = '<video src="' + Net.abs(m.url) + '" controls playsinline webkit-playsinline preload="metadata" ' +
-          'style="width:200px;max-width:100%;border-radius:12px;background:#000" ' +
-          'data-svid="' + Net.abs(m.url) + '" data-sname="' + esc(m.name || 'video.mp4') + '"></video>';
+        /* 视频：首帧缩略图 + 播放角标，点开用查看器播（带 playsinline） */
+        body = '<div class="thumb vid" data-src="' + Net.abs(m.url) + '" data-name="' + esc(m.name || 'video.mp4') + '" data-kind="video">' +
+          '<video src="' + Net.abs(m.url) + '" preload="metadata" playsinline webkit-playsinline muted></video>' +
+          '<div class="tplay">▶</div><div class="tbadge">视频</div></div>';
       } else if (m.kind === 'voice') body = '<div style="display:flex;gap:6px;align-items:center">🔊 <span data-p="' + Net.abs(m.url) + '">▶ 语音 ' + (m.dur || 0) + '″</span>' +
         '<span class="s-save" data-ssave="' + Net.abs(m.url) + '" data-sname="' + esc(m.name || 'voice.m4a') + '" style="margin-left:6px;opacity:.7">⬇</span></div>';
       else if (m.kind === 'file') {
@@ -902,7 +1068,10 @@ window.Secret = (function () {
       }
       longPress(el, function () {
         var id = el.dataset.id;
+        var mm = null;
+        for (var i = 0; i < msgs.length; i++) if (String(msgs[i].id) === String(id)) { mm = msgs[i]; break; }
         App.sheet([
+          ['⭐ 收藏这条', function () { favAdd(mm); }],
           ['🗑 删除这条消息', function () {
             App.confirm('删除这条消息？', '只在你这边删除，对方仍能看到', function () {
               Net.send({ t: 'secret:delmsgs', rid: curRid, ids: [id] });
@@ -923,24 +1092,26 @@ window.Secret = (function () {
     });
     paintMsgSel();
     box.querySelectorAll('[data-p]').forEach(function (e) { e.onclick = function () { playSAudio(e.dataset.p); }; });
-    /* 图片 / 视频：点开大图播放（复用主聊天那个带「保存到手机」的查看器） */
-    box.querySelectorAll('[data-simg]').forEach(function (el) {
-      el.onclick = function (e) { e.stopPropagation(); openViewer(el.dataset.simg, false, el.dataset.sname); };
-      el.onerror = function () {
-        if (el.dataset.bad) return;
-        el.dataset.bad = '1';
-        var d = document.createElement('div');
-        d.className = 'imgbad'; d.textContent = '图片加载失败 · 点此重试';
-        d.onclick = function () {
-          delete el.dataset.bad; el.style.display = ''; d.remove();
-          el.src = el.dataset.simg + (el.dataset.simg.indexOf('?') >= 0 ? '&' : '?') + 'r=' + Date.now();
-        };
-        el.style.display = 'none';
-        if (el.parentNode) el.parentNode.insertBefore(d, el);
+    /* 图片 / 视频缩略图：先取 blob 再显示，点开用统一查看器看大图 */
+    box.querySelectorAll('.thumb').forEach(function (th) {
+      var src = th.getAttribute('data-src');
+      var kind = th.getAttribute('data-kind');
+      var nm = th.getAttribute('data-name');
+      th.onclick = function (e) { e.stopPropagation(); openViewer(src, kind === 'video', nm); };
+      if (kind === 'video') return;   // 视频首帧由 <video preload=metadata> 自己出
+      var show = function (u) {
+        var ld = th.querySelector('.tload'); if (ld) ld.remove();
+        var im = document.createElement('img');
+        im.src = u; im.alt = '图片';
+        th.appendChild(im);
       };
-    });
-    box.querySelectorAll('[data-svid]').forEach(function (el) {
-      el.onclick = function (e) { e.stopPropagation(); openViewer(el.dataset.svid, true, el.dataset.sname); };
+      try {
+        fetch(src, { credentials: 'same-origin' }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.blob();
+        }).then(function (b) { show(URL.createObjectURL(b)); })
+          ['catch'](function () { show(src); });
+      } catch (e) { show(src); }
     });
     /* 文件 / 语音：保存到手机（不再用 window.open，那会让 App 被切走甚至重启） */
     box.querySelectorAll('[data-sfile],[data-ssave]').forEach(function (e) {
@@ -953,12 +1124,24 @@ window.Secret = (function () {
   }
   var sAudio = null;
   /* 语音播放：直接播失败时改用 Blob（短录音常见问题） */
+  /* 语音播放：直接播失败时用 Blob 兜底（短录音常见问题）。
+     之前的问题：both the <audio> 的 error 事件和 play() 的 rejection 都会触发兜底，
+     于是同一条语音被播两次 —— 听感就是「回声 / 重音」；而且兜底成功后
+     仍会残留一次失败提示。现在：
+       1) 用 played 标记保证兜底只走一次，杜绝重复播放（回声）；
+       2) 只要任意一路真的播起来了，就不再报「播放失败」。 */
   function playSAudio(url) {
     if (sAudio) { try { sAudio.pause(); } catch (e) { } sAudio = null; }
-    var a = new Audio(url);
-    a.onerror = function () {
+    var settled = false;
+    var fail = function () { if (!settled) { settled = true; App.toast('语音播放失败'); } };
+    var ok = function () { settled = true; };
+
+    var tryBlob = function () {
       try {
-        fetch(url).then(function (r) { return r.arrayBuffer(); }).then(function (buf) {
+        fetch(url, { credentials: 'same-origin' }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.arrayBuffer();
+        }).then(function (buf) {
           var type = 'audio/webm';
           if (/\.m4a|mp4/i.test(url)) type = 'audio/mp4';
           else if (/\.mp3/i.test(url)) type = 'audio/mpeg';
@@ -966,17 +1149,39 @@ window.Secret = (function () {
           var b = new Blob([buf], { type: type });
           var a2 = new Audio(URL.createObjectURL(b));
           sAudio = a2;
-          var p = a2.play();
-          if (p && p.catch) p.catch(function () { App.toast('语音播放失败'); });
-        });
-      } catch (e) { App.toast('语音播放失败'); }
+          a2.onplaying = ok; a2.onerror = fail;
+          var p2 = a2.play();
+          if (p2 && p2.catch) p2.catch(fail);
+        })['catch'](fail);
+      } catch (e) { fail(); }
     };
+
+    var a = new Audio(url);
     sAudio = a;
+    /* 只有「还没真正出声」才允许走兜底；已经在播就不要再来一遍 */
+    a.onplaying = ok;
+    a.onerror = function () { if (!settled) { tryBlob(); } };
     var p = a.play();
-    if (p && p.catch) p.catch(function () { a.onerror(); });
+    if (p && p.catch) p.catch(function () { if (!settled) { tryBlob(); } });
   }
 
-  function send(obj) { Net.send({ t: 'secret:send', rid: curRid, msg: obj }); }
+  /* 发送兜底：若 curRid 因切后台/收起而丢失，服务端会回「会话不存在」。
+     这里先把消息缓存下来，重新拉取会话后自动补发一次 —— 否则用户看到的
+     就是「选完图片点发送 → 退回主界面 → 发送失败」，完全不知道发生了什么。 */
+  var pending = null;
+  function send(obj) {
+    if (!curRid) {
+      pending = obj;
+      App.toast('正在恢复会话…');
+      Net.send({ t: 'secret:rooms' });
+      setTimeout(function () {
+        if (pending && curRid) { Net.send({ t: 'secret:send', rid: curRid, msg: pending }); pending = null; App.toast('已发送'); }
+        else if (pending) { pending = null; App.toast('会话已失效，请重新进入'); }
+      }, 1200);
+      return;
+    }
+    Net.send({ t: 'secret:send', rid: curRid, msg: obj });
+  }
   function sendText() {
     var el = document.getElementById('s-input'); if (!el) return;
     var v = el.value.trim(); if (!v) return;
@@ -1049,6 +1254,12 @@ window.Secret = (function () {
   };
 
   return { init: init, enter: enter, close: close, withUser: withUser, panic: panic,
+    __root: function () { return root; }, __rid: function () { return curRid; },
+    __openShell: function () { openShell(); return !!root; }, __playAudio: function (u) { playSAudio(u); },
+    __locHist: function (pid) { openLocHist(pid || (curOther && curOther.pid)); },
+    __locRender: function (m) { renderLocHist(m); },
+    __fav: function (k) { favCurKind = k || ''; openFav(favCurKind); },
+    __favRender: function (m) { renderFav(m); },
     rooms: function () { return rooms; },
     peek: function () { peeking = true; Net.send({ t: 'secret:status' }); },
     pullState: pullState, exitSel: exitSSel, otherOf: function (uid) { return null; } };

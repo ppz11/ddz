@@ -151,10 +151,13 @@
           <div class="myinfo" id="my-info"></div>
           <div class="handwrap"><div class="hand" id="hand"></div></div>
         </div>
-        <button class="tablechat" id="btn-table-chat">💬</button>
-        <!-- 牌桌短语音：按住说话，松手自动发送，对方自动播放 -->
-        <button class="tablevoice" id="btn-table-voice">🎤</button>
-        <button class="tablequick" id="btn-table-quick">💬快捷</button>
+        <!-- 牌桌右侧竖排工具栏：快捷语 / 快捷表情 / 语音 / 文字，互不重叠 -->
+        <div class="tablerail" id="table-rail">
+          <button class="railbtn" id="btn-table-quick" title="快捷语">💬</button>
+          <button class="railbtn" id="btn-table-stick" title="快捷表情">😀</button>
+          <button class="railbtn" id="btn-table-voice" title="按住说话">🎤</button>
+          <button class="railbtn" id="btn-table-chat" title="聊天">✍</button>
+        </div>
         <button class="orientbtn" id="btn-orient">⛶ 竖屏</button>
         <div class="ruletip hidden" id="rule-tip"></div>
         <div class="tchat hidden" id="tchat"></div>
@@ -204,7 +207,7 @@
         </div>
 
         <div style="margin:4px 14px 20px">
-          <button class="btn jade" id="btn-do-create">创建房间并开始</button>
+          <button class="btn jade" id="btn-do-create">创建房间</button>
           <button class="btn ghost" id="btn-back-home" style="margin-top:10px">返回大厅</button>
         </div>
       </section>
@@ -240,8 +243,13 @@
         </div>
         <div class="rowset">音效<button class="sw on" id="sw-sound"><i></i></button></div>
         <div class="rowset">出牌语音播报<button class="sw on" id="sw-voice"><i></i></button></div>
+        <div class="rowset" id="row-preview" style="cursor:pointer">🔊 试听提示音<span style="color:#5c6b66;font-size:11px">叫分/加倍/出牌</span></div>
         <div class="rowset">背景音乐<button class="sw on" id="sw-bgm"><i></i></button></div>
         <div class="rowset">出牌震动<button class="sw on" id="sw-vibe"><i></i></button></div>
+        <div class="rowset">来电震动<button class="sw on" id="sw-callvibe"><i></i></button></div>
+        <div class="rowset">来电铃声<button class="sw on" id="sw-callring"><i></i></button></div>
+        <div class="rowset" id="row-ring" style="cursor:pointer">🔔 自定义来电铃声<span style="color:#5c6b66;font-size:11px" id="ring-tip">默认</span></div>
+        <input type="file" id="ring-file" accept="audio/*" style="display:none">
         <div class="rowset" id="row-testconv" style="cursor:pointer">🧪 重新生成测试会话<span style="color:#5c6b66;font-size:11px">试用</span></div>
         <div style="height:16px"></div>
         <div style="margin:0 14px 10px"><button class="btn ghost" id="btn-logout">退出登录</button></div>

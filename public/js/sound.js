@@ -138,8 +138,89 @@ window.Sfx = (function () {
       if (bgmGain && bgmCtx) bgmGain.gain.setTargetAtTime(low ? 0.06 : 0.16, bgmCtx.currentTime, 0.05);
     } catch (e) { }
   }
+  /* 语音合成：不同环境差异很大，这里做三层兜底，避免出现「只响不说话」
+       1) voices 是异步加载的，首次调用时常为空 → 等 onvoiceschanged（最多 1.2s）
+       2) 有的引擎在 paused 状态下 speak 无效 → 先 resume()
+       3) 找不到中文语音时不要放弃：仍用默认语音念（总比没声音强） */
+  var voicesReady = false;
+  function waitVoices(cb) {
+    if (!window.speechSynthesis) { cb(); return; }
+    if (voicesReady || (window.speechSynthesis.getVoices() || []).length) { voicesReady = true; cb(); return; }
+    var done = false;
+    var go = function () { if (done) return; done = true; voicesReady = true; cb(); };
+    try {
+      window.speechSynthesis.onvoiceschanged = go;
+      window.speechSynthesis.addEventListener && window.speechSynthesis.addEventListener('voiceschanged', go);
+    } catch (e) { }
+    setTimeout(go, 1200);
+  }
+
+  function doSpeak(u) {
+    try {
+      var sy = window.speechSynthesis;
+      if (sy.resume) { try { sy.resume(); } catch (e) { } }
+      var vs = sy.getVoices() || [];
+      var picked = null;
+      for (var i = 0; i < vs.length; i++) {
+        var l = String(vs[i].lang || ''), nm = String(vs[i].name || '');
+        if (/^zh(-|_)?CN/i.test(l) || /Chinese|中文|普通话|Mandarin/i.test(nm)) { picked = vs[i]; break; }
+      }
+      if (!picked) for (var j = 0; j < vs.length; j++) {
+        if (/zh/i.test(String(vs[j].lang || ''))) { picked = vs[j]; break; }
+      }
+      if (picked) { u.voice = picked; u.lang = picked.lang || u.lang; }
+      sy.speak(u);
+    } catch (e) { try { duckBgm(false); } catch (e2) { } }
+  }
+
+  /* 语音出口优先级：
+       1) 原生 TextToSpeech（DDZNative.speak）—— 覆盖率最高，国产 ROM 也能用
+       2) WebView 的 speechSynthesis —— 有的机型没有中文语音，会「只响不说话」
+       3) 都没有 → 静默（不报错，只是不出声） */
+  function nativeTtsReady() {
+    try {
+      if (typeof window.DDZNative === 'undefined' || !window.DDZNative) return false;
+      if (typeof window.DDZNative.ttsReady !== 'function') return false;
+      return window.DDZNative.ttsReady() === 'ok';
+    } catch (e) { return false; }
+  }
+  function nativeTtsSpeak(txt) {
+    try { window.DDZNative.speak(String(txt)); return true; } catch (e) { return false; }
+  }
+  /* 给设置页/试听用：告诉用户当前到底走的哪条路 */
+  function ttsInfo() {
+    var nat = 'unavailable', why = '';
+    try {
+      if (typeof window.DDZNative !== 'undefined' && window.DDZNative && typeof window.DDZNative.ttsReady === 'function') {
+        var r = window.DDZNative.ttsReady();
+        nat = r;
+        if (r === 'no_zh_voice') why = '系统没装中文语音，请到手机「设置 → 语言与输入 → 文字转语音」安装中文语音';
+        else if (r === 'init_failed') why = '系统 TTS 初始化失败，请检查是否禁用了文字转语音服务';
+        else if (r === 'no_tts') why = '本机没有 TTS 引擎';
+      }
+    } catch (e) { }
+    var voices = 0, zh = 0;
+    try {
+      var vs = (window.speechSynthesis && window.speechSynthesis.getVoices) ? window.speechSynthesis.getVoices() : [];
+      voices = vs.length;
+      for (var i = 0; i < vs.length; i++) if (/zh|Chinese|中文/i.test(String(vs[i].lang) + ' ' + String(vs[i].name))) zh++;
+    } catch (e) { }
+    var use = nativeTtsReady() ? 'native' : (voices ? 'web' : 'none');
+    return { native: nat, why: why, webVoices: voices, webZh: zh, use: use };
+  }
+
   function speakText(txt) {
     if (!on || !voiceOn || !txt) return;
+    /* 原生优先：成功就直接返回，不再走 Web 语音（避免两条路同时出声变成重音） */
+    if (nativeTtsReady()) {
+      try {
+        duckBgm(true);
+        var est = Math.min(9000, 700 + String(txt).length * 320);
+        clearTimeout(speakText._t);
+        speakText._t = setTimeout(function () { duckBgm(false); }, est);
+        if (nativeTtsSpeak(txt)) return;
+      } catch (e) { }
+    }
     try {
       if (!window.speechSynthesis) return;
       var u = new SpeechSynthesisUtterance(String(txt));
@@ -147,20 +228,12 @@ window.Sfx = (function () {
       u.rate = 0.92;         // 放慢，咬字清楚
       u.pitch = 1.0;
       u.volume = 1.0;        // 拉满
-      var vs = window.speechSynthesis.getVoices() || [];
-      var picked = null;
-      for (var i = 0; i < vs.length; i++) {
-        var l = String(vs[i].lang || ''), nm = String(vs[i].name || '');
-        if (/^zh(-|_)?CN/i.test(l) || /Chinese|中文|普通话/i.test(nm)) { picked = vs[i]; break; }
-      }
-      if (!picked) for (var j = 0; j < vs.length; j++) {
-        if (/zh/i.test(String(vs[j].lang || ''))) { picked = vs[j]; break; }
-      }
-      if (picked) u.voice = picked;
       duckBgm(true);
-      u.onend = function () { duckBgm(false); };
-      u.onerror = function () { duckBgm(false); };
-      window.speechSynthesis.speak(u);
+      var finished = false;
+      var fin = function () { if (finished) return; finished = true; duckBgm(false); };
+      u.onend = fin; u.onerror = fin;
+      setTimeout(fin, 8000);   // 兜底：超长也不让 BGM 一直压着
+      waitVoices(function () { doSpeak(u); });
     } catch (e) { try { duckBgm(false); } catch (e2) { } }
   }
   /* 按牌型播放「音效 + 语音」 */
@@ -175,6 +248,19 @@ window.Sfx = (function () {
     var t = info && info.type;
     /* 音效与语音错开 200ms：同时响的话音效会把人声盖掉，听着就是「嗡一下」 */
     var say = function (txt) { setTimeout(function () { speakText(txt); }, 200); };
+    /* 叫分 / 加倍：之前只有「嗡」一声，听不出叫了几分。
+       现在分数不同音高不同，并念出「1分」「2分」「3分」「不叫」「抢地主」「加倍」。 */
+    if (t === 'bid') {
+      var sc = (info && info.score) | 0;
+      if (sc >= 1 && sc <= 3) {
+        [0, 1, 2].slice(0, sc).forEach(function (i) { tone(620 + i * 130, 0.1, 'triangle', 0.17, null, i * 0.09); });
+        say(sc + '分');
+      } else { tone(300, 0.16, 'sine', 0.14, 220); say('不叫'); }
+      return;
+    }
+    if (t === 'grab') { tone(880, 0.12, 'triangle', 0.18, 1200); say('抢地主'); return; }
+    if (t === 'double') { tone(700, 0.1, 'triangle', 0.18, 900); tone(1050, 0.14, 'triangle', 0.16, 1400, 0.1); say('加倍'); return; }
+    if (t === 'nodouble') { tone(400, 0.12, 'sine', 0.12, 300); say('不加倍'); return; }
     if (t === 'rocket') { rocketSfx(); say('王炸'); return; }
     if (t === 'bomb') { bombSfx(); say('炸弹'); return; }
     var name = (window.DDZ && DDZ.speak) ? DDZ.speak(info) : (info && info.name) || '';
@@ -256,11 +342,25 @@ window.Sfx = (function () {
       o.start(t); o.stop(t + 0.18);
     }
 
-    // 轻快大调五声音阶循环（类似休闲棋牌 BGM）
-    var ROOT = [0, 5, 7, 3];                     // 每小节根音（半音相对 A）
-    var MEL = [                                   // [拍, 音级, 时值]
+    /* 轻快大调五声音阶循环（类似休闲棋牌 BGM）。
+       之前 8 小节里每小节旋律完全一样，只靠「第 7 个音 +5 半音」做变化，
+       听久了很单调。现在改成 A/B 两段交替 + 每 4 小节换一次和声，
+       并加入副旋律与切分节奏，层次明显更丰富。 */
+    var ROOT = [0, 5, 7, 3, 0, 5, 9, 3];         // 每小节根音，8 小节一轮换
+    // A 段主旋律
+    var MEL_A = [
       [0, 12, 1], [1, 14, .5], [1.5, 12, .5], [2, 9, 1], [3, 7, 1],
       [4, 9, 1], [5, 12, .5], [5.5, 14, .5], [6, 16, 1], [7, 12, 1]
+    ];
+    // B 段主旋律（上行推进，与 A 段形成对比）
+    var MEL_B = [
+      [0, 16, .75], [.75, 14, .25], [1, 12, 1], [2, 9, .5], [2.5, 7, .5], [3, 9, 1],
+      [4, 12, .5], [4.5, 14, .5], [5, 17, 1], [6, 16, .5], [6.5, 14, .5], [7, 12, 1]
+    ];
+    // 副旋律：错开半拍进入，填充空隙（切分感）
+    var SUB = [
+      [0.5, 19, .5], [2.5, 21, .5], [3.5, 19, .5],
+      [4.5, 17, .5], [6.5, 19, .5], [7.5, 16, .5]
     ];
     for (var bar = 0; bar < BARS; bar++) {
       var bt = bar * 4 * BEAT;
@@ -274,16 +374,26 @@ window.Sfx = (function () {
       bass(bt, rt, BEAT * 1.6);
       bass(bt + 2 * BEAT, rt, BEAT * 1.6);
       if (bar % 4 === 3) bass(bt + 3 * BEAT, rt + 5, BEAT * 0.9);
-      // 主旋律（双小节一段，交替变化避免单调）
+      // A/B 段交替：前 4 小节 A，后 4 小节 B；最后一小节推向高点
+      var MEL = (bar % 8 < 4) ? MEL_A : MEL_B;
+      var lift = (bar % 8 === 7) ? 5 : 0;
       MEL.forEach(function (m, i) {
-        var semi = m[1] + (bar % 4 >= 2 ? 0 : 0) + (bar >= 4 ? 0 : 0);
-        if ((bar + i) % 8 === 7) semi += 5;
+        var semi = m[1] + lift;
         note(bt + m[0] * BEAT, semi, m[2] * BEAT * 0.92, 'triangle', cfg.mel);
+        // 上方八度薄薄一层，增加亮度
         note(bt + m[0] * BEAT, semi + 12, m[2] * BEAT * 0.8, 'sine', cfg.mel * 0.38);
       });
-      // 琶音铺底
+      // 副旋律（B 段才出现，避免和主旋律打架）
+      if (bar % 8 >= 4) {
+        SUB.forEach(function (m) {
+          note(bt + m[0] * BEAT, m[1] + lift, m[2] * BEAT * 0.8, 'sine', cfg.mel * 0.30);
+        });
+      }
+      // 琶音铺底：跟着根音走三级和弦，每 2 小节换一次色彩
+      var chord = [0, 4, 7, 12];
+      if (bar % 8 >= 4) chord = [0, 3, 7, 10];   // B 段用七和弦，更爵士一点
       for (var a = 0; a < 4; a++) {
-        note(bt + a * BEAT + BEAT / 2, rt + a * 4 + 12, BEAT * 0.42, 'sine', cfg.arp);
+        note(bt + a * BEAT + BEAT / 2, rt + chord[a] + 12, BEAT * 0.42, 'sine', cfg.arp);
       }
     }
     return oc.startRendering();
@@ -413,7 +523,22 @@ window.Sfx = (function () {
     setBgm: function (v) { bgmOn = !!v; if (v && on && !hidden) startBgm(); else stopBgm(); },
     setScene: setScene, cardDrop: cardDrop,
     bgm: startBgm, stopBgm: stopBgm, duck: duck,
-    announce: announce, speak: speakText,
+    announce: announce, speak: speakText, ttsInfo: ttsInfo, nativeTtsReady: nativeTtsReady,
+    /* 预览：依次试听「叫分 / 加倍 / 各种牌型」的提示音，方便调音量语速 */
+    preview: function (list) {
+      var seq = list || ['bid:1', 'bid:2', 'bid:3', 'pass', 'grab', 'double', 'single', 'pair', 'bomb'];
+      var i = 0;
+      var step = function () {
+        if (i >= seq.length) return;
+        var s = String(seq[i++]);
+        var idx = s.indexOf(':');
+        var t = idx > 0 ? s.slice(0, idx) : s;
+        var v = idx > 0 ? s.slice(idx + 1) : '';
+        announce({ type: t, score: parseInt(v, 10) || 0, name: '' });
+        setTimeout(step, 1400);
+      };
+      step();
+    },
     tap: function () { tone(880, 0.06, 'triangle', 0.12); },
     deal: function () { noise(0.09, 0.16, 2600); },
     play: function () { cardDrop(false); tone(520, 0.09, 'triangle', 0.1, 900); },

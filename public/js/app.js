@@ -3,7 +3,18 @@ window.App = (function () {
   var me = null, page = 'home', rule = 'let46';
   /* 隐私伪装默认关闭：开启后会话内容会被伪装成「邀请你开局」，
      语音/图片/视频/文件将无法正常显示，只有需要防偷看时才手动打开 */
-  var settings = { sound: true, voice: true, bgm: true, vibe: true, disguise: false, v: 2 };
+  /* 四个开关各管各的：
+     sound = 整个 App 打开时有没有声音（关了则全静音，含牌桌）
+     voice = 出牌/叫分/加倍时的语音播报
+     bgm   = 牌桌背景音乐（只管打牌场景）
+     vibe  = 牌桌震动（只管打牌场景）
+     callVibe = 语音/视频来电时震动
+     callRing = 语音/视频来电时铃声（关了则退回通知栏广告，不响铃）
+     ringUrl  = 自定义铃声（媒体库里的文件地址） */
+  var settings = {
+    sound: true, voice: true, bgm: true, vibe: true, disguise: false,
+    callVibe: true, callRing: true, ringUrl: '', v: 3
+  };
   var createCfg = { mode: 'duo', rule: 'let46' };
   var contacts = [], onlineUsers = [], allUsers = [], fakeOnline = 0, invited = new Set();
   var hist = [];
@@ -197,11 +208,26 @@ window.App = (function () {
     box.appendChild(d);
     setTimeout(function () { d.style.transition = 'opacity .3s'; d.style.opacity = 0; setTimeout(function () { d.remove(); }, 320); }, 1900);
   }
-  function modal(html) {
+  function modal(html, binds) {
     var w = document.createElement('div');
     w.className = 'modal'; w.innerHTML = '<div class="box">' + html + '</div>';
-    document.getElementById('modal-root').appendChild(w);
-    return { el: w, close: function () { w.remove(); } };
+    var root = document.getElementById('modal-root');
+    if (root) root.appendChild(w); else document.body.appendChild(w);
+    /* 支持第二个参数：[{ sel: '#id', fn: function(){} }]，点一下即关闭并执行 */
+    if (binds && binds.length) {
+      binds.forEach(function (b) {
+        var e = b.sel ? w.querySelector(b.sel) : null;
+        if (!e) return;
+        e.onclick = function () {
+          var f = b.fn;
+          if (!f) { w.remove(); return; }
+          /* 先关再执行：回调里通常还会开新弹窗（例如「历次记录」） */
+          w.remove();
+          try { f(); } catch (err) { }
+        };
+      });
+    }
+    return { el: w, close: function () { try { w.remove(); } catch (e) { } } };
   }
   function confirm(title, sub, cb) {
     var m = modal('<h3>' + title + '</h3><p>' + (sub || '') + '</p><div class="row">' +
@@ -332,6 +358,7 @@ window.App = (function () {
     function after(r) {
       if (r.err) { toast(r.err); return; }
       me = r.me;
+      try { window.__ddzAfterLogin = after; } catch (e) { }
       if (typeof r.coins === 'number') me.coins = r.coins;
       try { localStorage.setItem('ddz_auth', JSON.stringify({ uid: r.uid, token: r.token })); } catch (e) {}
       document.getElementById('boot').classList.add('hidden');
@@ -478,7 +505,10 @@ window.App = (function () {
       Sfx.click();
       var r = createCfg.mode === 'trio' ? 'trio54' : createCfg.rule;
       Game.reset();
+      /* 只建房，不补机器人、不开局：进去后先邀请真人，
+         人不满再点「补机器人」，最后点「开始游戏」才发牌 */
       Net.send({ t: 'room:create', rule: r });
+      toast('房间已建好：先邀请好友，人齐后点「开始游戏」');
     };
     document.getElementById('btn-back-home').onclick = function () { Sfx.click(); go('home'); };
   }
@@ -577,6 +607,20 @@ window.App = (function () {
         Net.api('/api/history/clear?token=' + sv.token, { _: 1 }).then(function () { loadHistory(); toast('已清空'); });
       });
     };
+    var pv = document.getElementById('row-preview');
+    if (pv) pv.onclick = function () {
+      var info = null;
+      try { info = Sfx.ttsInfo ? Sfx.ttsInfo() : null; } catch (e) { }
+      var msg = '';
+      if (info) {
+        if (info.use === 'native') msg = '语音：系统 TTS（正常）｜';
+        else if (info.use === 'web') msg = '语音：WebView（' + info.webZh + ' 个中文语音）｜';
+        else msg = '⚠ 本机没有可用语音，只会响音效不说话｜';
+        if (info.why) msg += info.why + '｜';
+      }
+      toast(msg + '依次试听：1分 / 2分 / 3分 / 不要 / 抢地主 / 加倍 …');
+      try { Sfx.preview(); } catch (e) { toast('试听失败'); }
+    };
     document.getElementById('sw-sound').onclick = function () {
       settings.sound = !settings.sound; Sfx.set(settings.sound);
       this.classList.toggle('on', settings.sound); saveSettings(); Sfx.click();
@@ -591,6 +635,40 @@ window.App = (function () {
       this.classList.toggle('on', settings.bgm); saveSettings();
       toast(settings.bgm ? '背景音乐已开启' : '背景音乐已关闭');
     };
+    document.getElementById('sw-callvibe').onclick = function () {
+      settings.callVibe = !settings.callVibe; saveSettings();
+      document.getElementById('sw-callvibe').classList.toggle('on', settings.callVibe);
+      Sfx.click();
+      toast(settings.callVibe ? '来电震动已开启' : '来电震动已关闭（只在通知栏提示）');
+    };
+    document.getElementById('sw-callring').onclick = function () {
+      settings.callRing = !settings.callRing; saveSettings();
+      document.getElementById('sw-callring').classList.toggle('on', settings.callRing);
+      Sfx.click();
+      toast(settings.callRing ? '来电铃声已开启' : '来电铃声已关闭（只在通知栏提示）');
+    };
+    var rf = document.getElementById('ring-file');
+    var rr = document.getElementById('row-ring');
+    if (rr && rf) {
+      rr.onclick = function () { rf.click(); };
+      rf.onchange = function () {
+        var f = rf.files && rf.files[0];
+        if (!f) return;
+        /* 上传进媒体库拿到真实地址再存设置 —— 直接用本地 blob 的话，
+           重启 App 后地址失效，铃声就白设了 */
+        if (f.size > 20 * 1024 * 1024) { toast('铃声太大，请选 20MB 以内的音频'); rf.value = ''; return; }
+        toast('上传中…');
+        Net.upload(f, 'ring', 0).then(function (r) {
+          if (!r || r.err) { toast('铃声设置失败'); return; }
+          settings.ringUrl = Net.abs(r.url); saveSettings();
+          var rt = document.getElementById('ring-tip');
+          if (rt) rt.textContent = '已设置';
+          toast('来电铃声已更新');
+          try { var a = new Audio(settings.ringUrl); a.play().catch(function () { }); } catch (e) { }
+        }).catch(function () { toast('铃声上传失败'); });
+        rf.value = '';
+      };
+    }
     document.getElementById('sw-vibe').onclick = function () {
       settings.vibe = !settings.vibe; this.classList.toggle('on', settings.vibe); saveSettings();
     };
@@ -747,6 +825,10 @@ window.App = (function () {
       document.getElementById('sw-voice').classList.toggle('on', settings.voice);
       document.getElementById('sw-bgm').classList.toggle('on', settings.bgm);
       document.getElementById('sw-vibe').classList.toggle('on', settings.vibe);
+      document.getElementById('sw-callvibe').classList.toggle('on', settings.callVibe !== false);
+      document.getElementById('sw-callring').classList.toggle('on', settings.callRing !== false);
+      var rt = document.getElementById('ring-tip');
+      if (rt) rt.textContent = settings.ringUrl ? '已设置' : '默认';
       /* 隐私伪装开关已从「我的」页移除（它会把语音/图片全部藏掉，容易误开），
          默认保持关闭，保证媒体能正常显示；好友空间里那个开关仍可手动打开。
          注意：通知栏必须始终开启 —— 推的都是营销广告，不泄露任何真实内容，
@@ -756,6 +838,14 @@ window.App = (function () {
     }, 50);
   }
   function saveSettings() { try { localStorage.setItem('ddz_set', JSON.stringify(settings)); } catch (e) {} }
+  /* 隐私伪装开关：好友空间里那个开关调用它。
+     之前 App 上根本没有这个方法 —— 开关看着亮了，其实从不生效（v23~v28 的真实 bug）。
+     disguiseByUser 标记「用户主动开过」，否则 loadSettings 末尾的纠错会把它关回去。 */
+  function setDisguise(v) {
+    settings.disguise = !!v;
+    settings.disguiseByUser = !!v;
+    saveSettings();
+  }
 
   /* ---------- 收到邀请 ---------- */
   function onInvited(m) {
@@ -860,39 +950,17 @@ window.App = (function () {
     try { if (window.Game && Game.relayout) Game.relayout(); } catch (e) { }
   });
 
-  return {
-    toast: toast, confirm: confirm, prompt: prompt, sheet: sheet, go: go, vibe: vibe,
-    me: function () { return me || { uid: '', nick: '', avatar: null }; },
-    disguise: function () { return settings.disguise !== false; },
-    setDisguise: function (v) {
-      settings.disguise = !!v;
-      if (v) settings.disguiseByUser = true;
-      saveSettings();
-      /* 通知栏与伪装解耦：推的是广告，任何时候都该收得到 */
-      Notifier.setEnabled(true);
-      /* 输入框提示跟着变，避免别人瞄一眼看到「说点什么」就知道在聊天 */
-      try {
-        var ph = document.querySelector('#c-input');
-        if (ph) ph.setAttribute('data-ph', v ? '邀请好友开局…' : '说点什么…');
-        var ph2 = document.querySelector('#s-input');
-        if (ph2) ph2.setAttribute('placeholder', v ? '邀请好友开局…' : '输入内容…');
-      } catch (e) { }
-      try { Chat.renderList(); } catch (e) {}
-    },
-    settings: function () { return settings; },
-    contacts: function () { return contacts; },
-    updateChatDot: updateChatDot, loadHistory: loadHistory, joinRoom: joinRoom, esc: esc,
-    invitePlay: invitePlay, showPlayShell: showPlayShell, firstTipOf: firstTipOf,
-    paintCoins: paintCoins, orient: Orient,
-    isOwner: isOwner, askOwner: askOwner, viewMedia: viewMedia,
-    modal: function (html, binds) {
-      var m = modal(html);
-      (binds || []).forEach(function (b) {
-        var el = m.el.querySelector(b.sel);
-        if (el) el.onclick = function () { if (b.close !== false) m.close(); if (b.fn) b.fn(); };
+  return { go: go, toast: toast, modal: modal, sheet: sheet, confirm: confirm, prompt: prompt,
+    esc: esc, disguise: function () { return !!settings.disguise; },
+    setDisguise: setDisguise,
+    isOwner: function () { return isOwner(); }, settings: function () { return settings; }, vibe: vibe, viewMedia: viewMedia, saveToDevice: saveToDevice, page: function () { return page; },
+    loginWithToken: function (tok) {
+      var r0 = Net.api('/api/login', { token: tok });
+      var afterFn = window.__ddzAfterLogin;
+      return r0.then(function (r) {
+        if (r.err || !r.token) return { err: r.err || 'login failed' };
+        if (afterFn) afterFn(r);
+        return { ok: true, uid: me && me.uid };
       });
-      return m;
-    },
-    get rule() { return rule; }, get page() { return page; }
-  };
+    } };
 })();

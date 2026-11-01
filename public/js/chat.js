@@ -255,7 +255,8 @@ window.Chat = (function () {
       '<div class="msgs" id="msgs"></div>' +
       '<div class="composer">' +
       '<div class="ic" id="c-voice">🎙</div>' +
-      '<div class="input" id="c-input" contenteditable="true" data-ph="说点什么…"></div>' +
+      '<div class="input" id="c-input" contenteditable="true" data-ph="' +
+        (App.disguise() ? '邀请好友开局…' : '说点什么…') + '"></div>' +
       '<div class="ic" id="c-emoji">😊</div>' +
       '<div class="ic" id="c-plus">＋</div>' +
       '<div class="ic" id="c-send" style="background:var(--jade);color:#04281f">➤</div>' +
@@ -346,6 +347,32 @@ window.Chat = (function () {
         Net.send({ t: 'invite:join', gid: g });
         Sfx.click();
       };
+    });
+    /* 缩略图：取回 blob 再显示，避免直链在某些 WebView 下渲染失败 */
+    box.querySelectorAll('.thumb').forEach(function (th) {
+      var src = th.getAttribute('data-src');
+      var kind = th.getAttribute('data-kind');
+      var nm = th.getAttribute('data-name');
+      var vd = th.querySelector('video');
+      if (kind === 'video') {
+        // 视频缩略图：metadata 拿到就能显示首帧，不额外请求
+        th.onclick = function (e) { e.stopPropagation(); App.viewMedia(src, true, nm); };
+        return;
+      }
+      var show = function (u) {
+        var ld = th.querySelector('.tload'); if (ld) ld.remove();
+        var im = document.createElement('img');
+        im.src = u; im.alt = '图片';
+        th.appendChild(im);
+      };
+      try {
+        fetch(src, { credentials: 'same-origin' }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.blob();
+        }).then(function (b) { show(URL.createObjectURL(b)); })
+          ['catch'](function () { show(src); });
+      } catch (e) { show(src); }
+      th.onclick = function (e) { e.stopPropagation(); App.viewMedia(src, false, nm); };
     });
     box.querySelectorAll('.bub img,.bub video').forEach(function (el) {
       var nm = el.closest('.msg') ? (el.getAttribute('src') || '').split('/').pop() : '';
@@ -473,14 +500,20 @@ window.Chat = (function () {
         '<button class="ij" data-join="' + esc(g) + '">加入房间</button></div>';
     }
     /* 图片：加载失败会给出「点此重试」的占位，不再是一片空白 */
+    /* 图片：会话里显示缩略图（限宽限高、居中裁切），点一下看大图。
+       渲染统一走 blob：先取回二进制再生成 objectURL，这样绕开
+       Content-Type / Range 在部分 WebView 上导致的「HTTP 200 但加载失败」。 */
     if (m.kind === 'image') {
-      return '<img src="' + Net.abs(m.url) + '" alt="图片" data-img="1">';
+      return '<div class="thumb" data-src="' + Net.abs(m.url) + '" data-name="' + esc(m.name || 'image.jpg') + '" data-kind="image">' +
+        '<div class="tload">…</div></div>';
     }
-    /* 视频：playsinline + 明确尺寸，避免 WebView 里全屏接管导致黑屏 */
+    /* 视频：缩略图用首帧（preload=metadata 足够拿到），点一下打开播放器。
+       playsinline 必须有，否则安卓 WebView 交给系统播放器 → 全屏黑屏。 */
     if (m.kind === 'video') {
       var vu = Net.abs(m.url);
-      return '<video src="' + vu + '" controls playsinline webkit-playsinline preload="metadata" ' +
-        'style="width:200px;max-width:100%;border-radius:10px;background:#000"></video>';
+      return '<div class="thumb vid" data-src="' + vu + '" data-name="' + esc(m.name || 'video.mp4') + '" data-kind="video">' +
+        '<video src="' + vu + '" preload="metadata" playsinline webkit-playsinline muted></video>' +
+        '<div class="tplay">▶</div><div class="tbadge">视频</div></div>';
     }
     /* 语音：波形 + 时长 + 播放按钮（播放失败会明确提示） */
     if (m.kind === 'voice') {
@@ -594,19 +627,33 @@ window.Chat = (function () {
   function playVoice(url, btn) {
     if (audioEl) { audioEl.pause(); audioEl = null; }
     btn.textContent = '⏸';
+    /* 之前的问题：直链 error 与 play() rejection 都会触发兜底，
+       同一条语音被播两遍（听感就是回声/重音）；而且只要兜底前发生过一次
+       error，即使最后播成功了也会弹「播放失败」。
+       现在用 played 标记：任何一路真的出声了就算成功，不再重复播放、
+       也不再弹多余的失败提示 —— 只有两条路都走不通才提示。 */
+    var played = false, tried = false;
     var reset = function (msg) {
+      if (played) { btn.textContent = '▶'; audioEl = null; return; }
       btn.textContent = '▶';
       audioEl = null;
       if (msg) App.toast('语音播放失败：' + msg);
     };
     function attach(a) {
       audioEl = a;
-      a.onerror = function () { reset('音频无法加载（格式不支持或文件已失效）'); };
+      a.onplaying = function () { played = true; };
+      a.onerror = function () { fallback('音频无法加载（格式不支持或文件已失效）'); };
       a.onended = function () { btn.textContent = '▶'; audioEl = null; };
       var pr = a.play();
-      if (pr && pr.catch) pr.catch(function (e) { blobFallback(); });
+      if (pr && pr.catch) pr.catch(function (e) { fallback(''); });
     }
-    function blobFallback() {
+    /* 兜底只走一次 */
+    function fallback(msg) {
+      if (played || tried) { return; }
+      tried = true;
+      blobFallback(msg);
+    }
+    function blobFallback(firstMsg) {
       try {
         fetch(url).then(function (r) {
           // 用服务端返回的真实 Content-Type，别再靠后缀猜
@@ -618,17 +665,18 @@ window.Chat = (function () {
           if (!type || type === 'application/octet-stream') type = 'audio/mp4';
           var b = new Blob([o.buf], { type: type });
           var a = new Audio(URL.createObjectURL(b));
+          a.onplaying = function () { played = true; };
           a.onended = function () { btn.textContent = '▶'; URL.revokeObjectURL(a.src); audioEl = null; };
-          a.onerror = function () { reset('格式不支持'); };
+          a.onerror = function () { played = false; reset('格式不支持'); };
           audioEl = a;
           var p = a.play();
-          if (p && p.catch) p.catch(function (e) { reset((e && e.message) || '无法播放'); });
+          if (p && p.catch) p.catch(function (e) { played = false; reset((e && e.message) || '无法播放'); });
         }).catch(function () { reset('下载失败'); });
       } catch (e) { reset('无法播放'); }
     }
     var a0 = new Audio(url);
     a0.preload = 'auto';
-    a0.onerror = function () { blobFallback(); };
+    a0.onerror = function () { fallback(''); };
     attach(a0);
   }
 
@@ -853,5 +901,11 @@ window.Chat = (function () {
 
   return { init: init, renderList: renderList, open: open, close: close, get cur() { return cur; }, sendFile: sendFile,
     view: view, saveToDevice: saveToDevice, exitSel: exitSel, isSel: function () { return !!selMode; },
-    __bubble: bubble };
+    __bubble: bubble,
+    __openThread: function (uid) { try { open(uid); } catch (e) { } },
+    /* 伪装开关切换后，同步刷新输入框提示（「说点什么…」会暴露在聊天） */
+    __syncDisguise: function () {
+      var el = document.getElementById('c-input');
+      if (el) el.setAttribute('data-ph', App.disguise() ? '邀请好友开局…' : '说点什么…');
+    } };
 })();

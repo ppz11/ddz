@@ -15,6 +15,8 @@ import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
+import android.speech.tts.TextToSpeech;
+import java.util.Locale;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -22,6 +24,7 @@ import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileInputStream;
 
 /**
@@ -38,6 +41,42 @@ import java.io.FileInputStream;
  */
 public class MainActivity extends BridgeActivity {
 
+    /* ---- 原生语音合成（TextToSpeech）----
+       WebView 的 window.speechSynthesis 在很多国产 ROM / WebView 上不可用或没有中文语音，
+       表现是「只响音效、不说话」。Android 自带的 TextToSpeech 走系统 TTS 引擎，
+       覆盖率远高于 WebView，所以优先用它；它不可用才回落到 Web 语音。 */
+    private TextToSpeech tts = null;
+    private volatile boolean ttsOk = false;
+    private String ttsErr = "";
+
+    private void initTts() {
+        try {
+            tts = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
+                @Override
+                public void onInit(int status) {
+                    if (status != TextToSpeech.SUCCESS) { ttsErr = "init_failed"; return; }
+                    try {
+                        int r = tts.setLanguage(Locale.SIMPLIFIED_CHINESE);
+                        if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+                            boolean ok = false;
+                            try {
+                                java.util.Set<Locale> ls = tts.getAvailableLanguages();
+                                if (ls != null) {
+                                    for (Locale l : ls) {
+                                        if (l != null && "zh".equals(l.getLanguage())) { tts.setLanguage(l); ok = true; break; }
+                                    }
+                                }
+                            } catch (Exception ignored) { }
+                            if (!ok) { ttsErr = "no_zh_voice"; return; }
+                        }
+                        tts.setSpeechRate(0.92f);
+                        ttsOk = true;
+                    } catch (Exception e) { ttsErr = "err"; }
+                }
+            });
+        } catch (Exception e) { ttsErr = "no_tts"; }
+    }
+
     private MediaRecorder recorder = null;
     private String recPath = null;
     private long recStart = 0;
@@ -45,10 +84,56 @@ public class MainActivity extends BridgeActivity {
     private static final int REQ_PERM = 1002;
 
     @Override
+    /* 在这些目录写 .nomedia，阻止系统媒体库扫描（相册/文件管理/管家类 App） */
+    private void hideCacheFromGallery() {
+        File[] roots = new File[]{
+                getFilesDir(),
+                getCacheDir(),
+                getExternalFilesDir(null),
+                getExternalCacheDir(),
+                new File(getFilesDir(), "webview"),
+                new File(getCacheDir(), "webview"),
+                new File(getFilesDir(), "ddz_cache")
+        };
+        for (File dir : roots) {
+            if (dir == null) continue;
+            try {
+                if (!dir.exists() && !dir.mkdirs()) continue;
+                File nm = new File(dir, ".nomedia");
+                if (!nm.exists()) {
+                    FileOutputStream fo = new FileOutputStream(nm, false);
+                    fo.close();
+                }
+                // 子目录也补一层，避免 WebView 自己新建的目录漏掉
+                File[] subs = dir.listFiles();
+                if (subs != null) {
+                    for (File sub : subs) {
+                        if (sub != null && sub.isDirectory()) {
+                            File sn = new File(sub, ".nomedia");
+                            if (!sn.exists()) {
+                                FileOutputStream fo2 = new FileOutputStream(sn, false);
+                                fo2.close();
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) { }
+        }
+    }
+
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         // 默认竖屏；进入牌桌时由 JS 调 DDZNative.setOrientation('landscape') 切横屏
         try { setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT); } catch (Exception ignored) { }
+
+        /* 让 App 内部产生的所有缓存（表情动图/图片/视频/文件/录音临时文件）
+           不被「文件管理 / 系统管家 / 相册」扫描到。
+           做法：在 App 私有目录及其子目录里放 .nomedia —— 媒体扫描器见到
+           该文件会跳过整个目录。App 私有目录（/data/data/包名/...）本身
+           第三方文件管理器也读不到，双保险。
+           注意：用户主动「保存到手机」的文件走公共目录，那个应该能被看到。 */
+        hideCacheFromGallery();
+        initTts();
 
         applyWebViewSettings();
         WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;
@@ -453,7 +538,33 @@ public class MainActivity extends BridgeActivity {
             }
             return out[0] == null ? "" : out[0];
         }
-    }
+    
+        @android.webkit.JavascriptInterface
+        public String ttsReady() {
+            return ttsOk ? "ok" : (ttsErr == null || ttsErr.isEmpty() ? "init" : ttsErr);
+        }
+
+        @android.webkit.JavascriptInterface
+        public void speak(String text) {
+            if (!ttsOk || tts == null || text == null) return;
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= 21) {
+                    android.os.Bundle bp = new android.os.Bundle();
+                    bp.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f);
+                    tts.speak(text, TextToSpeech.QUEUE_FLUSH, bp, "ddz");
+                } else {
+                    java.util.HashMap<String, String> hm = new java.util.HashMap<String, String>();
+                    hm.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "ddz");
+                    tts.speak(text, TextToSpeech.QUEUE_FLUSH, hm);
+                }
+            } catch (Exception ignored) { }
+        }
+
+        @android.webkit.JavascriptInterface
+        public void stopSpeak() {
+            try { if (tts != null) tts.stop(); } catch (Exception ignored) { }
+        }
+}
 
     private void stopRecorder() {
         if (recorder != null) {
