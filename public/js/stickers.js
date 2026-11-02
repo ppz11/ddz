@@ -202,6 +202,7 @@ window.Stickers = (function () {
     var fr = new FileReader();
     fr.onload = function () {
       var b = new Uint8Array(fr.result || new ArrayBuffer(0));
+      /* PNG → APNG：IDAT 之前出现 acTL 动画控制块即为动图 */
       if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50) {
         for (var i = 8; i + 4 <= b.length - 4; i++) {
           var tag = String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
@@ -210,17 +211,34 @@ window.Stickers = (function () {
         }
         return cb(false);
       }
-      var head = '';
-      for (var j = 0; j < Math.min(b.length, 64); j++) head += String.fromCharCode(b[j]);
-      if (head.indexOf('RIFF') === 0 && head.indexOf('WEBP') === 8) {
-        var all = '';
-        for (var k = 0; k < Math.min(b.length, 4096); k++) all += String.fromCharCode(b[k]);
-        return cb(all.indexOf('ANIM') >= 0 || all.indexOf('ANMF') >= 0);
+      /* 动态 WebP：RIFF....WEBP 容器，逐个 chunk 解析。
+         动图标志有三种，都要认：
+           · VP8X 扩展块数据首字节 bit1（0x02）= 动画标志
+           · ANIM 块（动画全局信息）
+           · ANMF 块（动画帧）
+         旧版只在前 4096 字节里找 ANMF，第一帧超过 4KB 的图会被误判成静态图。 */
+      if (b.length > 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+          b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) {
+        var q = 12;
+        while (q + 8 <= b.length) {
+          var ctag = String.fromCharCode(b[q], b[q + 1], b[q + 2], b[q + 3]);
+          var csz = b[q + 4] | (b[q + 5] << 8) | (b[q + 6] << 16) | (b[q + 7] << 24);
+          if (ctag === 'VP8X') {
+            /* chunk 数据第一个字节是 flags：bit1(0x02) 表示含动画 */
+            if (q + 8 < b.length && (b[q + 8] & 0x02)) return cb(true);
+          }
+          if (ctag === 'ANIM' || ctag === 'ANMF') return cb(true);
+          if (csz <= 0) break;
+          q += 8 + csz + (csz & 1);   /* chunk 数据按偶数字节对齐 */
+        }
+        return cb(false);
       }
       cb(false);
     };
     fr.onerror = function () { cb(false); };
-    fr.readAsArrayBuffer(file.slice(0, 4096));
+    /* 读前 64KB：动态 WebP 的 ANMF 常在几千字节之后，只读 4KB 会漏判 */
+    try { fr.readAsArrayBuffer(file.slice(0, 65536)); }
+    catch (e) { try { fr.readAsArrayBuffer(file); } catch (x) { cb(false); } }
   }
   /* 动图原样存：只做体积上限保护，绝不走 canvas */
   var ANIM_MAX = 2.5 * 1024 * 1024;
@@ -266,7 +284,7 @@ window.Stickers = (function () {
           done++;
           if (url) {
             items.push({ id: 'i' + i, name: nm, url: url, anim: !!anim,
-                         mime: (f.type || (anim ? 'image/gif' : 'image/png')) });
+                         mime: (f.type || (/\.webp$/.test(nm) ? 'image/webp' : (anim ? 'image/gif' : 'image/png'))) });
             if (anim) animCnt++;
           } else if (err) note = err;
           if (done === list.length) {
@@ -294,16 +312,36 @@ window.Stickers = (function () {
     var items = [];
     raw.forEach(function (x, i) {
       if (typeof x === 'string') {
-        items.push({ id: 'j' + i, name: '', url: x, anim: /^data:image\/gif|\.gif(\?|$)/i.test(x) });
+        items.push({ id: 'j' + i, name: '', url: x, anim: /^data:image\/(gif|apng|webp)|\.(gif|webp)(\?|$)/i.test(x) });
         return;
       }
       if (x && (x.url || x.src || x.image || x.file)) {
         var u = x.url || x.src || x.image || x.file;
         items.push({ id: x.id || ('j' + i), name: x.name || x.title || '', url: u,
-                     anim: (x.anim !== undefined ? !!x.anim : /^data:image\/(gif|apng)|\.gif(\?|$)/i.test(u)) });
+                     anim: (x.anim !== undefined ? !!x.anim : /^data:image\/(gif|apng|webp)|\.(gif|webp)(\?|$)/i.test(u)) });
       }
     });
     if (!items.length) { cb && cb('没解析出任何表情'); return; }
+    /* 配置里可以带目录前缀，图片地址写成文件名时拼上去 */
+    var base = o.base || o.dir || o.path || '';
+    if (base) {
+      items.forEach(function (it) {
+        var u = String(it.url || '');
+        if (u && !/^(https?:|data:|\/|blob:)/i.test(u)) it.url = String(base).replace(/\/$/, '') + '/' + u;
+      });
+    }
+    /* 配置里写的是电脑本地文件名（例如 1badb5a8….gif）时，手机里根本没有这些文件，
+       导入后就是一片空白。这里直接说清楚，别让人以为是功能坏了。 */
+    var bad = items.filter(function (it) {
+      var u = String(it.url || '');
+      return !u || !/^(https?:|data:|\/|blob:)/i.test(u);
+    });
+    if (bad.length === items.length) {
+      var ex = String(bad[0].url || '').slice(0, 20);
+      cb && cb('配置里的图片地址是本地文件名' + (ex ? '（如 ' + ex + '）' : '') +
+        '，手机上打不开。请改用「选图片」多选导入');
+      return;
+    }
     addPack(name, items, cb);
   }
 
@@ -353,7 +391,7 @@ window.Stickers = (function () {
       return pk.items.map(function (it, i) {
         return '<button class="stk" data-i="' + i + '">' +
           '<img src="' + it.url + '" alt="' + (it.name || '') + '">' +
-          (it.anim ? '<span class="gif">GIF</span>' : '') + '</button>';
+          (it.anim ? '<span class="gif">' + (/\.webp(\?|$)/i.test(String(it.url || '')) ? 'WEBP' : 'GIF') + '</span>' : '') + '</button>';
       }).join('');
     }
     box.innerHTML = '<div class="box" style="max-width:340px">' +
@@ -363,7 +401,8 @@ window.Stickers = (function () {
       '<div class="row" style="margin-bottom:10px">' +
       '<button class="btn" id="sk-img">选图片</button>' +
       '<button class="btn" id="sk-json">上传配置</button>' +
-      '<button class="btn' + (BIG ? ' jade' : '') + '" id="sk-big">大图</button></div>' +
+      '<button class="btn' + (BIG ? ' jade' : '') + '" id="sk-big">大图</button>' +
+      '<button class="btn" id="sk-diag">诊断</button></div>' +
       '<div class="spk-list" id="sk-list" style="max-height:22vh;overflow-y:auto;-webkit-overflow-scrolling:touch">' +
       packsHTML() + '</div>' +
       '<div class="sk-grid" id="sk-grid" style="margin-top:10px;max-height:34vh;overflow-y:auto;-webkit-overflow-scrolling:touch">' +
@@ -381,6 +420,29 @@ window.Stickers = (function () {
     fj.id = 'sk-fj';
     box.appendChild(fi); box.appendChild(fj);
 
+    /* 诊断：列出每个包有多少张能用、多少张打不开 */
+    var db = box.querySelector('#sk-diag');
+    if (db) db.onclick = function () {
+      var all = allPacks();
+      if (!all.length) { window.App && App.toast && App.toast('还没有表情包'); return; }
+      var lines = [];
+      all.forEach(function (pk) {
+        var n = 0, ex = '';
+        pk.items.forEach(function (it) {
+          var u = String(it.url || '');
+          if (!u || !/^(https?:|data:|\/|blob:)/i.test(u)) { n++; if (!ex) ex = String(u).slice(0, 34); }
+        });
+        lines.push('\u00b7 ' + (pk.name || '\u6211\u7688\u8868\u60c5') + '：\u5171 ' + pk.items.length + ' \u5f20' +
+          (n ? ('\uff0c' + n + ' \u5f20\u6253\u4e0d\u5f00' + (ex ? '\uff08\u4f8b\uff1a' + ex + '\uff09' : '')) : '\uff0c\u5168\u90e8\u53ef\u7528'));
+      });
+      try {
+        window.App.modal('<h3>\u8868\u60c5\u5305\u8bca\u65ad</h3><p style="font-size:12px;line-height:1.8">' +
+          lines.join('<br>') + '</p><p style="font-size:11px;color:#5c6b66">' +
+          '\u6253\u4e0d\u5f00\u7684\u901a\u5e38\u662f\u914d\u7f6e\u91cc\u586b\u4e86\u7535\u8111\u672c\u5730\u6587\u4ef6\u540d\uff0c\u6539\u7528\u300c\u9009\u56fe\u7247\u300d\u591a\u9009\u5bfc\u5165\u5373\u53ef</p>' +
+          '<div class="row"><button class="btn ghost" data-a="0">\u5173\u95ed</button></div>',
+          [{ sel: '[data-a="0"]' }]);
+      } catch (e) { window.App && App.toast && App.toast(lines.join(' / ')); }
+    };
     fi.onchange = function () {
       fromFiles(fi.files, function (err, pk) {
         fi.value = '';
@@ -477,6 +539,8 @@ window.Stickers = (function () {
     get globalPacks() { return GLOBAL_PACKS; },
     packItemHTML: packItemHTML, packThumb: packThumb, reload: loadPacks,
     openImport: openImport, dataURLtoFile: dataURLtoFile,
-    isBig: isBig, setBig: setBig
+    isBig: isBig, setBig: setBig,
+    /* 导出便于诊断面板判断某张图是不是动图（GIF / APNG / 动态 WebP） */
+    isAnimated: isAnimated
   };
 })();

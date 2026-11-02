@@ -92,8 +92,17 @@ window.Rec = (function () {
   function hold(btn, onDone, onErr) {
     if (!btn) return;
     var holding = false, canceled = false;
+    var lastTouch = 0;
+    /* 手指抬起后安卓/iOS 还会补一组模拟鼠标事件（mousedown+mouseup），
+       不拦掉就会「录音两遍、发出去两条」——这就是短语音发一次变两条的原因。 */
+    function synthMouse(e) {
+      try { if (e && e.type && String(e.type).indexOf('mouse') === 0 && Date.now() - lastTouch < 800) return true; } catch (x) { }
+      return false;
+    }
     function down(e) {
+      if (synthMouse(e)) return;
       if (e && e.preventDefault) e.preventDefault();
+      if (e && e.type === 'touchstart') lastTouch = Date.now();
       if (holding) return;
       holding = true; canceled = false;
       start(function (err) {
@@ -101,7 +110,9 @@ window.Rec = (function () {
       });
     }
     function up(e) {
+      if (synthMouse(e)) return;
       if (e && e.preventDefault) e.preventDefault();
+      if (e && e.type === 'touchend') lastTouch = Date.now();
       if (!holding) return;
       holding = false;
       stop().then(function (r) {

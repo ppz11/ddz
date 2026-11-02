@@ -547,7 +547,21 @@ window.Chat = (function () {
     var b = document.getElementById('msgs'); if (b) setTimeout(function () { b.scrollTop = b.scrollHeight; }, 40);
   }
 
-  function send(obj) { Net.send(Object.assign({ t: 'chat', to: cur }, { msg: obj })); }
+  /* 防重复发送：手指抬起后手机会补一组模拟鼠标事件，语音/表情会被连发两次 */
+  var _cSig = '', _cT = 0, _cVoiceT = 0;
+  function send(obj) {
+    var now = Date.now();
+    if (obj && obj.kind === 'voice') {
+      if (_cVoiceT && now - _cVoiceT < 900) return;
+      _cVoiceT = now;
+    } else {
+      var sg = '';
+      try { sg = JSON.stringify(obj || {}); } catch (e) { sg = String(now); }
+      if (sg && sg === _cSig && now - _cT < 700) return;
+      _cSig = sg; _cT = now;
+    }
+    Net.send(Object.assign({ t: 'chat', to: cur }, { msg: obj }));
+  }
 
   function sendText() {
     var el = document.getElementById('c-input');

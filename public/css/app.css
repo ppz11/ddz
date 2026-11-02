@@ -1447,3 +1447,16 @@ body.land .tablerail{bottom:auto}
   #page-play .seatcol .pcards .pc{width:calc(36px * var(--k,1));height:calc(50px * var(--k,1))}
   #page-play .seatcol .pcards .pc .pt{font-size:calc(19px * var(--k,1))}
 }
+
+/* ===== v32 查看器：视频必须有确定尺寸，否则部分手机只有声音没画面 ===== */
+.viewer .vstage{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.viewer video.vmedia{width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;
+  background:#000;display:block}
+.viewer img.vmedia{max-width:100%;max-height:100%;display:block;touch-action:none;
+  transform-origin:center center;transition:transform .06s linear;will-change:transform}
+.viewer .vzoom{position:absolute;top:calc(var(--safe-t) + 14px);left:14px;background:rgba(0,0,0,.5);
+  color:#f3c96b;font-size:12px;padding:4px 10px;border-radius:10px;z-index:6;pointer-events:none}
+/* ===== v32 添加好友：输入框大、按钮小 ===== */
+.frbox .fr-addrow{gap:8px}
+.frbox .fr-addrow input{flex:1 1 auto;min-width:0;margin:0;padding:12px 14px;font-size:16px;height:50px;border-radius:12px}
+.frbox .fr-addrow .btn{flex:0 0 54px;height:50px;padding:0 6px;font-size:13px;border-radius:12px;min-width:0}

@@ -165,35 +165,128 @@ window.App = (function () {
     var v = document.createElement('div');
     v.className = 'viewer';
     v.innerHTML =
-      '<div class="x">✕</div>' +
-      '<div class="vload" id="vl">正在加载…</div>' +
+      '<div class="x">\u2715</div>' +
+      '<div class="vload" id="vl">\u6b63\u5728\u52a0\u8f7d\u2026</div>' +
+      '<div class="vstage" id="vstage"></div>' +
+      '<div class="vzoom" id="vzoom" style="display:none">1.0\u00d7</div>' +
       '<div class="vbar">' +
-      '<button class="vb" data-a="save">⬇ 保存到手机</button>' +
-      '<button class="vb ghost" data-a="close">关闭</button>' +
+      '<button class="vb" data-a="save">\u2b07 \u4fdd\u5b58\u5230\u624b\u673a</button>' +
+      (isVideo ? '<button class="vb" data-a="fs">\u26f6 \u5168\u5c4f</button>' : '') +
+      '<button class="vb ghost" data-a="close">\u5173\u95ed</button>' +
       '</div>' +
       '<div class="vmsg" id="vmsg"></div>';
-    var close = function () { try { if (objUrl) URL.revokeObjectURL(objUrl); } catch (e) { } v.remove(); };
+    var objUrl = null, mediaEl = null;
+    /* 关闭时先暂停再清空 src：只 remove() 的话播放器还在后台响 */
+    var close = function () {
+      try {
+        if (mediaEl) {
+          try { mediaEl.pause(); } catch (e) { }
+          try { mediaEl.removeAttribute('src'); } catch (e) { }
+          try { if (mediaEl.load) mediaEl.load(); } catch (e) { }
+          mediaEl = null;
+        }
+      } catch (e) { }
+      try { if (objUrl) URL.revokeObjectURL(objUrl); } catch (e) { }
+      v.remove();
+    };
     v.querySelector('.x').onclick = close;
     v.querySelector('[data-a="close"]').onclick = close;
     v.querySelector('[data-a="save"]').onclick = function () {
       saveToDevice(src, name || (isVideo ? 'video.mp4' : 'image.jpg'));
     };
+    /* 全屏：安卓 WebView 的原生 controls 里没有全屏按钮，只能自己加一个。
+       优先 requestFullscreen（可锁横屏），iOS 走 video.webkitEnterFullscreen。 */
+    var fsb2 = v.querySelector('[data-a="fs"]');
+    if (fsb2) fsb2.onclick = function () {
+      var t = mediaEl || stage || v;
+      try {
+        var cur = document.fullscreenElement || document.webkitFullscreenElement;
+        if (!cur) {
+          if (t.requestFullscreen) t.requestFullscreen();
+          else if (t.webkitRequestFullscreen) t.webkitRequestFullscreen();
+          else if (mediaEl && mediaEl.webkitEnterFullscreen) mediaEl.webkitEnterFullscreen();
+          else if (mediaEl && mediaEl.enterFullscreen) mediaEl.enterFullscreen();
+          else {
+            var m2 = v.querySelector('#vmsg');
+            if (m2) m2.textContent = '\u8be5\u673a\u578b\u4e0d\u652f\u6301\u5168\u5c4f\uff0c\u53ef\u76f4\u63a5\u6a2a\u5c4f\u89c2\u770b';
+            return;
+          }
+          /* 全屏时顺便锁横屏，视频才是正的 */
+          try {
+            if (window.ScreenOrientation && ScreenOrientation.lock) ScreenOrientation.lock('landscape');
+            else if (window.screen && screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape');
+          } catch (e3) { }
+        } else {
+          if (document.exitFullscreen) document.exitFullscreen();
+          else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+        }
+      } catch (e) {
+        var m3 = v.querySelector('#vmsg');
+        if (m3) m3.textContent = '\u5168\u5c4f\u5931\u8d25\uff0c\u53ef\u76f4\u63a5\u6a2a\u5c4f\u89c2\u770b';
+      }
+    };
     document.getElementById('app').appendChild(v);
-    var objUrl = null;
+    var stage = v.querySelector('#vstage');
+
+    /* 图片：双指捏合缩放 / 单指拖动 / 双击放大 */
+    var sc = 1, tx = 0, ty = 0, p0 = null, d0 = 0;
+    function apply() {
+      if (!mediaEl || isVideo) return;
+      mediaEl.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + sc + ')';
+      var z = v.querySelector('#vzoom');
+      if (z) { z.style.display = sc > 1.01 ? 'block' : 'none'; z.textContent = sc.toFixed(1) + '\u00d7'; }
+    }
+    function clamp() {
+      var lim = 260 * sc;
+      if (tx > lim) tx = lim; if (tx < -lim) tx = -lim;
+      if (ty > lim) ty = lim; if (ty < -lim) ty = -lim;
+    }
+    function bindZoom(el) {
+      if (!el || isVideo) return;
+      el.ondblclick = function () { if (sc > 1.01) { sc = 1; tx = 0; ty = 0; } else { sc = 2.5; } apply(); };
+      el.addEventListener('touchstart', function (e) {
+        if (e.touches.length === 2) {
+          var dx = e.touches[0].clientX - e.touches[1].clientX;
+          var dy = e.touches[0].clientY - e.touches[1].clientY;
+          d0 = Math.sqrt(dx * dx + dy * dy) || 1;
+        } else if (e.touches.length === 1) { p0 = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }
+      }, { passive: true });
+      el.addEventListener('touchmove', function (e) {
+        if (e.touches.length === 2) {
+          var dx = e.touches[0].clientX - e.touches[1].clientX;
+          var dy = e.touches[0].clientY - e.touches[1].clientY;
+          var d = Math.sqrt(dx * dx + dy * dy) || 1;
+          sc = Math.max(1, Math.min(6, sc * (d / d0))); d0 = d; apply();
+        } else if (e.touches.length === 1 && p0 && sc > 1.01) {
+          tx += e.touches[0].clientX - p0.x; ty += e.touches[0].clientY - p0.y;
+          p0 = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+          clamp(); apply();
+        }
+      }, { passive: true });
+      el.addEventListener('touchend', function () { p0 = null; if (sc < 1.01) { sc = 1; tx = 0; ty = 0; apply(); } }, { passive: true });
+      el.addEventListener('wheel', function (e) {
+        if (e.preventDefault) e.preventDefault();
+        sc = Math.max(1, Math.min(6, sc + (e.deltaY < 0 ? 0.25 : -0.25))); apply();
+      }, { passive: false });
+    }
     function put(url, note) {
       var old = v.querySelector('.vload'); if (old) old.remove();
       var el = document.createElement(isVideo ? 'video' : 'img');
+      el.className = 'vmedia';
       el.src = url;
       if (isVideo) {
         el.controls = true; el.autoplay = true;
+        /* 没有 playsinline，安卓 WebView 会把视频交给系统播放器接管（黑屏/只有声音） */
         el.setAttribute('playsinline', ''); el.setAttribute('webkit-playsinline', '');
         el.style.background = '#000';
       }
       el.onerror = function () {
         var m = v.querySelector('#vmsg');
-        if (m) m.textContent = note || '无法预览该文件';
+        if (m) m.textContent = note || '\u65e0\u6cd5\u9884\u89c8\u8be5\u6587\u4ef6';
       };
-      v.insertBefore(el, v.querySelector('.vbar'));
+      mediaEl = el;
+      try { stage.appendChild(el); } catch (e) { v.insertBefore(el, v.querySelector('.vbar')); }
+      bindZoom(el);
     }
     try {
       fetch(src, { credentials: 'same-origin' }).then(function (r) {
@@ -203,8 +296,7 @@ window.App = (function () {
         objUrl = URL.createObjectURL(b);
         put(objUrl);
       })['catch'](function () {
-        // 取不回来就用直链再试一次（至少给个机会）
-        put(src, '预览失败，可用「保存到手机」下载后查看');
+        put(src, '\u9884\u89c8\u5931\u8d25\uff0c\u53ef\u7528\u300c\u4fdd\u5b58\u5230\u624b\u673a\u300d\u4e0b\u8f7d\u540e\u67e5\u770b');
       });
     } catch (e) { put(src); }
   }
