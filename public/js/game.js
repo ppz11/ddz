@@ -237,7 +237,7 @@ window.Game = (function () {
     gid = m.gid; rule = m.rule;
     if (!m.phase || m.phase === 'wait') { renderWaiting(m); showRuleTip(m); return; }
   }
-  var prevBidTurn = -1, prevBidKey = '';
+  var prevBidTurn = -1, prevBidKey = '', prevDblKey = '';
   function onGame(m) {
     var prevTurn = S ? S.turn : -1;
     var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',')) : '';
@@ -253,7 +253,9 @@ window.Game = (function () {
         if (!byMe && m.last.info) Sfx.announce(m.last.info);   // 自己的牌在 play() 里已播报
       } else if (!byMe) {
         Sfx.pass();
-        if (App.settings().voice) Sfx.speak('过');
+        /* 机器人/对手过牌也要念出来：走 announce 统一播报，
+           音效与人声错开 200ms，不会互相盖掉。 */
+        if (App.settings().voice) Sfx.announce({ type: 'pass' });
       }
     }
     // 轮到我出牌 → 明确提示音
@@ -275,6 +277,19 @@ window.Game = (function () {
       }
     }
     if (bidKey) prevBidKey = bidKey;
+    /* 别人（含机器人）加倍/不加倍也要播报：以前只在自己点的时候有，
+       机器人加倍了只看得到倍数变化，听不到提示。 */
+    var dblKey = (m.doubled || []).join(',');
+    if (dblKey !== prevDblKey) {
+      var mine = mySeat;
+      var added = (m.doubled || []).filter(function (x) {
+        return prevDblKey.split(',').indexOf(String(x)) < 0;
+      });
+      prevDblKey = dblKey;
+      if (added.length && added.indexOf(mine) < 0 && App.settings().voice) {
+        Sfx.announce({ type: 'double' });
+      }
+    }
     render();
     showRuleTip(m);
     if (m.phase === 'over' && !over) { over = true; showResult(m); }
@@ -351,6 +366,23 @@ window.Game = (function () {
     var s = (u && u.nick) ? String(u.nick) : (def || '玩家');
     return s.length > 8 ? s.slice(0, 8) : s;
   }
+  /* 叫分 / 不叫 / 抢地主 / 加倍：以前只有语音，字幕上完全看不出是谁叫的、叫了几分。
+     现在在对应玩家的头像旁边挂一块浮标，作用就跟出牌时那个「过」字一样，一眼能看到。 */
+  function bidTag(i) {
+    if (!S) return '';
+    var out = '';
+    if (S.bid && S.bid.by === i) {
+      out += '<span class="btagm">' + (S.bid.score ? ('叫 ' + S.bid.score + ' 分') : '不叫') + '</span>';
+    } else if (S.phase === 'bid' && S.bidTurn === i) {
+      out += '<span class="btagm wait">叫分中…</span>';
+    }
+    if (S.doubled && S.doubled.indexOf(i) >= 0) {
+      out += '<span class="btagm dbl">加倍</span>';
+    } else if (S.phase === 'double' && S.doubleTurn === i) {
+      out += '<span class="btagm wait">加倍中…</span>';
+    }
+    return out;
+  }
   function render() {
     if (!S) return;
     setScale();
@@ -385,7 +417,7 @@ window.Game = (function () {
       return '<div class="ts' + act + (cls ? ' ' + cls : '') + '">' +
         '<div class="av">' + (u ? Avatar.svg(u.avatar, 26) : '') + '</div>' +
         '<div class="ts-i"><div class="nm">' + (u ? esc(shortName(u, '空位')) : '空位') + '</div>' + roleTag(i) +
-        '<div class="cnt">' + needTxt + '</div></div>' +
+        '<div class="cnt">' + needTxt + '</div>' + bidTag(i) + '</div>' +
         (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
         '</div>';
     }
@@ -396,7 +428,7 @@ window.Game = (function () {
       return '<div class="ts me' + act + '">' +
         '<div class="av">' + Avatar.svg(meU && meU.avatar, 26) + '</div>' +
         '<div class="ts-i"><div class="nm">' + esc(shortName(meU, '我')) + '</div>' + roleTag(me) +
-        '<div class="cnt">剩 ' + cnt + ' 张</div></div>' +
+        '<div class="cnt">剩 ' + cnt + ' 张</div>' + bidTag(me) + '</div>' +
         (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
         '</div>';
     }
@@ -434,7 +466,7 @@ window.Game = (function () {
       elMy.innerHTML =
         '<div class="av">' + Avatar.svg(meU && meU.avatar, 28) + '</div>' +
         '<div><div class="nm">' + esc(shortName(meU, '我')) + '</div>' + roleTag(me) +
-        '<div class="cnt">剩 ' + S.counts[me] + ' 张</div></div><div class="sp"></div>' +
+        '<div class="cnt">剩 ' + S.counts[me] + ' 张</div>' + bidTag(me) + '</div><div class="sp"></div>' +
         '<div class="mult">×' + S.multiplier + (S.letCount ? ' · 让' + S.letCount : '') + '</div>';
       var myRow3 = myPlayedHTML();
       elMyP.innerHTML = '<div class="pcards center">' + (myRow3 || '<span class="pass">—</span>') + '</div>';
@@ -646,14 +678,16 @@ window.Game = (function () {
     var isOwner = mySeat === 0;
     var btns = '<button class="btn ghost" onclick="Game.leave()">离开房间</button>';
     if (isOwner) {
+      /* 文案统一 4 个字以内 + 不换行，高度才整齐；
+         「补机器人」这个名字会暴露对手是机器人，改叫「随机邀请在线玩家」。 */
+      btns += '<button class="btn" onclick="Game.addBot()">邀请好友</button>';
       if (need > 0) {
-        btns += '<button class="btn" onclick="Game.addBot()">邀请好友</button>';
-        btns += '<button class="btn" onclick="Game.fillAll()">补机器人(' + need + ')</button>';
+        btns += '<button class="btn" onclick="Game.fillAll()">随机邀请在线玩家</button>';
       }
       // 满员才允许开始
       btns += need === 0
         ? '<button class="btn jade" onclick="Game.startNow()">▶ 开始游戏</button>'
-        : '<button class="btn jade" style="opacity:.45;pointer-events:none">▶ 开始游戏（还差' + need + '人）</button>';
+        : '<button class="btn jade" style="opacity:.45;pointer-events:none">▶ 差 ' + need + ' 人</button>';
     }
     document.getElementById('action-zone').innerHTML =
       '<div class="bidwrap" style="flex-wrap:wrap">' + btns + '</div>';
@@ -667,7 +701,7 @@ window.Game = (function () {
       '<button class="btn ghost sm" id="rid-copy">复制</button></div>' +
       '<div class="st">已就位 ' + filled + '/' + n + '</div>' +
       '<div class="seatsrow">' + cards + '</div>' +
-      '<div style="font-size:11px;color:var(--sub);margin-top:6px">把房间号发给好友，或直接在大厅邀请在线好友</div></div>';
+      '<div class="wbtip">把房间号发给好友，或点下方「邀请好友」</div></div>';
     var cb = document.getElementById('rid-copy');
     if (cb) cb.onclick = function () {
       copyText(rid, '房间号已复制：' + rid);
@@ -1013,6 +1047,7 @@ window.Game = (function () {
   /* 快捷语：点一下发出去，除了显示文字还会把这句话念出来 */
   var QUICK = ['快点儿吧，我等的花儿都谢了', '你的牌打得也太好了', '不要走，决战到天亮',
     '别走开，马上回来', '合作愉快', '这把稳了', '好牌，佩服', '你是我的偶像'];
+  var tcOutside = null;
   function toggleTableChat() {
     var el = document.getElementById('tchat');
     if (!el) { renderTableChat(); el = document.getElementById('tchat'); if (!el) return; }
@@ -1024,6 +1059,20 @@ window.Game = (function () {
         var i = document.getElementById('tc-in');
         if (i) { try { i.focus(); } catch (x) { } }
       }, 60);
+      /* 点面板以外的空白处自动收起（含快捷语面板外的区域） */
+      if (!tcOutside) {
+        tcOutside = function (e) {
+          var box = document.getElementById('tchat');
+          if (!box || box.classList.contains('hidden')) return;
+          if (box.contains(e.target)) return;
+          if (e.target && e.target.closest && e.target.closest('#btn-table-chat')) return;
+          toggleTableChat();
+        };
+        setTimeout(function () { document.addEventListener('pointerdown', tcOutside, true); }, 80);
+      }
+    } else if (tcOutside) {
+      document.removeEventListener('pointerdown', tcOutside, true);
+      tcOutside = null;
     }
   }
   function closeTableChat(hard) {
@@ -1039,26 +1088,15 @@ window.Game = (function () {
       '<div class="tc-quick" id="tc-quick">' +
       QUICK.map(function (q, i) { return '<button data-q="' + i + '">' + q + '</button>'; }).join('') +
       '</div>' +
+      /* 文字面板只留「输入框 + 发送」：短语音和表情各自有独立入口（🎤 / 😀），
+         面板里再塞一遍既占地方又容易误触。 */
       '<div class="tc-bar">' +
-      '<div class="ic" id="tc-voice">🎙</div>' +
       '<input id="tc-in" placeholder="说点什么…" inputmode="text" enterkeyhint="send">' +
-      '<div class="ic" id="tc-emo">😊</div>' +
       '<div class="ic send" id="tc-send">➤</div>' +
-      '</div>' +
-      '<div class="tc-emoji hidden" id="tc-emoji"></div>';
+      '</div>';
     el.querySelector('#tc-x').onclick = toggleTableChat;
     el.querySelector('#tc-send').onclick = tcSendText;
     el.querySelector('#tc-in').addEventListener('keydown', function (e) { if (e.key === 'Enter') tcSendText(); });
-    el.querySelector('#tc-emo').onclick = function () {
-      var p = el.querySelector('#tc-emoji');
-      p.classList.toggle('hidden');
-      if (!p.innerHTML) {
-        p.innerHTML = Stickers.EMOJI.slice(0, 48).map(function (s, i) { return '<button data-e="' + i + '">' + s + '</button>'; }).join('');
-        p.querySelectorAll('[data-e]').forEach(function (b) {
-          b.onclick = function () { tcSendSticker(Stickers.EMOJI[+b.dataset.e], p); };
-        });
-      }
-    };
     el.querySelectorAll('[data-q]').forEach(function (b) {
       b.onclick = function () {
         var txt = QUICK[+b.dataset.q] || '';
@@ -1102,6 +1140,8 @@ window.Game = (function () {
     var el = document.getElementById('tc-in'); if (!el) return;
     var v = el.value.trim(); if (!v) return;
     el.value = ''; tcSend({ kind: 'text', text: v }); Sfx.send();
+    /* 发完自动收起：不用再手动点 ✕，也不挡着看牌 */
+    if (tcOpen) toggleTableChat();
   }
   /* 自动播放收到的短语音：牌桌上不用再手动点播放 */
   var voiceQueue = [], voicePlaying = false;
@@ -1205,7 +1245,9 @@ window.Game = (function () {
   }
 
   /* 快捷表情：与快捷语分开的独立入口，点一下直接发出去 */
-  var QSTICK = ['😂', '👍', '👏', '😎', '😍', '😡', '😭', '🎉', '🙏', '🤔', '💪', '❤️'];
+  var QSTICK = ['😂', '👍', '👏', '😎', '😍', '😡', '😭', '🎉', '🙏', '🤔', '💪', '❤️',
+    '🤣', '😊', '🥰', '😘', '😜', '🤪', '😏', '😢', '😱', '🤗', '👌', '✌️',
+    '🔥', '💯', '🌹', '🍺', '⚡', '👀', '🤝', '😴'];
   /* 快捷表情面板：Emoji + 已导入的表情包（默认包排在最前）。
      动图按动图渲染预览，预览尺寸刻意做小（34px），避免占满牌桌。 */
   function stickPacks() {
@@ -1274,7 +1316,10 @@ window.Game = (function () {
       t.onclick = function () { show(t.dataset.p || ''); };
     });
     document.getElementById('page-play').appendChild(p);
-    show(packs.length ? packs[0].id : '');
+    /* 默认打开 Emoji 页：表情最多、一眼能挑到；
+       导入的包在旁边 tab 里，点一下就能切过去（以前默认落在包里，
+       包里只有几张时看着「表情面板很小、没几个可选」）。 */
+    show('');
     setTimeout(function () { if (p.parentNode) p.remove(); }, 8000);
   }
 

@@ -281,10 +281,14 @@ window.Sfx = (function () {
     if (t === 'grab') { tone(880, 0.12, 'triangle', 0.18, 1200); say('抢地主'); return; }
     if (t === 'double') { tone(700, 0.1, 'triangle', 0.18, 900); tone(1050, 0.14, 'triangle', 0.16, 1400, 0.1); say('加倍'); return; }
     if (t === 'nodouble') { tone(400, 0.12, 'sine', 0.12, 300); say('不加倍'); return; }
+    /* 「过 / 不要」：以前是裸调 speak，音效和人声叠在一起很容易被盖掉，
+       机器人过牌时表现就是只有图标、听不到声音。统一走这里，音效与人声错开。 */
+    if (t === 'pass') { say('过'); return; }
     if (t === 'rocket') { rocketSfx(); say('王炸'); return; }
     if (t === 'bomb') { bombSfx(); say('炸弹'); return; }
     var name = (window.DDZ && DDZ.speak) ? DDZ.speak(info) : (info && info.name) || '';
-    if (t === 'pass') { pass(); say('过'); return; }
+    /* 原来这里还有一句 if (t==='pass'){pass();say('过');return;}，
+       但它排在上面新加的 pass 分支之后，永远走不到，属于死代码 —— 已删除。 */
     // 不同牌型用不同音色，耳朵能分辨
     if (t === 'single') { tone(760, 0.09, 'triangle', 0.16, 980); }
     else if (t === 'pair') { tone(700, 0.08, 'triangle', 0.15, 900); tone(880, 0.09, 'triangle', 0.15, 1080, 0.07); }

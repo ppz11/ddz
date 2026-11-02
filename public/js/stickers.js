@@ -104,6 +104,10 @@ window.Stickers = (function () {
    * ============================================================ */
   var LS_KEY = 'ddz_sticker_packs', LS_DEF = 'ddz_sticker_default', LS_BIG = 'ddz_sticker_big';
   var LS_GLOBAL = 'ddz_sticker_global';
+  /* 用户是否手动选过默认包：选过之后服务器同步不能再抢回去，
+     否则「设为默认」看着生效、下一次同步又被覆盖成服务器包。 */
+  var LS_DEF_USER = 'ddz_sticker_defuser';
+  function userPicked() { try { return localStorage.getItem(LS_DEF_USER) === '1'; } catch (e) { return false; } }
   var USER_PACKS = [];
   /* 服务器统一下发的包：房主上传一次，所有玩家登录后自动同步，
      排在列表最前、自动设为默认、不允许本地删除（删了下次同步还会回来）。 */
@@ -157,7 +161,9 @@ window.Stickers = (function () {
         return { id: pk.id, name: pk.name || '服务器表情', items: items, global: true, ts: pk.ts };
       }).filter(function (pk) { return pk.items.length; });
       try { localStorage.setItem(LS_GLOBAL, JSON.stringify(GLOBAL_PACKS)); } catch (e) { }
-      if (GLOBAL_PACKS.length) DEFAULT_PACK = GLOBAL_PACKS[0].id;
+      /* 只有用户没手动选过，才让服务器包当默认；手动选过就尊重用户的选择 */
+      if (GLOBAL_PACKS.length && !userPicked()) DEFAULT_PACK = GLOBAL_PACKS[0].id;
+      if (DEFAULT_PACK && !packById(DEFAULT_PACK)) DEFAULT_PACK = GLOBAL_PACKS.length ? GLOBAL_PACKS[0].id : '';
       savePacks();
       cb && cb(GLOBAL_PACKS.length);
     }).catch(function () { cb && cb(0); });
@@ -189,7 +195,11 @@ window.Stickers = (function () {
     savePacks();
     return true;
   }
-  function setDefault(id) { DEFAULT_PACK = id; savePacks(); }
+  function setDefault(id) {
+    DEFAULT_PACK = id;
+    try { localStorage.setItem(LS_DEF_USER, '1'); } catch (e) { }
+    savePacks();
+  }
 
   /* ---------- 动态表情识别 ----------
    * GIF / APNG / 动态 WebP 一律不压缩：canvas 绘制只会留下第一帧，动图会变死图。
@@ -202,7 +212,6 @@ window.Stickers = (function () {
     var fr = new FileReader();
     fr.onload = function () {
       var b = new Uint8Array(fr.result || new ArrayBuffer(0));
-      /* PNG → APNG：IDAT 之前出现 acTL 动画控制块即为动图 */
       if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50) {
         for (var i = 8; i + 4 <= b.length - 4; i++) {
           var tag = String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
@@ -211,34 +220,27 @@ window.Stickers = (function () {
         }
         return cb(false);
       }
-      /* 动态 WebP：RIFF....WEBP 容器，逐个 chunk 解析。
-         动图标志有三种，都要认：
-           · VP8X 扩展块数据首字节 bit1（0x02）= 动画标志
-           · ANIM 块（动画全局信息）
-           · ANMF 块（动画帧）
-         旧版只在前 4096 字节里找 ANMF，第一帧超过 4KB 的图会被误判成静态图。 */
-      if (b.length > 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
-          b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) {
-        var q = 12;
-        while (q + 8 <= b.length) {
-          var ctag = String.fromCharCode(b[q], b[q + 1], b[q + 2], b[q + 3]);
-          var csz = b[q + 4] | (b[q + 5] << 8) | (b[q + 6] << 16) | (b[q + 7] << 24);
-          if (ctag === 'VP8X') {
-            /* chunk 数据第一个字节是 flags：bit1(0x02) 表示含动画 */
-            if (q + 8 < b.length && (b[q + 8] & 0x02)) return cb(true);
-          }
-          if (ctag === 'ANIM' || ctag === 'ANMF') return cb(true);
-          if (csz <= 0) break;
-          q += 8 + csz + (csz & 1);   /* chunk 数据按偶数字节对齐 */
+      var head = '';
+      for (var j = 0; j < Math.min(b.length, 64); j++) head += String.fromCharCode(b[j]);
+      if (head.indexOf('RIFF') === 0 && head.indexOf('WEBP') === 8) {
+        /* 必须读到 64KB：微信那种表情包第一帧常常超过 4KB，
+           ANMF/ANIM 标记落在后面，只扫前 4KB 会误判成静态图 → 动效丢失。 */
+        var all = '';
+        for (var k = 0; k < b.length; k++) all += String.fromCharCode(b[k]);
+        if (all.indexOf('ANIM') >= 0 || all.indexOf('ANMF') >= 0) return cb(true);
+        /* VP8X 里的动画标志位（第 21 字节起，第 2 位）也要认 */
+        var p = all.indexOf('VP8X');
+        if (p >= 0 && p + 5 < all.length) {
+          var flags = b[p + 4 + 4] | 0;   // VP8X chunk data 的第一个字节
+          if (flags & 0x10) return cb(true);
         }
         return cb(false);
       }
       cb(false);
     };
     fr.onerror = function () { cb(false); };
-    /* 读前 64KB：动态 WebP 的 ANMF 常在几千字节之后，只读 4KB 会漏判 */
-    try { fr.readAsArrayBuffer(file.slice(0, 65536)); }
-    catch (e) { try { fr.readAsArrayBuffer(file); } catch (x) { cb(false); } }
+    /* 读前 64KB 覆盖绝大多数动图的动画标记位置 */
+    fr.readAsArrayBuffer(file.slice(0, 65536));
   }
   /* 动图原样存：只做体积上限保护，绝不走 canvas */
   var ANIM_MAX = 2.5 * 1024 * 1024;
@@ -284,7 +286,7 @@ window.Stickers = (function () {
           done++;
           if (url) {
             items.push({ id: 'i' + i, name: nm, url: url, anim: !!anim,
-                         mime: (f.type || (/\.webp$/.test(nm) ? 'image/webp' : (anim ? 'image/gif' : 'image/png'))) });
+                         mime: (f.type || (anim ? 'image/gif' : 'image/png')) });
             if (anim) animCnt++;
           } else if (err) note = err;
           if (done === list.length) {
@@ -295,8 +297,20 @@ window.Stickers = (function () {
             });
           }
         };
-        if (anim) keepOriginal(f, finish);
-        else shrink(f, 160, function (u) { finish(u, u ? null : '图片读取失败'); });
+        /* 优先上传服务器，包里只存 URL。
+           原因：动图转 dataURL 存 localStorage，十几张就是 9MB+，
+           远超 5MB 上限 —— setItem 静默失败，表现就是「导入成功、设为默认了却用不了」，
+           重开 App 还全没了。存 URL 则跟手机容量无关。 */
+        if (window.Net && Net.upload) {
+          Net.upload(f, 'sticker', 0).then(function (up) {
+            if (up && up.url) return finish(up.url, null);
+            local();
+          })['catch'](function () { local(); });
+        } else local();
+        function local() {
+          if (anim) keepOriginal(f, finish);
+          else shrink(f, 160, function (u) { finish(u, u ? null : '图片读取失败'); });
+        }
       });
     });
   }
@@ -312,13 +326,13 @@ window.Stickers = (function () {
     var items = [];
     raw.forEach(function (x, i) {
       if (typeof x === 'string') {
-        items.push({ id: 'j' + i, name: '', url: x, anim: /^data:image\/(gif|apng|webp)|\.(gif|webp)(\?|$)/i.test(x) });
+        items.push({ id: 'j' + i, name: '', url: x, anim: /^data:image\/gif|\.gif(\?|$)/i.test(x) });
         return;
       }
       if (x && (x.url || x.src || x.image || x.file)) {
         var u = x.url || x.src || x.image || x.file;
         items.push({ id: x.id || ('j' + i), name: x.name || x.title || '', url: u,
-                     anim: (x.anim !== undefined ? !!x.anim : /^data:image\/(gif|apng|webp)|\.(gif|webp)(\?|$)/i.test(u)) });
+                     anim: (x.anim !== undefined ? !!x.anim : /^data:image\/(gif|apng)|\.gif(\?|$)/i.test(u)) });
       }
     });
     if (!items.length) { cb && cb('没解析出任何表情'); return; }
@@ -391,18 +405,19 @@ window.Stickers = (function () {
       return pk.items.map(function (it, i) {
         return '<button class="stk" data-i="' + i + '">' +
           '<img src="' + it.url + '" alt="' + (it.name || '') + '">' +
-          (it.anim ? '<span class="gif">' + (/\.webp(\?|$)/i.test(String(it.url || '')) ? 'WEBP' : 'GIF') + '</span>' : '') + '</button>';
+          (it.anim ? '<span class="gif">GIF</span>' : '') + '</button>';
       }).join('');
     }
     box.innerHTML = '<div class="box" style="max-width:340px">' +
       '<h3>表情包</h3>' +
       '<p style="margin-bottom:8px">导入后自动设为默认<br>' +
       '<span style="font-size:11px;opacity:.75">支持多选图片，或上传 JSON 配置</span></p>' +
-      '<div class="row" style="margin-bottom:10px">' +
-      '<button class="btn" id="sk-img">选图片</button>' +
-      '<button class="btn" id="sk-json">上传配置</button>' +
-      '<button class="btn' + (BIG ? ' jade' : '') + '" id="sk-big">大图</button>' +
-      '<button class="btn" id="sk-diag">诊断</button></div>' +
+      /* 四个按钮挤在一行会被挤出弹窗（只看得见前三个，「诊断」那颗等于没有）→ 允许换行 */
+      '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">' +
+      '<button class="btn" id="sk-img" style="flex:1 1 44%;min-width:0">选图片</button>' +
+      '<button class="btn" id="sk-json" style="flex:1 1 44%;min-width:0">上传配置</button>' +
+      '<button class="btn' + (BIG ? ' jade' : '') + '" id="sk-big" style="flex:1 1 44%;min-width:0">大图' + (BIG ? '开' : '关') + '</button>' +
+      '<button class="btn" id="sk-diag" style="flex:1 1 44%;min-width:0">诊断表情</button></div>' +
       '<div class="spk-list" id="sk-list" style="max-height:22vh;overflow-y:auto;-webkit-overflow-scrolling:touch">' +
       packsHTML() + '</div>' +
       '<div class="sk-grid" id="sk-grid" style="margin-top:10px;max-height:34vh;overflow-y:auto;-webkit-overflow-scrolling:touch">' +
@@ -539,8 +554,6 @@ window.Stickers = (function () {
     get globalPacks() { return GLOBAL_PACKS; },
     packItemHTML: packItemHTML, packThumb: packThumb, reload: loadPacks,
     openImport: openImport, dataURLtoFile: dataURLtoFile,
-    isBig: isBig, setBig: setBig,
-    /* 导出便于诊断面板判断某张图是不是动图（GIF / APNG / 动态 WebP） */
-    isAnimated: isAnimated
+    isBig: isBig, setBig: setBig
   };
 })();

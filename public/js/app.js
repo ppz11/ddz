@@ -83,12 +83,31 @@ window.App = (function () {
         if (document.body.classList.contains('land') && isPortrait()) document.body.classList.add('force-land');
       }, 600);
     }
+    /* 竖屏加固：只调一次 lock，某些 ROM 上会被系统/传感器改回横屏，
+       表现就是「点了竖屏，一眨眼又回到横屏」。这里做多次复查，
+       只要用户偏好仍是竖屏，就在 0.2/0.7/1.5/3 秒各校正一次。 */
+    var portTimers = [];
     function portrait() {
       lock('portrait');
       immersive(false);
       document.body.classList.remove('land');
       document.body.classList.remove('force-land');
       document.body.classList.add('table-portrait');
+      portTimers.forEach(clearTimeout);
+      portTimers = [];
+      [200, 700, 1500, 3000].forEach(function (d) {
+        portTimers.push(setTimeout(function () {
+          if (!wantPortrait()) return;                 // 用户已改回横屏偏好，不再纠正
+          if (document.body.classList.contains('land') ||
+              !document.body.classList.contains('table-portrait')) {
+            lock('portrait');
+            immersive(false);
+            document.body.classList.remove('land');
+            document.body.classList.remove('force-land');
+            document.body.classList.add('table-portrait');
+          }
+        }, d));
+      });
     }
     /* 进入牌桌时按偏好决定朝向 */
     function applyTable() { if (wantPortrait()) portrait(); else landscape(); }
@@ -132,25 +151,47 @@ window.App = (function () {
     });
   }
 
+  /* 保存目录：用户可挑一个，原生存到对应公共目录并通知媒体扫描，
+     这样系统「文件管理 / 相册」能立刻看到，也不会存成识别不了的无类型文件 */
+  var SAVE_DIRS = [
+    ['DOWNLOAD', '\u4e0b\u8f7d\u76ee\u5f55'],
+    ['PICTURES', '\u76f8\u518c (Pictures)'],
+    ['DCIM', '\u76f8\u673a (DCIM)'],
+    ['MOVIES', '\u7535\u5f71 (Movies)'],
+    ['MUSIC', '\u97f3\u4e50 (Music)'],
+    ['DOCUMENTS', '\u6587\u6863 (Documents)']
+  ];
   function saveToDevice(url, name) {
     url = String(url || '');
-    if (!url) return App.toast('文件地址为空');
+    if (!url) return toast('文件地址为空');
     var u = url.indexOf('dl=1') >= 0 ? url : (url + (url.indexOf('?') >= 0 ? '&' : '?') + 'dl=1');
     var fn = String(name || 'file').replace(/[\\/:*?"<>|]/g, '_');
-    if (window.DDZNative && typeof window.DDZNative.saveFile === 'function') {
-      var r = window.DDZNative.saveFile(u, fn);
-      App.toast(String(r).indexOf('ok') === 0 ? '已保存到下载目录' : ('保存失败：' + r));
-      return;
+    /* 只有一个可选目录时不弹窗，直接存（手机上的原生桥接） */
+    if (!(window.DDZNative && typeof window.DDZNative.saveFile === 'function')) {
+      return fallbackSave(u, fn);
     }
+    var isVid = /\.(mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(fn);
+    var dflt = isVid ? 'MOVIES' : (/^voice|\.(m4a|aac|mp3|wav|ogg|amr)$/i.test(fn) ? 'MUSIC' : (/^image|\.(png|jpe?g|gif|webp|bmp)$/i.test(fn) ? 'PICTURES' : 'DOWNLOAD'));
+    sheet(SAVE_DIRS.map(function (d) {
+      var tag = d[0] === dflt ? '  \uff08\u63a8\u8350\uff09' : '';
+      return ['\u2b07 ' + d[1] + tag, function () { doSave(u, fn, d[0], d[1]); }];
+    }));
+  }
+  function doSave(u, fn, dir, label) {
+    var r = '';
+    try { r = window.DDZNative.saveFile(u, fn, dir); } catch (e) { r = 'error:' + (e.message || ''); }
+    toast(String(r).indexOf('ok') === 0 ? ('\u5df2\u4fdd\u5b58\u5230 ' + label) : ('\u4fdd\u5b58\u5931\u8d25\uff1a' + r));
+  }
+  function fallbackSave(u, fn) {
     try {
       var a = document.createElement('a');
       a.href = u; a.download = fn; a.target = '_blank'; a.rel = 'noopener';
       document.body.appendChild(a); a.click();
       setTimeout(function () { a.remove(); }, 1500);
-      App.toast('已开始下载：' + fn);
+      toast('\u5df2\u5f00\u59cb\u4e0b\u8f7d\uff1a' + fn);
     } catch (e) {
-      try { window.open(u, '_blank'); App.toast('已在新窗口打开，长按可保存'); }
-      catch (x) { App.toast('保存失败'); }
+      try { window.open(u, '_blank'); toast('\u5df2\u5728\u65b0\u7a97\u53e3\u6253\u5f00\uff0c\u957f\u6309\u53ef\u4fdd\u5b58'); }
+      catch (x) { toast('\u4fdd\u5b58\u5931\u8d25'); }
     }
   }
 
@@ -169,9 +210,15 @@ window.App = (function () {
       '<div class="vload" id="vl">\u6b63\u5728\u52a0\u8f7d\u2026</div>' +
       '<div class="vstage" id="vstage"></div>' +
       '<div class="vzoom" id="vzoom" style="display:none">1.0\u00d7</div>' +
+      /* 视频控制条：放在视频下侧（原来是屏幕最底部，手指够不着） */
+      '<div class="vctl" id="vctl">' +
+      '<button class="vp" id="vp-play">\u23f8</button>' +
+      '<div class="vseek" id="vp-seek"><i></i></div>' +
+      '<div class="vt" id="vp-time">0:00 / 0:00</div>' +
+      '<button class="vp" id="vp-full">\u26f6</button>' +
+      '</div>' +
       '<div class="vbar">' +
       '<button class="vb" data-a="save">\u2b07 \u4fdd\u5b58\u5230\u624b\u673a</button>' +
-      (isVideo ? '<button class="vb" data-a="fs">\u26f6 \u5168\u5c4f</button>' : '') +
       '<button class="vb ghost" data-a="close">\u5173\u95ed</button>' +
       '</div>' +
       '<div class="vmsg" id="vmsg"></div>';
@@ -193,37 +240,6 @@ window.App = (function () {
     v.querySelector('[data-a="close"]').onclick = close;
     v.querySelector('[data-a="save"]').onclick = function () {
       saveToDevice(src, name || (isVideo ? 'video.mp4' : 'image.jpg'));
-    };
-    /* 全屏：安卓 WebView 的原生 controls 里没有全屏按钮，只能自己加一个。
-       优先 requestFullscreen（可锁横屏），iOS 走 video.webkitEnterFullscreen。 */
-    var fsb2 = v.querySelector('[data-a="fs"]');
-    if (fsb2) fsb2.onclick = function () {
-      var t = mediaEl || stage || v;
-      try {
-        var cur = document.fullscreenElement || document.webkitFullscreenElement;
-        if (!cur) {
-          if (t.requestFullscreen) t.requestFullscreen();
-          else if (t.webkitRequestFullscreen) t.webkitRequestFullscreen();
-          else if (mediaEl && mediaEl.webkitEnterFullscreen) mediaEl.webkitEnterFullscreen();
-          else if (mediaEl && mediaEl.enterFullscreen) mediaEl.enterFullscreen();
-          else {
-            var m2 = v.querySelector('#vmsg');
-            if (m2) m2.textContent = '\u8be5\u673a\u578b\u4e0d\u652f\u6301\u5168\u5c4f\uff0c\u53ef\u76f4\u63a5\u6a2a\u5c4f\u89c2\u770b';
-            return;
-          }
-          /* 全屏时顺便锁横屏，视频才是正的 */
-          try {
-            if (window.ScreenOrientation && ScreenOrientation.lock) ScreenOrientation.lock('landscape');
-            else if (window.screen && screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape');
-          } catch (e3) { }
-        } else {
-          if (document.exitFullscreen) document.exitFullscreen();
-          else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-        }
-      } catch (e) {
-        var m3 = v.querySelector('#vmsg');
-        if (m3) m3.textContent = '\u5168\u5c4f\u5931\u8d25\uff0c\u53ef\u76f4\u63a5\u6a2a\u5c4f\u89c2\u770b';
-      }
     };
     document.getElementById('app').appendChild(v);
     var stage = v.querySelector('#vstage');
@@ -269,13 +285,14 @@ window.App = (function () {
         sc = Math.max(1, Math.min(6, sc + (e.deltaY < 0 ? 0.25 : -0.25))); apply();
       }, { passive: false });
     }
+    function drop() { var l = v.querySelector('.vload'); if (l) l.remove(); }
     function put(url, note) {
-      var old = v.querySelector('.vload'); if (old) old.remove();
+      drop();
       var el = document.createElement(isVideo ? 'video' : 'img');
       el.className = 'vmedia';
       el.src = url;
       if (isVideo) {
-        el.controls = true; el.autoplay = true;
+        el.controls = true; el.autoplay = true; el.preload = 'auto';
         /* 没有 playsinline，安卓 WebView 会把视频交给系统播放器接管（黑屏/只有声音） */
         el.setAttribute('playsinline', ''); el.setAttribute('webkit-playsinline', '');
         el.style.background = '#000';
@@ -287,6 +304,63 @@ window.App = (function () {
       mediaEl = el;
       try { stage.appendChild(el); } catch (e) { v.insertBefore(el, v.querySelector('.vbar')); }
       bindZoom(el);
+      if (isVideo) bindVideoCtl(el);
+    }
+
+    /* 视频控制条：进度/播放暂停放在「视频下侧」，另外补一个全屏按钮
+       （安卓 WebView 的原生控制条里没有全屏，之前点了没反应就是压根没这个按钮） */
+    function mmss(s) {
+      s = Math.max(0, Math.floor(s || 0));
+      return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    }
+    function bindVideoCtl(el) {
+      var ctl = v.querySelector('#vctl'); if (!ctl) return;
+      ctl.classList.add('on');
+      var bp = v.querySelector('#vp-play'), seek = v.querySelector('#vp-seek');
+      var bar = seek ? seek.querySelector('i') : null, tm = v.querySelector('#vp-time');
+      var bf = v.querySelector('#vp-full');
+      if (bp) bp.onclick = function () {
+        if (el.paused) { el.play(); bp.textContent = '\u23f8'; }
+        else { el.pause(); bp.textContent = '\u25b6'; }
+      };
+      el.addEventListener('play', function () { if (bp) bp.textContent = '\u23f8'; });
+      el.addEventListener('pause', function () { if (bp) bp.textContent = '\u25b6'; });
+      el.addEventListener('timeupdate', function () {
+        if (!el.duration) return;
+        if (bar) bar.style.width = (el.currentTime / el.duration * 100) + '%';
+        if (tm) tm.textContent = mmss(el.currentTime) + ' / ' + mmss(el.duration);
+      });
+      el.addEventListener('loadedmetadata', function () {
+        if (tm) tm.textContent = '0:00 / ' + mmss(el.duration);
+        /* 拿到元数据就能播了，不用等整包下载完 —— 这是「启动慢」的根因 */
+        var p = el.play();
+        if (p && p.catch) p.catch(function () { });
+      });
+      if (seek) seek.onclick = function (e) {
+        if (!el.duration) return;
+        var r = seek.getBoundingClientRect();
+        el.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * el.duration;
+      };
+      if (bf) bf.onclick = function () { goFull(el); };
+    }
+    /* 全屏：优先标准 API + 锁横屏，iOS 走 webkitEnterFullscreen */
+    function goFull(el) {
+      try {
+        if (el.requestFullscreen) { el.requestFullscreen(); }
+        else if (el.webkitEnterFullscreen) { el.webkitEnterFullscreen(); }
+        else if (el.webkitRequestFullscreen) { el.webkitRequestFullscreen(); }
+        else { var m = v.querySelector('#vmsg'); if (m) m.textContent = '\u672c\u673a\u4e0d\u652f\u6301\u5168\u5c4f'; return; }
+        try { if (window.Orient && Orient.landscape) Orient.landscape(); } catch (e) { }
+      } catch (e) {
+        var m2 = v.querySelector('#vmsg'); if (m2) m2.textContent = '\u5168\u5c4f\u5931\u8d25\uff1a' + (e.message || '');
+      }
+    }
+
+    /* 视频走直链（浏览器发 Range 请求，边下边播，不用等整包）；
+       图片走 blob（绕开 Content-Type 被 WebView 拒收的老问题）。 */
+    if (isVideo) {
+      put(src, '\u65e0\u6cd5\u64ad\u653e\u8be5\u89c6\u9891\uff0c\u53ef\u7528\u300c\u4fdd\u5b58\u5230\u624b\u673a\u300d\u4e0b\u8f7d\u540e\u67e5\u770b');
+      return;
     }
     try {
       fetch(src, { credentials: 'same-origin' }).then(function (r) {

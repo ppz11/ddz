@@ -380,7 +380,10 @@ public class MainActivity extends BridgeActivity {
                 public void run() {
                     try {
                         if ("landscape".equals(o)) setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
-                        else setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+                        /* 竖屏用「不带 SENSOR」的 PORTRAIT：硬锁竖屏，不跟随传感器。
+                           之前用 SENSOR_PORTRAIT，用户点「竖屏」后手机稍微一斜/传感器一变
+                           就被系统拉回横屏，表现为「点了竖屏又自动切回横屏」。 */
+                        else setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
                     } catch (Exception ignored) { }
                 }
             });
@@ -504,8 +507,41 @@ public class MainActivity extends BridgeActivity {
          * 走系统 DownloadManager 落到公共「下载」目录，无需存储权限（Android 10+ 亦可用）。
          * 返回 "ok" 或 "error:原因"。
          */
+        /* JS 传来的目录名 → 系统公共目录名；认不出来的退回 Downloads */
+        private String pubDir(String d) {
+            String k = (d == null ? "" : d.trim().toUpperCase());
+            if ("PICTURES".equals(k)) return android.os.Environment.DIRECTORY_PICTURES;
+            if ("DCIM".equals(k)) return android.os.Environment.DIRECTORY_DCIM;
+            if ("MOVIES".equals(k)) return android.os.Environment.DIRECTORY_MOVIES;
+            if ("MUSIC".equals(k)) return android.os.Environment.DIRECTORY_MUSIC;
+            if ("DOCUMENTS".equals(k)) return android.os.Environment.DIRECTORY_DOCUMENTS;
+            return android.os.Environment.DIRECTORY_DOWNLOADS;
+        }
+
         @JavascriptInterface
         public String saveFile(final String url, final String name) {
+            return saveFile(url, name, "DOWNLOAD");
+        }
+
+        /* 按扩展名猜 MIME：不设置的话 DownloadManager 存出来的文件没有类型，
+           系统「文件管理」认不出来，点开也播不了。 */
+        private String mimeOf(String fn) {
+            String n = (fn == null ? "" : fn).toLowerCase();
+            if (n.endsWith(".png")) return "image/png";
+            if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+            if (n.endsWith(".gif")) return "image/gif";
+            if (n.endsWith(".webp")) return "image/webp";
+            if (n.endsWith(".mp4") || n.endsWith(".m4v") || n.endsWith(".mov")) return "video/mp4";
+            if (n.endsWith(".webm")) return "video/webm";
+            if (n.endsWith(".m4a") || n.endsWith(".aac")) return "audio/mp4";
+            if (n.endsWith(".mp3")) return "audio/mpeg";
+            if (n.endsWith(".wav")) return "audio/wav";
+            if (n.endsWith(".ogg")) return "audio/ogg";
+            if (n.endsWith(".amr")) return "audio/amr";
+            return "application/octet-stream";
+        }
+
+        public String saveFile(final String url, final String name, final String dir) {
             if (url == null || url.length() == 0) return "error:地址为空";
             try {
                 android.app.DownloadManager dm = (android.app.DownloadManager) getSystemService(android.content.Context.DOWNLOAD_SERVICE);
@@ -517,12 +553,12 @@ public class MainActivity extends BridgeActivity {
                 rq.setTitle(fn);
                 rq.setDescription("PP斗地主");
                 rq.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                rq.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fn);
+                /* 必须显式给 MIME，否则存出来的文件没有类型：
+                   系统「文件管理」里显示为未知文件，点开也播不了。 */
+                rq.setMimeType(mimeOf(fn));
                 rq.allowScanningByMediaScanner();
-                // 服务器是 http，需要明确放行明文（Android 9+ 默认禁止）
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                    rq.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fn);
-                }
+                rq.setDestinationInExternalPublicDir(pubDir(dir), fn);
+                // 服务器是 http，Android 9+ 默认禁止明文，已在 network_security_config 放行
                 dm.enqueue(rq);
                 return "ok";
             } catch (Exception e) {

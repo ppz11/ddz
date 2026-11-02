@@ -118,6 +118,13 @@ input,textarea{font-family:inherit}
 .tseat .rl{font-size:10px;padding:1px 6px;border-radius:8px;background:var(--red);color:#fff;margin-left:5px}
 .tseat .rl.f,.tseat .rl.farmer{background:linear-gradient(180deg,#7fd6a0,#3f9c6c);color:#04281f}
 .tseat .rl.lord{background:linear-gradient(180deg,#f3c96b,#c9962f);color:#3a2600}
+/* 叫分 / 不叫 / 加倍浮标：跟出牌的「过」字一个作用，
+   让叫分阶段也能一眼看出谁叫了几分、谁加了倍（以前只有语音，看不见）。 */
+.ts-i .btagm{display:inline-block;margin-top:3px;padding:2px 7px;border-radius:8px;
+  font-size:calc(10px * var(--k,1));font-weight:700;line-height:1.35;white-space:nowrap;
+  background:rgba(243,201,107,.18);border:1px solid rgba(243,201,107,.5);color:#f3c96b}
+.ts-i .btagm.dbl{background:rgba(231,76,60,.18);border-color:rgba(231,76,60,.55);color:#ff8b7a}
+.ts-i .btagm.wait{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.22);color:var(--sub);font-weight:600}
 .tseat.right .info{text-align:right}
 .tseat .clock{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;
   background:conic-gradient(var(--gold) var(--p,0%),rgba(255,255,255,.14) 0);position:relative}
@@ -603,11 +610,17 @@ body.land .tablevoice{bottom:calc(108px + var(--safe-b) + 8px)}
 .waitbox{margin:0 14px;padding:16px;border-radius:16px;text-align:center;background:rgba(0,0,0,.25);border:1px solid var(--line);
   max-height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .waitbox .num{font-size:30px;font-weight:800;color:var(--gold);letter-spacing:5px;margin:6px 0}
-/* 房间号 + 复制按钮：一行居中，号再长也不会被裁掉 */
+/* 房间号 + 复制按钮：一行居中，号再长也不会被裁掉。
+   ⚠ 关键：复制按钮带 .btn（自带 width:100%），在 flex 行里会把房间号挤成 0 宽，
+   表现就是「房间号不显示」。所以两边都要显式锁死尺寸：rid 不能被压缩，
+   按钮不能用 100% 宽。 */
 .waitbox .ridrow{display:flex;align-items:center;justify-content:center;gap:8px;margin:6px 0;flex-wrap:nowrap}
-.waitbox .rid{font-size:24px;font-weight:800;color:var(--gold);letter-spacing:3px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:70%}
-.waitbox .ridrow .btn{flex:0 0 auto;padding:4px 10px;font-size:11px}
+.waitbox .rid{flex:0 0 auto;width:auto;min-width:0;
+  font-size:24px;font-weight:800;color:var(--gold);letter-spacing:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70%}
+.waitbox .ridrow .btn{flex:0 0 auto;width:auto;min-width:auto;max-width:none;padding:4px 10px;font-size:11px;white-space:nowrap;line-height:1.4}
+/* 等待房间里的提示：不跟下面的按钮抢高度，也不会被按钮压住 */
+.waitbox .wbtip{font-size:11px;color:var(--sub);margin-top:8px;line-height:1.5;position:relative;z-index:1}
 /* 横屏牌桌中间区域高度有限：等待房间压缩留白，保证房间号完整可见 */
 body.land .waitbox{padding:8px 12px;margin:0 8px}
 body.land .waitbox .rid{font-size:20px;letter-spacing:2px}
@@ -1171,7 +1184,11 @@ body.force-land #app{
 #page-play .acts{gap:calc(7px * var(--k,1));padding:calc(4px * var(--k,1)) 10px calc(6px + var(--safe-b));justify-content:center;align-items:center}
 #page-play .acts .btn{flex:0 0 auto;min-width:calc(58px * var(--k,1));max-width:calc(92px * var(--k,1));padding:calc(8px * var(--k,1)) calc(10px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;border-radius:calc(10px * var(--k,1))}
 #page-play .bidwrap{gap:calc(6px * var(--k,1));padding:calc(4px * var(--k,1)) 10px calc(6px + var(--safe-b));justify-content:center;align-items:center;flex-wrap:wrap}
-#page-play .bidwrap .btn{flex:0 0 auto;min-width:calc(54px * var(--k,1));max-width:calc(84px * var(--k,1));padding:calc(8px * var(--k,1)) calc(8px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;border-radius:calc(10px * var(--k,1))}
+#page-play .bidwrap .btn{flex:0 0 auto;width:auto;min-width:calc(54px * var(--k,1));max-width:none;
+  padding:calc(8px * var(--k,1)) calc(9px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;
+  border-radius:calc(10px * var(--k,1));white-space:nowrap;height:auto;min-height:calc(30px * var(--k,1));display:inline-flex;align-items:center;justify-content:center}
+/* 牌桌按钮统一高度：文案长短不同也不会一行里高低不齐 */
+#page-play .bidwrap{align-items:center}
 #page-play .handwrap{padding:0 calc(4px * var(--k,1))}
 /* 牌桌中央：倍数 / 让牌数（两人场时「我」在右侧，底部无个人信息行） */
 #page-play .cinf{
@@ -1241,7 +1258,11 @@ body.force-land #app{
 #page-play .myinfo .av{width:calc(24px * var(--k,1));height:calc(24px * var(--k,1))}
 #page-play .acts{gap:calc(7px * var(--k,1));padding:calc(4px * var(--k,1)) 10px calc(6px + var(--safe-b));justify-content:center;align-items:center}
 #page-play .acts .btn{flex:0 0 auto;min-width:calc(58px * var(--k,1));max-width:calc(92px * var(--k,1));padding:calc(8px * var(--k,1)) calc(10px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;border-radius:calc(10px * var(--k,1))}
-#page-play .bidwrap .btn{flex:0 0 auto;min-width:calc(54px * var(--k,1));max-width:calc(84px * var(--k,1));padding:calc(8px * var(--k,1)) calc(8px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;border-radius:calc(10px * var(--k,1))}
+#page-play .bidwrap .btn{flex:0 0 auto;width:auto;min-width:calc(54px * var(--k,1));max-width:none;
+  padding:calc(8px * var(--k,1)) calc(9px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;
+  border-radius:calc(10px * var(--k,1));white-space:nowrap;height:auto;min-height:calc(30px * var(--k,1));display:inline-flex;align-items:center;justify-content:center}
+/* 牌桌按钮统一高度：文案长短不同也不会一行里高低不齐 */
+#page-play .bidwrap{align-items:center}
 
 /* ==================================================================
    牌桌 v10：网格分区，保证每块都有位置，不会再「看不到牌」
@@ -1292,7 +1313,11 @@ body.force-land #app{
 #page-play .acts{gap:calc(7px * var(--k,1));padding:calc(4px * var(--k,1)) 10px calc(6px + var(--safe-b));justify-content:center;align-items:center}
 #page-play .acts .btn{flex:0 0 auto;min-width:calc(58px * var(--k,1));max-width:calc(92px * var(--k,1));padding:calc(8px * var(--k,1)) calc(10px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;border-radius:calc(10px * var(--k,1))}
 #page-play .bidwrap{gap:calc(6px * var(--k,1));padding:calc(4px * var(--k,1)) 10px calc(6px + var(--safe-b));justify-content:center;align-items:center;flex-wrap:wrap}
-#page-play .bidwrap .btn{flex:0 0 auto;min-width:calc(54px * var(--k,1));max-width:calc(84px * var(--k,1));padding:calc(8px * var(--k,1)) calc(8px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;border-radius:calc(10px * var(--k,1))}
+#page-play .bidwrap .btn{flex:0 0 auto;width:auto;min-width:calc(54px * var(--k,1));max-width:none;
+  padding:calc(8px * var(--k,1)) calc(9px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;
+  border-radius:calc(10px * var(--k,1));white-space:nowrap;height:auto;min-height:calc(30px * var(--k,1));display:inline-flex;align-items:center;justify-content:center}
+/* 牌桌按钮统一高度：文案长短不同也不会一行里高低不齐 */
+#page-play .bidwrap{align-items:center}
 #page-play .myplayed{min-height:calc(18px * var(--k,1));padding:0 6px}
 /* 长按删除：禁掉系统「复制/选择」浮层，否则安卓上长按永远触发不了 */
 .msg,.citem,.sitem,.conv{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
@@ -1305,7 +1330,11 @@ body.force-land #app{
 #page-play .myinfo .cnt{font-size:calc(8px * var(--k,1))}
 #page-play .myinfo .av{width:calc(22px * var(--k,1));height:calc(22px * var(--k,1))}
 #page-play .acts .btn{flex:0 0 auto;min-width:calc(58px * var(--k,1));max-width:calc(92px * var(--k,1));padding:calc(8px * var(--k,1)) calc(10px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;border-radius:calc(10px * var(--k,1))}
-#page-play .bidwrap .btn{flex:0 0 auto;min-width:calc(54px * var(--k,1));max-width:calc(84px * var(--k,1));padding:calc(8px * var(--k,1)) calc(8px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;border-radius:calc(10px * var(--k,1))}
+#page-play .bidwrap .btn{flex:0 0 auto;width:auto;min-width:calc(54px * var(--k,1));max-width:none;
+  padding:calc(8px * var(--k,1)) calc(9px * var(--k,1));font-size:calc(12px * var(--k,1));line-height:1.3;
+  border-radius:calc(10px * var(--k,1));white-space:nowrap;height:auto;min-height:calc(30px * var(--k,1));display:inline-flex;align-items:center;justify-content:center}
+/* 牌桌按钮统一高度：文案长短不同也不会一行里高低不齐 */
+#page-play .bidwrap{align-items:center}
 #page-play .acts{gap:calc(7px * var(--k,1));padding:calc(4px * var(--k,1)) 10px calc(6px + var(--safe-b));justify-content:center;align-items:center}
 
 /* ==================================================================
@@ -1394,15 +1423,17 @@ body.land .tablerail{bottom:auto}
 
 /* 快捷表情面板：分类标签 + 小尺寸动图预览 */
 .quick-panel .sp-tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}
-.quick-panel .sp-tab{font-size:10px;padding:3px 7px;border-radius:8px;cursor:pointer;
-  background:rgba(255,255,255,.08);color:var(--sub);max-width:76px;overflow:hidden;white-space:nowrap}
+.quick-panel .sp-tab{font-size:11px;padding:4px 8px;border-radius:8px;cursor:pointer;
+  background:rgba(255,255,255,.08);color:var(--sub)}
 .quick-panel .sp-tab.on{background:rgba(80,200,140,.28);color:#dff5ea}
-.quick-panel .sp-grid{display:flex;flex-wrap:wrap;gap:4px;max-height:150px;overflow-y:auto;
-  -webkit-overflow-scrolling:touch}
-.quick-panel .sp-e{width:30px;height:30px;line-height:30px;font-size:16px;text-align:center;
-  border-radius:8px;background:rgba(255,255,255,.08);cursor:pointer;padding:0;border:none;color:#fff}
-.quick-panel .sp-i{width:34px;height:34px;padding:2px;border-radius:8px;cursor:pointer;
-  background:rgba(255,255,255,.08);border:none;overflow:hidden;display:flex;align-items:center;justify-content:center}
+/* 快捷表情面板放大：格子从 34px 提到 46px，一屏能看到的表情更多 */
+.quick-panel.stick{width:56%;max-width:300px}
+.quick-panel .sp-grid{display:flex;flex-wrap:wrap;gap:5px;max-height:210px;overflow-y:auto;
+  -webkit-overflow-scrolling:touch;align-content:flex-start}
+.quick-panel .sp-e{width:42px;height:42px;line-height:42px;font-size:26px;text-align:center;
+  border-radius:9px;background:rgba(255,255,255,.06);cursor:pointer}
+.quick-panel .sp-i{width:46px;height:46px;padding:3px;border-radius:9px;cursor:pointer;
+  background:rgba(255,255,255,.06);overflow:hidden}
 .quick-panel .sp-i img{max-width:100%;max-height:100%;object-fit:contain;display:block}
 .quick-panel .sp-i:active{background:rgba(255,255,255,.18)}
 .float-say .fl-img{height:30px;width:auto;vertical-align:middle}
@@ -1448,14 +1479,37 @@ body.land .tablerail{bottom:auto}
   #page-play .seatcol .pcards .pc .pt{font-size:calc(19px * var(--k,1))}
 }
 
-/* ===== v32 查看器：视频必须有确定尺寸，否则部分手机只有声音没画面 ===== */
-.viewer .vstage{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+/* ===== v34 查看器：竖排三段（顶部按钮 / 中间舞台 / 底部操作） =====
+ * 关键修复：vstage 原来是 position:absolute;inset:0，铺满全屏且排在 .x 之后，
+ * 于是把右上角的 ✕ 整个盖住 —— 点了没反应就是这个原因（elementFromPoint 命中 vstage）。
+ * 现在改为 flex 列布局里的中间一段，不再压住任何按钮。 */
+/* 必须显式 stretch：上面 432 行的旧规则带 align-items:center，
+   不覆盖的话子项都按内容宽度居中，控制条和按钮栏缩成一小条。 */
+.viewer{position:absolute;inset:0;z-index:95;background:#000;display:flex;flex-direction:column;
+  align-items:stretch;justify-content:flex-start}
+.viewer .x{z-index:20}
+.viewer .vbar{z-index:20;position:relative;bottom:auto;left:auto;right:auto;padding:10px 14px calc(12px + var(--safe-b))}
+.viewer .vmsg{z-index:20;position:relative;bottom:auto;color:var(--sub);font-size:11px;text-align:center;padding:0 14px 6px;min-height:14px}
+/* 舞台只占中间一段：视频有确定尺寸（不会只有声音没画面），
+   原生控制条自然落在「视频下侧」而不是屏幕最底部。 */
+.viewer .vstage{flex:1 1 auto;min-height:0;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:calc(var(--safe-t) + 52px) 0 0}
 .viewer video.vmedia{width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;
   background:#000;display:block}
 .viewer img.vmedia{max-width:100%;max-height:100%;display:block;touch-action:none;
   transform-origin:center center;transition:transform .06s linear;will-change:transform}
 .viewer .vzoom{position:absolute;top:calc(var(--safe-t) + 14px);left:14px;background:rgba(0,0,0,.5);
-  color:#f3c96b;font-size:12px;padding:4px 10px;border-radius:10px;z-index:6;pointer-events:none}
+  color:#f3c96b;font-size:12px;padding:4px 10px;border-radius:10px;z-index:22;pointer-events:none}
+.viewer .vload{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:22;
+  color:#cfd8d5;font-size:13px}
+/* 视频下方的自定义控制条：播放/暂停、进度、全屏（安卓原生控制条里没有全屏按钮） */
+.viewer .vctl{flex:0 0 auto;display:none;align-items:center;gap:8px;padding:6px 12px 2px;z-index:20}
+.viewer .vctl.on{display:flex}
+.viewer .vctl .vp{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:0;
+  background:rgba(255,255,255,.16);color:#fff;font-size:14px;display:grid;place-items:center;cursor:pointer}
+.viewer .vctl .vseek{flex:1 1 auto;min-width:0;height:4px;border-radius:3px;background:rgba(255,255,255,.22);
+  position:relative;cursor:pointer}
+.viewer .vctl .vseek i{position:absolute;left:0;top:0;bottom:0;background:var(--jade);border-radius:3px;width:0}
+.viewer .vctl .vt{flex:0 0 auto;font-size:11px;color:#9fb0ac;min-width:70px;text-align:center}
 /* ===== v32 添加好友：输入框大、按钮小 ===== */
 .frbox .fr-addrow{gap:8px}
 .frbox .fr-addrow input{flex:1 1 auto;min-width:0;margin:0;padding:12px 14px;font-size:16px;height:50px;border-radius:12px}

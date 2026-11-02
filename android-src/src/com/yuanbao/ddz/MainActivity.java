@@ -187,7 +187,8 @@ public class MainActivity extends Activity {
                         if ("landscape".equals(o)) {
                             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
                         } else {
-                            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+                            /* 硬锁竖屏（不带 SENSOR），避免传感器把用户手动选的竖屏又拉回横屏 */
+                            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
                         }
                     } catch (Exception ignored) { }
                 }

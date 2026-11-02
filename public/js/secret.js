@@ -107,12 +107,7 @@ window.Secret = (function () {
         for (var i = msgs.length - 1; i >= 0 && i >= msgs.length - 12; i--) {
           var x = msgs[i]; if (!x) continue;
           if ((nm.id && String(x.id) === String(nm.id)) ||
-              (x.ts === nm.ts && x.kind === nm.kind && String(x.from) === String(nm.from)) ||
-              /* 补一条：同一人 + 同类型 + 同内容 + 2.5 秒内 → 就是被连发了两次，只显示一条。
-                 注意必须比对 from，否则会把测试助手的回显误杀掉。 */
-              (String(x.from) === String(nm.from) && x.kind === nm.kind &&
-               String(x.text || '') === String(nm.text || '') && String(x.url || '') === String(nm.url || '') &&
-               Math.abs((x.ts || 0) - (nm.ts || 0)) < 2500)) { dup = true; break; }
+              (x.ts === nm.ts && x.kind === nm.kind && String(x.from) === String(nm.from))) { dup = true; break; }
         }
         if (!dup) { msgs.push(nm); renderThread(); }
         Sfx.msg();
@@ -1196,23 +1191,7 @@ window.Secret = (function () {
      这里先把消息缓存下来，重新拉取会话后自动补发一次 —— 否则用户看到的
      就是「选完图片点发送 → 退回主界面 → 发送失败」，完全不知道发生了什么。 */
   var pending = null;
-  /* 防重复发送：手指抬起后手机还会补一组模拟鼠标事件，录音/表情会被连发两次。
-     规则：语音 0.9 秒内只发一次（双触发间隔通常只有几十毫秒，正常连录两条远大于此）；
-     其余完全相同的内容 0.7 秒内只发一次。 */
-  var _lsSig = '', _lsT = 0, _lsVoiceT = 0;
-  function dupSend(obj) {
-    var now = Date.now();
-    if (obj && obj.kind === 'voice') {
-      if (_lsVoiceT && now - _lsVoiceT < 900) return true;
-      _lsVoiceT = now; return false;
-    }
-    var sig = '';
-    try { sig = JSON.stringify(obj || {}); } catch (e) { sig = String(now); }
-    if (sig && sig === _lsSig && now - _lsT < 700) return true;
-    _lsSig = sig; _lsT = now; return false;
-  }
   function send(obj) {
-    if (dupSend(obj)) { try { App.toast('已发送'); } catch (e) { } return; }
     if (!curRid) {
       pending = obj;
       App.toast('正在恢复会话…');
