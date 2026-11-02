@@ -1514,3 +1514,104 @@ body.land .tablerail{bottom:auto}
 .frbox .fr-addrow{gap:8px}
 .frbox .fr-addrow input{flex:1 1 auto;min-width:0;margin:0;padding:12px 14px;font-size:16px;height:50px;border-radius:12px}
 .frbox .fr-addrow .btn{flex:0 0 54px;height:50px;padding:0 6px;font-size:13px;border-radius:12px;min-width:0}
+
+
+/* ==================================================================
+   v36 覆盖层：9 张截图反馈的界面调整（放最后，优先级最高）
+   ================================================================== */
+
+/* ① 保存：不再弹目录选择框；查看器关闭按钮永远在最上层 */
+.viewer{z-index:120!important}
+.viewer .x{z-index:130!important;pointer-events:auto!important}
+.viewer .vstage{z-index:1;pointer-events:auto}
+.viewer .vctl{z-index:121!important}
+.viewer .vbar{z-index:122!important}
+.viewer .vmsg{z-index:122!important}
+
+/* ⑨ 两条进度条合并成一条：原生 controls 已关，自绘条紧贴视频下侧 */
+.viewer .vctl.on{position:relative;display:flex;align-items:center;gap:10px;
+  width:min(92%,720px);margin:10px auto 0;padding:8px 12px;
+  background:rgba(255,255,255,.07);border-radius:14px}
+.viewer .vseek{flex:1;height:6px;border-radius:3px;background:rgba(255,255,255,.22);
+  position:relative;cursor:pointer}
+.viewer .vseek i{display:block;height:100%;width:0;border-radius:3px;background:var(--jade,#2fd3a5)}
+.viewer .vt{font-size:12px;color:#fff;min-width:88px;text-align:right;font-variant-numeric:tabular-nums}
+.viewer .vp{width:36px;height:36px;border-radius:50%;border:0;background:rgba(255,255,255,.16);
+  color:#fff;font-size:15px;cursor:pointer;flex:0 0 auto}
+.viewer .vmedia{max-height:62vh!important;object-fit:contain}
+.viewer .vbar{bottom:calc(20px + var(--safe-b,0px))!important}
+.viewer .vmsg{bottom:calc(76px + var(--safe-b,0px))!important}
+
+/* ⑤ 竖屏模式去掉：按钮隐藏、牌桌恒定横屏 */
+.orientbtn,.table-portrait,#btn-orient{display:none!important}
+body.table-portrait .table{transform:none!important}
+body.land #page-play{transform:none!important}
+
+/* ⑥ 左上角昵称 / UID 去掉；认输与金币同一行、在金币左侧 */
+#topbar .me{display:none!important}
+#topbar{justify-content:flex-end;min-height:calc(var(--safe-t,0px) + 52px)}
+#topbar .sp{display:none}
+#topbar .coin{order:3;margin-left:8px}
+#btn-resign{position:static!important;order:2;z-index:auto!important;
+  padding:6px 12px;border-radius:12px;font-size:12px;font-weight:700;
+  background:rgba(0,0,0,.35);color:#ffd7d7;border:1px solid rgba(255,120,120,.5)}
+
+/* ⑥ 右侧玩家昵称避开右上角金币 / 认输 */
+.topseats{padding-top:calc(var(--safe-t,0px) + 52px)!important}
+.topseats .ts.right{padding-right:calc(96px + env(safe-area-inset-right,0px))}
+
+/* ⑦ 底牌与叫分上移，靠近金币那一行 */
+.dibar,#bottom-bar,.bottombar{transform:translateY(-14px)}
+
+/* ⑥ 不出 / 提示 / 出牌：紧贴手牌上方，不再悬在屏幕中间 */
+#action-zone{position:absolute;left:0;right:0;z-index:12;
+  bottom:calc(var(--card-h,116px) + 42px);margin:0 auto;pointer-events:none}
+#action-zone .bidwrap{pointer-events:auto;padding:4px 10px;gap:8px;
+  background:rgba(4,26,20,.55);border-radius:16px;width:max-content;max-width:94%;
+  margin:0 auto;backdrop-filter:blur(3px)}
+#action-zone .btn{min-width:78px;max-width:none;padding:8px 14px;font-size:14px}
+
+/* ⑥ 各家出的牌放大一点；身份徽标放大 */
+.played .pc,.pcards .pc,.pmine .pc{transform:scale(1.22);transform-origin:center bottom}
+.played .prow,.pcards{gap:8px}
+.rl,#page-play .seatcol .ts .rl{font-size:14px!important;padding:4px 10px!important}
+
+/* ⑦ 我的头像/昵称/身份：往手牌居中方向靠，不再贴最左 */
+.myinfo{justify-content:center;gap:10px;padding-bottom:2px}
+.myinfo .av{width:34px;height:34px}
+.myinfo .nm{font-size:14px}
+.seatcol.left{transform:translate(26px,54px)}
+
+/* ⑧ 右侧四个快捷按钮图标放大 */
+.tablerail{--rb:52px;--rg:9px}
+.tablerail.compact{--rb:46px;--rg:7px}
+.tablerail.tiny{--rb:40px;--rg:5px}
+.railbtn{font-size:25px!important;
+  border-width:1px;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+.tablerail.grid2{width:calc(2 * var(--rb) + var(--rg))}
+.tablerail.rowmode{width:calc(4 * var(--rb) + 3 * var(--rg))}
+
+/* ⑤ 等待就位：标题不被压住、房号有标签、四个按钮等高 */
+.waitbox{position:relative;z-index:20;transform:translateY(-26px)}
+.waitbox .ridlabel{font-size:11px;color:var(--gold);letter-spacing:2px;margin-top:8px}
+.waitbox .wbtip{margin-top:14px;position:relative;z-index:1;transform:translateY(-4px)}
+#action-zone .bidwrap > .btn{height:38px;line-height:1.2;
+  display:inline-flex;align-items:center;justify-content:center;
+  flex:0 0 auto;min-width:104px;max-width:172px;font-size:13px;white-space:nowrap}
+#page-play .bidwrap{gap:8px}
+
+/* ④ 收藏预览卡 */
+.favthumb{display:block;max-width:100%;max-height:140px;border-radius:10px;
+  border:1px solid rgba(255,255,255,.14);object-fit:cover}
+.favcard{display:flex;align-items:center;gap:12px;padding:8px;
+  background:rgba(255,255,255,.05);border-radius:10px}
+.favprev{width:64px;height:64px;flex:0 0 auto;border-radius:8px;
+  background:rgba(0,0,0,.35);display:grid;place-items:center;
+  font-size:28px;position:relative}
+.favprev .favplay{position:absolute;bottom:4px;right:6px;font-size:12px;color:#fff}
+.favaudio,.favfile,.favloc{background:rgba(243,201,107,.14)}
+.favmeta{font-size:12px;color:var(--txt);word-break:break-all;line-height:1.5}
+
+/* v36b：查看器两条定义合并后仍要保证竖排，且 ✕ 永远可点 */
+.viewer{flex-direction:column!important}
+.viewer .x{z-index:140!important;pointer-events:auto!important}

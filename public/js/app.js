@@ -65,14 +65,10 @@ window.App = (function () {
     function immersive(on) {
       try { if (window.DDZNative && typeof window.DDZNative.setImmersive === 'function') window.DDZNative.setImmersive(!!on); } catch (e) { }
     }
-    /* 牌桌朝向：默认横屏，可手动切成竖屏（记忆在 localStorage） */
-    var TABLE_PREF_KEY = 'ddz.table.portrait';
-    function wantPortrait() {
-      try { return localStorage.getItem(TABLE_PREF_KEY) === '1'; } catch (e) { return false; }
-    }
-    function setWantPortrait(v) {
-      try { localStorage.setItem(TABLE_PREF_KEY, v ? '1' : '0'); } catch (e) { }
-    }
+    /* 牌桌恒定横屏：曾提供「竖屏」手动切换，但国产 ROM 的传感器会立刻把
+       用户选的方向拉回去，反复修都不稳。按需求直接去掉竖屏模式，打牌强制横屏。 */
+    function wantPortrait() { return false; }
+    function setWantPortrait(v) { }
     function landscape() {
       lock('landscape');
       immersive(true);
@@ -83,43 +79,16 @@ window.App = (function () {
         if (document.body.classList.contains('land') && isPortrait()) document.body.classList.add('force-land');
       }, 600);
     }
-    /* 竖屏加固：只调一次 lock，某些 ROM 上会被系统/传感器改回横屏，
-       表现就是「点了竖屏，一眨眼又回到横屏」。这里做多次复查，
-       只要用户偏好仍是竖屏，就在 0.2/0.7/1.5/3 秒各校正一次。 */
-    var portTimers = [];
+    /* 非牌桌页面（大厅/聊天/好友空间）仍是竖屏；牌桌页永远横屏。 */
     function portrait() {
       lock('portrait');
       immersive(false);
       document.body.classList.remove('land');
       document.body.classList.remove('force-land');
-      document.body.classList.add('table-portrait');
-      portTimers.forEach(clearTimeout);
-      portTimers = [];
-      [200, 700, 1500, 3000].forEach(function (d) {
-        portTimers.push(setTimeout(function () {
-          if (!wantPortrait()) return;                 // 用户已改回横屏偏好，不再纠正
-          if (document.body.classList.contains('land') ||
-              !document.body.classList.contains('table-portrait')) {
-            lock('portrait');
-            immersive(false);
-            document.body.classList.remove('land');
-            document.body.classList.remove('force-land');
-            document.body.classList.add('table-portrait');
-          }
-        }, d));
-      });
+      document.body.classList.remove('table-portrait');
     }
-    /* 进入牌桌时按偏好决定朝向 */
-    function applyTable() { if (wantPortrait()) portrait(); else landscape(); }
-    /* 切换：横 ↔ 竖，并把当前牌桌重排一次 */
-    function toggleTable() {
-      var toP = !wantPortrait();
-      setWantPortrait(toP);
-      if (toP) portrait(); else landscape();
-      try { if (window.Game && Game.relayout) setTimeout(function () { Game.relayout(); }, 260); } catch (e) { }
-      try { updateOrientBtn(); } catch (e) { }
-      toast(toP ? '已切换到竖屏' : '已切换到横屏');
-    }
+    function applyTable() { landscape(); }
+    function toggleTable() { landscape(); toast('打牌固定横屏'); }
     function updateOrientBtn() {
       var b = document.getElementById('btn-orient');
       if (!b) return;
@@ -151,36 +120,20 @@ window.App = (function () {
     });
   }
 
-  /* 保存目录：用户可挑一个，原生存到对应公共目录并通知媒体扫描，
-     这样系统「文件管理 / 相册」能立刻看到，也不会存成识别不了的无类型文件 */
-  var SAVE_DIRS = [
-    ['DOWNLOAD', '\u4e0b\u8f7d\u76ee\u5f55'],
-    ['PICTURES', '\u76f8\u518c (Pictures)'],
-    ['DCIM', '\u76f8\u673a (DCIM)'],
-    ['MOVIES', '\u7535\u5f71 (Movies)'],
-    ['MUSIC', '\u97f3\u4e50 (Music)'],
-    ['DOCUMENTS', '\u6587\u6863 (Documents)']
-  ];
+  /* 保存：不再弹「选择目录」——那个弹窗会被播放器盖在下面看不见，
+     而且三参数桥接方法在 WebView 上会报 Method not found。
+     现在统一直接落到系统「下载」目录，并显式带 MIME，文件管理能识别。 */
   function saveToDevice(url, name) {
     url = String(url || '');
     if (!url) return toast('文件地址为空');
     var u = url.indexOf('dl=1') >= 0 ? url : (url + (url.indexOf('?') >= 0 ? '&' : '?') + 'dl=1');
     var fn = String(name || 'file').replace(/[\\/:*?"<>|]/g, '_');
-    /* 只有一个可选目录时不弹窗，直接存（手机上的原生桥接） */
     if (!(window.DDZNative && typeof window.DDZNative.saveFile === 'function')) {
       return fallbackSave(u, fn);
     }
-    var isVid = /\.(mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(fn);
-    var dflt = isVid ? 'MOVIES' : (/^voice|\.(m4a|aac|mp3|wav|ogg|amr)$/i.test(fn) ? 'MUSIC' : (/^image|\.(png|jpe?g|gif|webp|bmp)$/i.test(fn) ? 'PICTURES' : 'DOWNLOAD'));
-    sheet(SAVE_DIRS.map(function (d) {
-      var tag = d[0] === dflt ? '  \uff08\u63a8\u8350\uff09' : '';
-      return ['\u2b07 ' + d[1] + tag, function () { doSave(u, fn, d[0], d[1]); }];
-    }));
-  }
-  function doSave(u, fn, dir, label) {
     var r = '';
-    try { r = window.DDZNative.saveFile(u, fn, dir); } catch (e) { r = 'error:' + (e.message || ''); }
-    toast(String(r).indexOf('ok') === 0 ? ('\u5df2\u4fdd\u5b58\u5230 ' + label) : ('\u4fdd\u5b58\u5931\u8d25\uff1a' + r));
+    try { r = window.DDZNative.saveFile(u, fn); } catch (e) { r = 'error:' + (e.message || ''); }
+    toast(String(r).indexOf('ok') === 0 ? '\u5df2\u4fdd\u5b58\u5230\u4e0b\u8f7d\u76ee\u5f55' : ('\u4fdd\u5b58\u5931\u8d25\uff1a' + r));
   }
   function fallbackSave(u, fn) {
     try {
@@ -292,12 +245,13 @@ window.App = (function () {
       el.className = 'vmedia';
       el.src = url;
       if (isVideo) {
-        el.controls = true; el.autoplay = true; el.preload = 'auto';
+        el.controls = false; el.autoplay = true; el.preload = 'metadata';
         /* 没有 playsinline，安卓 WebView 会把视频交给系统播放器接管（黑屏/只有声音） */
         el.setAttribute('playsinline', ''); el.setAttribute('webkit-playsinline', '');
         el.style.background = '#000';
       }
       el.onerror = function () {
+        if (isVideo && v.__retryVideo) { v.__retryVideo(); return; }
         var m = v.querySelector('#vmsg');
         if (m) m.textContent = note || '\u65e0\u6cd5\u9884\u89c8\u8be5\u6587\u4ef6';
       };
@@ -359,7 +313,31 @@ window.App = (function () {
     /* 视频走直链（浏览器发 Range 请求，边下边播，不用等整包）；
        图片走 blob（绕开 Content-Type 被 WebView 拒收的老问题）。 */
     if (isVideo) {
-      put(src, '\u65e0\u6cd5\u64ad\u653e\u8be5\u89c6\u9891\uff0c\u53ef\u7528\u300c\u4fdd\u5b58\u5230\u624b\u673a\u300d\u4e0b\u8f7d\u540e\u67e5\u770b');
+      /* 直链优先（Range 边下边播）；Webview 对某些编码/Content-Type 会直接 onerror，
+         这时再整包取回转 blob 试一次，两次都失败才提示下载后查看。 */
+      var triedBlob = false;
+      var retry = function () {
+        if (triedBlob) {
+          var m = v.querySelector('#vmsg');
+          if (m) m.textContent = '\u65e0\u6cd5\u64ad\u653e\u8be5\u89c6\u9891\uff0c\u53ef\u7528\u300c\u4fdd\u5b58\u5230\u624b\u673a\u300d\u4e0b\u8f7d\u540e\u67e5\u770b';
+          return;
+        }
+        triedBlob = true;
+        try {
+          fetch(src, { credentials: 'same-origin' }).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.blob();
+          }).then(function (b) {
+            try { if (objUrl) URL.revokeObjectURL(objUrl); } catch (e) { }
+            objUrl = URL.createObjectURL(b);
+            if (mediaEl) { try { mediaEl.pause(); } catch (e) { } mediaEl.remove(); }
+            stage.innerHTML = '';
+            put(objUrl);
+          })['catch'](retry);
+        } catch (e) { retry(); }
+      };
+      v.__retryVideo = retry;
+      put(src);
       return;
     }
     try {
@@ -672,8 +650,7 @@ window.App = (function () {
       Sfx.click(); syncCreateUI(); renderInviteList(); go('create');
     };
     document.getElementById('btn-join').onclick = joinRoom;
-    var ob = document.getElementById('btn-orient');
-    if (ob) ob.onclick = function () { Sfx.click(); Orient.toggleTable(); };
+    /* v36：竖屏按钮已移除，牌桌恒定横屏 */
   }
 
   /* ---------- 创建房间 ---------- */
@@ -1133,18 +1110,7 @@ window.App = (function () {
     document.getElementById('lg-new').onclick = function () { Sfx.click(); reroll(); };
     wire(); boot();
     bindLoginExtra();
-    /* 牌桌朝向切换：用事件委托，任何时机点都有效 */
-    document.addEventListener('click', function (e) {
-      var t = e.target;
-      while (t && t !== document.body) {
-        if (t.id === 'btn-orient') {
-          try { Sfx.click(); } catch (x) { }
-          Orient.toggleTable();
-          return;
-        }
-        t = t.parentNode;
-      }
-    }, false);
+    /* v36：竖屏模式已去掉，不再需要方向切换的事件委托 */
   });
 
   /* 登录页：用 ID 登录（测试号 666888） */

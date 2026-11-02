@@ -379,7 +379,7 @@ public class MainActivity extends BridgeActivity {
                 @Override
                 public void run() {
                     try {
-                        if ("landscape".equals(o)) setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                        if ("landscape".equals(o)) setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
                         /* 竖屏用「不带 SENSOR」的 PORTRAIT：硬锁竖屏，不跟随传感器。
                            之前用 SENSOR_PORTRAIT，用户点「竖屏」后手机稍微一斜/传感器一变
                            就被系统拉回横屏，表现为「点了竖屏又自动切回横屏」。 */
@@ -518,9 +518,12 @@ public class MainActivity extends BridgeActivity {
             return android.os.Environment.DIRECTORY_DOWNLOADS;
         }
 
+        /* WebView 的 JS 桥对「同名重载」支持很差：同时存在 2 参和 3 参的
+           @JavascriptInterface saveFile 时，JS 调用会报 error:Method not found。
+           用户选择「不要目录选择框、直接存下载目录」，这里只保留唯一一个桥接方法。 */
         @JavascriptInterface
         public String saveFile(final String url, final String name) {
-            return saveFile(url, name, "DOWNLOAD");
+            return saveFileTo(url, name, android.os.Environment.DIRECTORY_DOWNLOADS);
         }
 
         /* 按扩展名猜 MIME：不设置的话 DownloadManager 存出来的文件没有类型，
@@ -538,10 +541,20 @@ public class MainActivity extends BridgeActivity {
             if (n.endsWith(".wav")) return "audio/wav";
             if (n.endsWith(".ogg")) return "audio/ogg";
             if (n.endsWith(".amr")) return "audio/amr";
+            if (n.endsWith(".3gp")) return "video/3gpp";
+            if (n.endsWith(".mkv")) return "video/x-matroska";
+            if (n.endsWith(".avi")) return "video/avi";
+            if (n.endsWith(".pdf")) return "application/pdf";
+            if (n.endsWith(".txt") || n.endsWith(".log")) return "text/plain";
+            if (n.endsWith(".zip")) return "application/zip";
+            /* 上传时若丢了扩展名，按名字关键字兜底，避免存成「未知文件」谁都打不开 */
+            if (n.contains("video") || n.startsWith("vid")) return "video/mp4";
+            if (n.contains("image") || n.startsWith("img")) return "image/jpeg";
+            if (n.contains("voice") || n.startsWith("aud")) return "audio/mp4";
             return "application/octet-stream";
         }
 
-        public String saveFile(final String url, final String name, final String dir) {
+        private String saveFileTo(final String url, final String name, final String dir) {
             if (url == null || url.length() == 0) return "error:地址为空";
             try {
                 android.app.DownloadManager dm = (android.app.DownloadManager) getSystemService(android.content.Context.DOWNLOAD_SERVICE);
@@ -557,7 +570,7 @@ public class MainActivity extends BridgeActivity {
                    系统「文件管理」里显示为未知文件，点开也播不了。 */
                 rq.setMimeType(mimeOf(fn));
                 rq.allowScanningByMediaScanner();
-                rq.setDestinationInExternalPublicDir(pubDir(dir), fn);
+                rq.setDestinationInExternalPublicDir(dir, fn);
                 // 服务器是 http，Android 9+ 默认禁止明文，已在 network_security_config 放行
                 dm.enqueue(rq);
                 return "ok";

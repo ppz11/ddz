@@ -224,7 +224,8 @@ window.Sfx = (function () {
   }
 
   function speakText(txt) {
-    if (!on || !voiceOn || !txt) return;
+    /* 音效总开关只管非牌桌场景；牌桌语音归「出牌语音播报」单独管。 */
+    if (!voiceOn || !txt) return;
     /* 原生优先：成功就直接返回，不再走 Web 语音（避免两条路同时出声变成重音） */
     if (nativeTtsReady()) {
       try {
@@ -261,7 +262,7 @@ window.Sfx = (function () {
     setTimeout(function () { speakText(txt); }, 200);
   }
 
-  function announce(info) {
+  function announce(info, cards) {
     /* 出牌/叫分提示音归「出牌语音播报」管。
        以前挂在总音效开关上：关掉音效后打牌时一点声音都没有。 */
     if (!voiceOn) return;
@@ -286,7 +287,9 @@ window.Sfx = (function () {
     if (t === 'pass') { say('过'); return; }
     if (t === 'rocket') { rocketSfx(); say('王炸'); return; }
     if (t === 'bomb') { bombSfx(); say('炸弹'); return; }
-    var name = (window.DDZ && DDZ.speak) ? DDZ.speak(info) : (info && info.name) || '';
+    /* DDZ.speak(info, cards) 需要牌面才能算出「三张5带一张9」；
+       以前只传 info，wingText 拿不到带牌，就念成「三张5带一张5」。 */
+    var name = (window.DDZ && DDZ.speak) ? DDZ.speak(info, cards || info.cards) : (info && info.name) || '';
     /* 原来这里还有一句 if (t==='pass'){pass();say('过');return;}，
        但它排在上面新加的 pass 分支之后，永远走不到，属于死代码 —— 已删除。 */
     // 不同牌型用不同音色，耳朵能分辨

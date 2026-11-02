@@ -742,14 +742,36 @@ window.Secret = (function () {
       var t = new Date(x.ts);
       var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
       var ts = (t.getMonth() + 1) + '/' + t.getDate() + ' ' + pad(t.getHours()) + ':' + pad(t.getMinutes());
+      /* 收藏要能「一眼看出是什么」：图片给缩略图、视频给封面卡、文件给图标卡。
+         之前只认 x.file，字段对不上就落到 '(空)'，看着像收藏丢了。 */
+      var f = x.file || {};
+      var furl = App.esc(f.url || f.src || x.url || x.src || '');
+      var fname = App.esc(f.name || x.name || x.fileName || '文件');
+      var fext = (fname.split('.').pop() || '').toLowerCase();
       var inner = '';
-      if (x.kind === 'image' && x.file) inner = '<img src="' + App.esc(x.file.url || x.file.src || '') + '" style="max-width:100%;max-height:120px;border-radius:8px">';
-      else if (x.kind === 'video' && x.file) inner = '<video src="' + App.esc(x.file.url || x.file.src || '') + '" style="max-width:100%;max-height:120px;border-radius:8px" controls playsinline></video>';
-      else if (x.kind === 'voice') inner = '🔊 语音消息';
-      else if (x.kind === 'file' && x.file) inner = '📎 ' + App.esc(x.file.name || '文件');
-      else if (x.kind === 'loc' && x.loc) inner = '📍 ' + Number(x.loc.lat).toFixed(5) + ', ' + Number(x.loc.lng).toFixed(5);
-      else if (x.kind === 'sticker') inner = '<span style="font-size:22px">' + (x.sticker || '') + '</span>';
-      else inner = App.esc(x.text || '(空)');
+      if (x.kind === 'image' && furl) {
+        inner = '<img class="favthumb" src="' + furl + '" alt="图片" onerror="this.remove()">';
+      } else if (x.kind === 'video') {
+        inner = '<div class="favcard"><div class="favprev">🎬<span class="favplay">▶</span></div>' +
+                '<div class="favmeta">视频 · ' + fname + '</div></div>';
+      } else if (x.kind === 'voice') {
+        inner = '<div class="favcard"><div class="favprev favaudio">🔊</div><div class="favmeta">短语音' +
+                (x.dur ? ' · ' + Math.round(x.dur / 1000) + '″' : '') + '</div></div>';
+      } else if (x.kind === 'file') {
+        var ic = /pdf/.test(fext) ? '📕' : /(zip|rar|7z)/.test(fext) ? '🗜' :
+                 /(doc|docx|txt)/.test(fext) ? '📄' : /(xls|csv)/.test(fext) ? '📊' : '📎';
+        inner = '<div class="favcard"><div class="favprev favfile">' + ic + '</div>' +
+                '<div class="favmeta">' + fname + (f.size ? ' · ' + sz(f.size) : '') + '</div></div>';
+      } else if (x.kind === 'image') {
+        inner = '<div class="favcard"><div class="favprev">🖼</div><div class="favmeta">图片' + (fname ? ' · ' + fname : '') + '</div></div>';
+      } else if (x.kind === 'loc' && x.loc) {
+        inner = '<div class="favcard"><div class="favprev favloc">📍</div><div class="favmeta">' +
+                Number(x.loc.lat).toFixed(5) + ', ' + Number(x.loc.lng).toFixed(5) + '</div></div>';
+      } else if (x.kind === 'sticker') {
+        inner = '<span style="font-size:26px">' + App.esc(x.sticker || '') + '</span>';
+      } else {
+        inner = App.esc(x.text || '(空消息)');
+      }
       return '<div class="favrow" data-fid="' + x.id + '" style="border-bottom:1px solid rgba(255,255,255,.08);padding:8px 4px">' +
         '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--sub)">' +
         '<span>' + (FAV_KINDS[x.kind] || x.kind) + '</span><span>' + ts + '</span></div>' +
@@ -1030,15 +1052,11 @@ window.Secret = (function () {
     box.innerHTML = msgs.map(function (m) {
       var mine = m.from === me;
       var who = mine ? (curMe || App.me()) : (curOther || {});
-      /* 隐私伪装开启后：好友空间里的文字 / 图片 / 视频 / 文件 / 表情 / 语音
-         一律显示为「邀请你开局」，和主界面会话、通知栏保持一致。
-         这样无论从哪个入口进来，看到的都只是打牌邀请。 */
+      /* 隐私伪装只作用于「主界面」：主聊天会话、会话列表预览、通知栏。
+         好友空间本来就是加密空间，进来的人看到的必须是真实内容 ——
+         之前连这里一起伪装了，导致自己也看不到收藏/图片/历史，属于作用域搞反。 */
       var body = '';
-      if (App.disguise()) {
-        try {
-          body = '<div class="invmsg">🎮 ' + esc(ADS.inviteFor(String(m.id || (m.from + m.ts)))) + '</div>';
-        } catch (e) { body = '<div class="invmsg">🎮 房间已开好，等你加入对局</div>'; }
-      } else if (m.kind === 'sticker') {
+      if (m.kind === 'sticker') {
         /* 服务端若没把 sticker 字段透传回来，m.sticker 会是 undefined，
            直接取 .pack 会抛错 → 整条消息渲染失败（表现：表情"显示不出来"）。
            这里做健壮降级，保证任何情况都能渲染出一个表情。 */

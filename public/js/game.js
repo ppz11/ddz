@@ -238,19 +238,24 @@ window.Game = (function () {
     if (!m.phase || m.phase === 'wait') { renderWaiting(m); showRuleTip(m); return; }
   }
   var prevBidTurn = -1, prevBidKey = '', prevDblKey = '';
+  var bidFlash = null;   // 本地缓存最近一次叫分，防止浮标一闪而过
   function onGame(m) {
     var prevTurn = S ? S.turn : -1;
-    var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',')) : '';
+    var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',') +
+                    '|t' + S.turn + '|c' + (S.counts || []).join('.') + '|g' + (S.gid || '')) : '';
     S = m; mySeat = m.seat; gid = m.gid; rule = m.rule;
     document.getElementById('mid-notice').classList.add('hidden');
     /* 出牌 / 不出的提示音：对手的牌型还要语音播报 */
-    var nowLast = m.last ? (m.last.by + ':' + (m.last.cards || []).map(function (c) { return c.id; }).join(',')) : '';
+    /* key 里带上「轮到谁 + 各家剩余张数」：连续两次「过」时 by:cards 完全一样，
+       旧逻辑会当成同一件事直接跳过，表现就是「过」有时有图标和声音、有时没有。 */
+    var roundKey = '|t' + m.turn + '|c' + (m.counts || []).join('.') + '|g' + (m.gid || '');
+    var nowLast = m.last ? (m.last.by + ':' + (m.last.cards || []).map(function (c) { return c.id; }).join(',') + roundKey) : '';
     if (nowLast && nowLast !== prevLast) {
       var byMe = m.last.by === mySeat;
       if ((m.last.cards || []).length) {
         var big = m.last.info && (m.last.info.type === 'bomb' || m.last.info.type === 'rocket');
         Sfx.cardDrop(big);
-        if (!byMe && m.last.info) Sfx.announce(m.last.info);   // 自己的牌在 play() 里已播报
+        if (!byMe && m.last.info) Sfx.announce(m.last.info, m.last.cards);   // 带上牌面才能念准「三张几带一张几」
       } else if (!byMe) {
         Sfx.pass();
         /* 机器人/对手过牌也要念出来：走 announce 统一播报，
@@ -268,8 +273,10 @@ window.Game = (function () {
     }
     /* 别人叫分也要念出来。以前只播自己点的那一下，
        机器人叫了 3 分你只能看字幕，听声根本不知道叫了几分。 */
-    var bidKey = m.bid ? (m.bid.by + ':' + m.bid.score) : '';
+    /* 加上局标识：跨局时若两人叫了同样的分，旧 key 相等会被当成旧消息吞掉。 */
+    var bidKey = m.bid ? ((m.gid || '') + ':' + m.bid.by + ':' + m.bid.score) : '';
     if (bidKey && bidKey !== prevBidKey) {
+      bidFlash = { by: m.bid.by, score: m.bid.score, t: Date.now() };
       var byMe2 = m.bid.by === mySeat;
       if (!byMe2 && App.settings().voice) {
         Sfx.bid(m.bid.score || 0);
@@ -279,11 +286,11 @@ window.Game = (function () {
     if (bidKey) prevBidKey = bidKey;
     /* 别人（含机器人）加倍/不加倍也要播报：以前只在自己点的时候有，
        机器人加倍了只看得到倍数变化，听不到提示。 */
-    var dblKey = (m.doubled || []).join(',');
+    var dblKey = (m.gid || '') + ':' + (m.doubled || []).join(',');
     if (dblKey !== prevDblKey) {
       var mine = mySeat;
       var added = (m.doubled || []).filter(function (x) {
-        return prevDblKey.split(',').indexOf(String(x)) < 0;
+        return prevDblKey.replace(/^[^:]*:/, '').split(',').indexOf(String(x)) < 0;
       });
       prevDblKey = dblKey;
       if (added.length && added.indexOf(mine) < 0 && App.settings().voice) {
@@ -371,8 +378,10 @@ window.Game = (function () {
   function bidTag(i) {
     if (!S) return '';
     var out = '';
-    if (S.bid && S.bid.by === i) {
-      out += '<span class="btagm">' + (S.bid.score ? ('叫 ' + S.bid.score + ' 分') : '不叫') + '</span>';
+    var bf = (bidFlash && Date.now() - bidFlash.t < 4000) ? bidFlash : null;
+    var shown = (S.bid && S.bid.by === i) ? S.bid : (bf && bf.by === i ? bf : null);
+    if (shown) {
+      out += '<span class="btagm">' + (shown.score ? ('叫 ' + shown.score + ' 分') : '不叫') + '</span>';
     } else if (S.phase === 'bid' && S.bidTurn === i) {
       out += '<span class="btagm wait">叫分中…</span>';
     }
@@ -697,6 +706,7 @@ window.Game = (function () {
     document.getElementById('played').innerHTML =
       '<div class="waitbox" style="margin-top:2px">' +
       '<div class="st">等待玩家就位</div>' +
+      '<div class="ridlabel">房间号</div>' +
       '<div class="ridrow"><span class="rid" id="rid-num">' + rid + '</span>' +
       '<button class="btn ghost sm" id="rid-copy">复制</button></div>' +
       '<div class="st">已就位 ' + filled + '/' + n + '</div>' +
@@ -850,7 +860,7 @@ window.Game = (function () {
     var info = DDZ.parse(cs);
     // 出牌提示音（拍牌声） + 语音播报 + 牌型音效
     Sfx.cardDrop(!!(info && (info.type === 'bomb' || info.type === 'rocket')));
-    if (info) Sfx.announce(info);
+    if (info) Sfx.announce(info, cs);
     if (info && (info.type === 'bomb' || info.type === 'rocket')) shake();
     App.vibeDo(18);   // 出牌震动：走原生 Vibrator，不再依赖常被禁用的 navigator.vibrate
     sel = {};
@@ -900,7 +910,8 @@ window.Game = (function () {
   /* 认输：右上角常驻（竖屏按钮左边），只在牌局进行中显示，
      不再每轮出牌都弹一次占地方。 */
   function renderResignBtn() {
-    var host = document.getElementById('page-play');
+    /* 认输放到顶部栏，金币左侧、与金币同一行 —— 不再压住右侧玩家的昵称 */
+    var host = document.getElementById('topbar');
     if (!host) return;
     var b = document.getElementById('btn-resign');
     var show = !!(S && (S.phase === 'play' || S.phase === 'bid' || S.phase === 'double'));
@@ -909,7 +920,8 @@ window.Game = (function () {
       b.id = 'btn-resign'; b.className = 'resignbtn';
       b.textContent = '认输';
       b.onclick = function () { App.confirm('确定认输吗？', '认输将直接判负', function () { Net.send({ t: 'game:resign' }); }); };
-      host.appendChild(b);
+      var coin = host.querySelector('.coin');
+      if (coin) host.insertBefore(b, coin); else host.appendChild(b);
     }
     b.classList.toggle('hidden', !show);
   }

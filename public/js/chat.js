@@ -750,7 +750,13 @@ window.Chat = (function () {
       '<button class="vb ghost" data-a="close">关闭</button>' +
       '</div>' +
       '<div class="vmsg" id="vmsg"></div>';
-    var close = function () { v.remove(); };
+    var close = function () {
+      try {
+        var md = v.querySelector('video');
+        if (md) { md.pause(); md.removeAttribute('src'); if (md.load) md.load(); }
+      } catch (e) { }
+      v.remove();
+    };
     v.querySelector('.x').onclick = close;
     v.querySelector('[data-a="close"]').onclick = close;
     v.querySelector('[data-a="save"]').onclick = function () { saveToDevice(src, name || (isVideo ? 'video.mp4' : 'image.jpg')); };
