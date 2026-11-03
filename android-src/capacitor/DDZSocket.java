@@ -301,7 +301,7 @@ public class DDZSocket {
                 case '\t': b.append("\\t"); break;
                 default:
                     if (c < 0x20) {
-                        /* 用 char 拼接，别在源码里写 "\u"，Java 编译器会当 Unicode 转义解析 */
+                        /* 用 char 拼接；源码里不要出现反斜杠紧跟字母 u，Javac 会当作 Unicode 转义预解析 */
                         b.append('\\').append('u');
                         String h = Integer.toHexString(c);
                         for (int z = h.length(); z < 4; z++) b.append('0');
