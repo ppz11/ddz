@@ -10,10 +10,16 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <!-- 语音消息 / 语音通话 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <!-- 视频通话 -->
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- v39：后台常驻连接。缺了这几项，前台服务根本起不来：
+         Android 9 要 FOREGROUND_SERVICE、Android 13 要 POST_NOTIFICATIONS、
+         Android 14(targetSdk34) 要 FOREGROUND_SERVICE_DATA_SYNC。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="true"
@@ -37,6 +43,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 后台保活服务：自己持有 WebSocket，锁屏/切后台也保持在线并收消息。
+             没注册 service 标签的话 startForegroundService 会直接失败，
+             表现就是「退到后台就离线、再打开要重新登录」。 -->
+        <service
+            android:name=".DDZPushService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

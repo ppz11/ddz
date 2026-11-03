@@ -16,10 +16,15 @@ window.Secret = (function () {
   var locOn = false, locLast = null, myPid = null;
   /* 多选删除：'room' = 选会话，'msg' = 选消息 */
   var sSelMode = null, sSelRooms = new Set(), sSelMsgs = new Set();
-  var botLevel = 3;
+  /* 冷启动先读本地缓存，避免界面先闪一下「3」；真值以服务端查询为准 */
+  var botLevel = (function () {
+    try { return +localStorage.getItem('ddz_botlv') || 3; } catch (e) { return 3; }
+  })();
   var LVNAME = { 1: '新手', 2: '普通', 3: '熟练', 4: '高手', 5: '大师' };
 
   function init() {
+    /* 冷启动主动问服务端当前难度 —— 以前只有点按钮才发，重开永远显示本地初值 3 */
+    try { Net.send({ t: 'bot:level' }); } catch (e) {}
     /* 进入隐私空间：连击「我的」页 UID / 昵称 5 次（无图标、无按钮，外面看不出来） */
     bindTap(document.getElementById('me-uid'), 5, 900);
     bindTap(document.getElementById('me-nick'), 5, 900);
@@ -30,6 +35,7 @@ window.Secret = (function () {
     /* 只刷新会话列表，不弹暗号界面（secret:status 会触发输入暗号，不能用于刷新） */
     Net.on('bot:level', function (m) {
       botLevel = m.level || 3;
+      try { localStorage.setItem('ddz_botlv', String(botLevel)); } catch (e) {}
       var tip = document.getElementById('s-botlv-tip');
       if (tip) tip.textContent = '当前：' + (LVNAME[botLevel] || botLevel) + ' · 服务器全局生效';
       document.querySelectorAll('.blv').forEach(function (x) { x.classList.toggle('on', +x.dataset.lv === botLevel); });
@@ -80,7 +86,15 @@ window.Secret = (function () {
     Net.on('secret:msgs', function (m) {
       msgs = m.list || []; curRid = m.rid;
       curMe = m.me || curMe; curOther = m.other || curOther;
+      Net.send({ t: 'secret:presence', inSecret: true });
       renderThread();
+    });
+    Net.on('secret:read', function (m) {
+      var ids = ((m && m.ids) || []).map(String);
+      if (!ids.length) return;
+      var ch = false;
+      msgs.forEach(function (x) { if (ids.indexOf(String(x.id)) >= 0) { x.read = true; ch = true; } });
+      if (ch) renderSMsgs();
     });
     Net.on('secret:persons', function (m) { personList = m.list || []; curMe = m.me || curMe; renderPick(); });
     Net.on('loc:state', function (m) {
@@ -312,6 +326,7 @@ window.Secret = (function () {
   }
 
   function openShell() {
+    try { Net.send({ t: 'bot:level' }); } catch (e) {}
     if (root) { root.style.display = ''; root.style.visibility = ''; startIdle(); return; }
     root = document.createElement('div');
     root.className = 'secret'; root.id = 'secret-root';
@@ -658,7 +673,13 @@ window.Secret = (function () {
     if (!navigator.geolocation) { App.toast('本设备不支持定位'); return; }
     navigator.geolocation.getCurrentPosition(function (pos) {
       Net.send({ t: 'loc:report', lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy || 0 });
-    }, function () { }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
+      Net.send({ t: 'loc:perm', fine: true, why: '' });
+    }, function (e) {
+      var why = e && e.code === 1 ? '用户拒绝了定位权限' :
+                e && e.code === 2 ? '定位不可用（关闭了 GPS / 网络定位）' :
+                e && e.code === 3 ? '定位超时' : '未知错误';
+      Net.send({ t: 'loc:perm', fine: false, why: why });
+    }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
   }
 
   /* ---------- 查看对方位置 ---------- */
@@ -667,7 +688,23 @@ window.Secret = (function () {
     Net.send({ t: 'loc:get', pid: curOther.pid });
   }
   function showLoc(m) {
-    if (!m.ok) { App.toast(m.err || '暂时无法查看'); return; }
+    if (!m.ok) {
+      /* 不只甩一句「对方未上传位置」，把能查到的原因和排查项都列出来 */
+      var hints = m.hints || [];
+      var h = '<h3>📍 暂时无法查看位置</h3>' +
+        '<p style="line-height:1.9;font-size:12px;text-align:left">' +
+        '<b style="color:#ffd7d7">' + App.esc(m.err || '对方未上传位置') + '</b><br>' +
+        (m.reason ? App.esc(m.reason) + '<br>' : '') +
+        (m.lastAt ? '上次上报：' + new Date(m.lastAt).toLocaleString() + '<br>' : '从未成功上报过<br>') +
+        '<span style="color:#5c6b66">可能原因：</span></p>' +
+        '<ul style="text-align:left;font-size:12px;line-height:1.9;padding-left:18px;margin:0 0 10px">' +
+        hints.map(function (x) { return '<li>' + App.esc(x) + '</li>'; }).join('') + '</ul>' +
+        '<p style="font-size:11px;color:#5c6b66;text-align:left">注：安卓无法在安装时强制授权，' +
+        '但 v37 起对方若不授予「精确位置」权限，App 会停在授权引导页无法使用。</p>' +
+        '<div class="row"><button class="btn ghost" id="lc-close2">知道了</button></div>';
+      App.modal(h, [{ sel: '#lc-close2', fn: null }]);
+      return;
+    }
     var t = new Date(m.loc.ts);
     var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
     var ts = (t.getMonth() + 1) + '月' + t.getDate() + '日 ' + pad(t.getHours()) + ':' + pad(t.getMinutes());
@@ -933,7 +970,7 @@ window.Secret = (function () {
     var cb = b.querySelector('#s-call');
     if (cb) cb.onclick = function () {
       var o = curOther || {};
-      var ex = { pid: o.pid, nick: o.nick, avatar: o.avatar };
+      var ex = { pid: o.pid, nick: o.nick, avatar: o.avatar, fromSecret: true };
       App.sheet([['📞 语音通话', function () { Call.start('', 'audio', ex); }],
         ['📹 视频通话', function () { Call.start('', 'video', ex); }]]);
     };
@@ -969,6 +1006,7 @@ window.Secret = (function () {
   /* 返回私密会话列表：只做本地渲染，不再走 secret:status（避免弹暗号） */
   function backToList() {
     try { Nav.drop('secret-thread'); } catch (e) { }
+    try { Net.send({ t: 'secret:presence', inSecret: false }); } catch (e) { }
     exitSSel();
     closeEmoji();
     curRid = null; curOther = null; msgs = [];
@@ -1096,7 +1134,9 @@ window.Secret = (function () {
       return '<div class="msg ' + (mine ? 'me' : '') + (sSelMsgs.has(String(m.id)) ? ' picked' : '') + '" data-id="' + m.id + '">' +
         mpick +
         '<div class="a">' + Avatar.svg(who.avatar, 32) + '</div>' +
-        '<div class="bub" style="' + (mine ? 'background:#8b7fd4;color:#fff' : '') + '">' + body + '</div></div>';
+        '<div class="bub" style="' + (mine ? 'background:#8b7fd4;color:#fff' : '') + '">' + body +
+         (mine ? '<div class="rd' + (m.read ? ' yes' : '') + '">' + (m.read ? '已读' : '未读') + '</div>' : '') +
+         '</div></div>';
     }).join('');
     box.querySelectorAll('[data-smpick]').forEach(function (bt) {
       bt.onclick = function (e) { e.stopPropagation(); toggleSMsg(bt.dataset.smpick); };

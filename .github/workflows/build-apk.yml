@@ -78,7 +78,7 @@ jobs:
             echo "✘ 找不到 android-src/capacitor/MainActivity.java"; exit 1
           fi
           # 后台保活 + 桌面角标（零第三方依赖）
-          for f in DDZPushService.java BadgeUtil.java; do
+          for f in DDZPushService.java BadgeUtil.java DDZSocket.java; do
             if [ -f android-src/capacitor/$f ]; then
               cp -f android-src/capacitor/$f android/app/src/main/java/com/yuanbao/ddz/$f
               echo "✔ 已注入 $f"
@@ -208,6 +208,7 @@ jobs:
           grep -q 'DDZPushService' "$MJ" || { echo "✘ 缺后台保活服务引用"; MISS=1; }
           grep -q 'setBadge' "$MJ" || { echo "✘ 缺桌面角标"; MISS=1; }
           [ -f android/app/src/main/java/com/yuanbao/ddz/DDZPushService.java ] || { echo "✘ 缺 DDZPushService.java"; MISS=1; }
+          [ -f android/app/src/main/java/com/yuanbao/ddz/DDZSocket.java ] || { echo "✘ 缺 DDZSocket.java"; MISS=1; }
           [ -f android/app/src/main/java/com/yuanbao/ddz/BadgeUtil.java ] || { echo "✘ 缺 BadgeUtil.java"; MISS=1; }
           [ "$MISS" = "0" ] && echo "✔ 原生能力校验全部通过" || { echo "原生能力校验失败"; exit 1; }
 

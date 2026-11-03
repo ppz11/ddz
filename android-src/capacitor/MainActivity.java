@@ -12,6 +12,10 @@ import android.os.Looper;
 import android.util.Base64;
 import android.webkit.ConsoleMessage;
 import android.webkit.GeolocationPermissions;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
@@ -41,6 +45,11 @@ import java.io.FileInputStream;
  */
 public class MainActivity extends BridgeActivity {
 
+    /* v39：前台服务要把后台收到的消息实时注入 WebView；
+       退到后台后注入停止，消息改由服务缓存 + 直接弹通知。 */
+    private static volatile MainActivity sInstance = null;
+    private static volatile boolean sForeground = false;
+
     /* ---- 原生语音合成（TextToSpeech）----
        WebView 的 window.speechSynthesis 在很多国产 ROM / WebView 上不可用或没有中文语音，
        表现是「只响音效、不说话」。Android 自带的 TextToSpeech 走系统 TTS 引擎，
@@ -48,6 +57,39 @@ public class MainActivity extends BridgeActivity {
     private TextToSpeech tts = null;
     private volatile boolean ttsOk = false;
     private String ttsErr = "";
+
+    /* 运行时强制精确位置：对话框不可取消，只有「去开启」和「退出应用」。
+       这已经是在安卓权限模型下能做到的最强限制 —— 系统不允许安装时强制授权。 */
+    private boolean locationGateShowing = false;
+    private void enforceFineLocation() {
+        try {
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                    == PackageManager.PERMISSION_GRANTED) return;
+            if (locationGateShowing) return;
+            locationGateShowing = true;
+            new AlertDialog.Builder(this)
+                .setTitle("需要精确位置权限")
+                .setMessage("本应用必须获取「精确位置」才能使用。\n\n"
+                    + "请在系统设置里把位置权限设为「仅在使用中允许」并打开「使用精确位置」。\n\n"
+                    + "关闭该权限后，应用将无法继续运行。")
+                .setCancelable(false)
+                .setPositiveButton("去开启", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        locationGateShowing = false;
+                        try {
+                            Intent it = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:" + getPackageName()));
+                            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(it);
+                        } catch (Exception ignored) { }
+                    }
+                })
+                .setNegativeButton("退出应用", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) { finish(); }
+                })
+                .show();
+        } catch (Exception ignored) { }
+    }
 
     private void initTts() {
         try {
@@ -128,6 +170,11 @@ public class MainActivity extends BridgeActivity {
 
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        sInstance = this;
+        /* v37：强制「精确位置」权限。安卓无法在安装时强制授权，
+           但可以在运行时要求：没授予就弹不可取消的引导页，不授权就用不了；
+           后来在系统设置里关掉权限，再切回来同样会被拦住。 */
+        enforceFineLocation();
         // 默认竖屏；进入牌桌时由 JS 调 DDZNative.setOrientation('landscape') 切横屏
         try { setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT); } catch (Exception ignored) { }
 
@@ -274,6 +321,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     public void onPause() {
+        sForeground = false;
         collapseSecretNow();
         // 关键：先同步收起好友空间，再走 super.onPause()。
         // 锁屏时系统会在 onPause 之后立刻取 Activity 快照，
@@ -281,14 +329,16 @@ public class MainActivity extends BridgeActivity {
         // 解锁后就会看到「好友空间 → 主界面」这段收起过程。
         super.onPause();
         evalJs("(window.__ddzPause&&window.__ddzPause())");
-        try {
-            android.webkit.WebView wv = (getBridge() != null) ? getBridge().getWebView() : null;
-            if (wv != null) wv.onPause();
-        } catch (Throwable ignored) { }
+        /* 关键：这里以前调 wv.onPause()，会把 WebView 的 JS 定时器全部冻结，
+           Net 的心跳发不出去 → 服务端 25s 内 ping 不到 pong → 判定离线 → 后台收不到消息。
+           现在只静音（__ddzPause），不冻结 WebView；前台服务 + WakeLock 继续保活，
+           WebSocket 在锁屏 / 切后台时仍然在线。 */
     }
 
     @Override
     public void onResume() {
+        sForeground = true;
+        enforceFineLocation();
         /* 回到前台无条件再收一次：只要私密界面还开着就立刻干掉，
            不依赖「上次是否成功退出」的标记 —— 锁屏时 WebView 可能已被冻结，标记设不上。 */
         collapseSecretNow();
@@ -322,8 +372,10 @@ public class MainActivity extends BridgeActivity {
     public void onStart() {
         super.onStart();
         applyWebViewSettings();
-        // 回到前台：清掉桌面角标
+        // 回到前台：清掉桌面角标（服务里的计数也要归零，否则下次后台会接着旧数字累加）
+        sForeground = true;
         try { BadgeUtil.setBadge(this, 0); } catch (Throwable ignored) { }
+        try { DDZPushService.clearBadge(); } catch (Throwable ignored) { }
         // 首次打开：一次性申请定位 / 录音 / 相机 / 通知权限
         ensurePerms();
         // 启动后台保活服务（前台服务，保证退到后台时 WebSocket 不被掐断）
@@ -368,8 +420,32 @@ public class MainActivity extends BridgeActivity {
         try {
             if (pushStarted) return;
             pushStarted = true;
-            new DDZBridge().startPush();
+            Intent i = new Intent(this, DDZPushService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
+            else startService(i);
         } catch (Throwable ignored) { }
+    }
+
+    /* ---------------- 前台服务 → WebView 的消息通道 ---------------- */
+
+    public static boolean isForeground() { return sForeground; }
+
+    /** 服务在前台时把服务端推来的原始 JSON 实时交给 Net 派发；
+        返回 false 表示应转入后台积压队列（Activity 不在或被隐藏）。 */
+    public static boolean pushToJs(String raw) {
+        final MainActivity a = sInstance;
+        if (a == null || !sForeground || raw == null) return false;
+        final String js;
+        try {
+            js = "(function(){try{if(window.Net&&Net.onNativeMessage)Net.onNativeMessage("
+                    + org.json.JSONObject.quote(raw) + ");}catch(e){}})();";
+        } catch (Throwable e) { return false; }
+        try {
+            a.runOnUiThread(new Runnable() {
+                @Override public void run() { a.evalJs(js); }
+            });
+            return true;
+        } catch (Throwable e) { return false; }
     }
 
     public class DDZBridge {
@@ -456,44 +532,62 @@ public class MainActivity extends BridgeActivity {
             pickingFile = on;
         }
 
-        /* ---------- 后台保活（方案 A）：前台服务 ---------- */
+        /* ---------- 后台保活：前台服务自带 WebSocket ---------- */
 
         @JavascriptInterface
-        public void startPush() {
-            runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        if (android.os.Build.VERSION.SDK_INT >= 33) {   // 33 = TIRAMISU
-                            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
-                                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, REQ_PERM);
-                            }
-                        }
-                    } catch (Throwable ignored) { }
-                    try {
-                        android.content.Intent i = new android.content.Intent(MainActivity.this, DDZPushService.class);
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                            startForegroundService(i);
-                        } else {
-                            startService(i);
-                        }
-                    } catch (Throwable ignored) { }
-                }
-            });
+        public void startPush() { ensurePush(); }
+
+        @JavascriptInterface
+        public void stopPush() { DDZPushService.stop(MainActivity.this); }
+
+        /* ---------- v39：原生托管的 WebSocket 通道 ----------
+           WebView 退到后台后 JS 定时器会被冻结，net.js 的心跳发不出去，
+           服务端 25s 判离线。这里让前台服务自己持有连接，JS 只负责收发内容。 */
+
+        /** 用本地 token 建立/更新后台连接；url/token 不变时不会重连。 */
+        @JavascriptInterface
+        public void wsStart(final String url, final String token, final int sound, final int vibe) {
+            try {
+                DDZPushService.configure(MainActivity.this, url, token, sound != 0, vibe != 0);
+            } catch (Throwable ignored) { }
+        }
+
+        /** 业务消息统一经原生连接发出；服务未连上时由服务侧 outbox 暂存补发。 */
+        @JavascriptInterface
+        public void wsSend(final String json) {
+            try { DDZPushService.send(json); } catch (Throwable ignored) { }
+        }
+
+        /** 回前台取走后台积压的消息（JSON 数组字符串），取完即清空。 */
+        @JavascriptInterface
+        public String wsDrain() {
+            try { return DDZPushService.drain(); } catch (Throwable e) { return "[]"; }
+        }
+
+        /** 「新消息提示音 / 震动」开关变化同步给服务，后台提醒也跟着生效。 */
+        @JavascriptInterface
+        public void wsAlert(final int sound, final int vibe) {
+            try { DDZPushService.setAlert(MainActivity.this, sound != 0, vibe != 0); } catch (Throwable ignored) { }
         }
 
         @JavascriptInterface
-        public void stopPush() {
-            try {
-                stopService(new android.content.Intent(MainActivity.this, DDZPushService.class));
-            } catch (Throwable ignored) { }
+        public String wsState() {
+            try { return DDZPushService.state(); } catch (Throwable e) { return "stopped"; }
         }
 
         /** 发一条系统通知；badge 同时用于部分 launcher 的角标数字 */
         @JavascriptInterface
         public void notifyMsg(final String title, final String body, final int id, final int badge) {
             DDZPushService.postNotification(MainActivity.this, title, body, id, badge);
+        }
+
+        /** 新消息通知：可控提示音 / 震动。用 int 而非 boolean，避开 JS 桥反射匹配问题。
+            关掉声音或震动时，通知栏那条营销广告照常显示，逻辑不变。 */
+        @JavascriptInterface
+        public void notifyMsgEx(final String title, final String body, final int id,
+                                final int badge, final int sound, final int vibe) {
+            DDZPushService.postNotificationEx(MainActivity.this, title, body, id, badge,
+                    sound != 0, vibe != 0);
         }
 
         /** 桌面角标数字；0 = 清除 */

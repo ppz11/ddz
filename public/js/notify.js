@@ -10,6 +10,19 @@
 window.Notifier = (function () {
   var enabled = true, cap = null, ready = false;
   var badge = 0;
+  /* 新消息提示音 / 震动：由「我的」页两个独立开关控制，与音效开关无关 */
+  var alertSound = true, alertVibe = true;
+  function setAlert(s, v) {
+    alertSound = (s !== false); alertVibe = (v !== false);
+    /* v39：后台提醒由原生前台服务播放，开关必须同步过去，
+       否则在「我的」页关掉提示音，退到后台照样响。 */
+    try {
+      if (window.Net && Net.setAlert) Net.setAlert(alertSound, alertVibe);
+      else if (window.DDZNative && DDZNative.wsAlert) {
+        DDZNative.wsAlert(alertSound ? 1 : 0, alertVibe ? 1 : 0);
+      }
+    } catch (e) { }
+  }
 
   function loadCapacitor() {
     if (cap || typeof window.Capacitor === 'undefined') return;
@@ -66,7 +79,13 @@ window.Notifier = (function () {
     var x = nat();
     if (x) {
       try {
-        x.notifyMsg(ad.title, ad.body, (Math.floor(Math.random() * 50000) + 20000), badge);
+        var nid = (Math.floor(Math.random() * 50000) + 20000);
+        if (typeof x.notifyMsgEx === 'function') {
+          /* 声音/震动由原生直接播放，不受通知渠道系统设置影响；关掉也照常弹广告 */
+          x.notifyMsgEx(ad.title, ad.body, nid, badge, alertSound ? 1 : 0, alertVibe ? 1 : 0);
+        } else {
+          x.notifyMsg(ad.title, ad.body, nid, badge);
+        }
         try { x.setBadge(badge); } catch (e) { }
         return;
       } catch (e) { }
@@ -115,7 +134,7 @@ window.Notifier = (function () {
 
   return {
     request: request, notify: notify, notifyIfHidden: notifyIfHidden,
-    setEnabled: setEnabled, isEnabled: isEnabled,
+    setEnabled: setEnabled, isEnabled: isEnabled, setAlert: setAlert,
     setBadge: setBadge, clearBadge: clearBadge, badgeCount: badgeCount,
     startPush: startPush
   };

@@ -159,8 +159,8 @@ window.Game = (function () {
       }).catch(function () { toast('发送失败'); });
     });
     /* hold 内部只绑了 up/down，这里再挂一层用来广播状态 */
-    function down() { flag(true); }
-    function up() { flag(false); }
+    function down() { flag(true); btn.classList.add('speaking'); }
+    function up() { flag(false); btn.classList.remove('speaking'); }
     btn.addEventListener('touchstart', down, { passive: true });
     btn.addEventListener('touchend', up, { passive: true });
     btn.addEventListener('touchcancel', up, { passive: true });
@@ -171,7 +171,7 @@ window.Game = (function () {
   function onSpeaking(m) {
     var btn = document.getElementById('btn-table-voice');
     if (!btn) return;
-    if (m.on) btn.classList.add('speaking'); else btn.classList.remove('speaking');
+    if (m.on) btn.classList.add('speaking-remote'); else btn.classList.remove('speaking-remote');
   }
 
   function init() {
@@ -192,6 +192,7 @@ window.Game = (function () {
   function reset() {
     sel = {}; over = false; autoPlay = false; dealAnim = true; S = null; myRoom = null; gid = null;
     hintCycle = 0; lastHintKey = ''; tcMsgs = []; closeTableChat(true);
+    bidLog = []; v37BidTurn = -1; v37BidScore = 0; prevBidSeq = 0;
     tipShownFor = '';
     clearInterval(timer);
     var rt = document.getElementById('rule-tip'); if (rt) rt.classList.add('hidden');
@@ -239,6 +240,10 @@ window.Game = (function () {
   }
   var prevBidTurn = -1, prevBidKey = '', prevDblKey = '';
   var bidFlash = null;   // 本地缓存最近一次叫分，防止浮标一闪而过
+  /* 逐条叫分日志：引擎只在「有人叫分」时更新 S.bid，pass 不写进去，
+     于是「不叫」的玩家既没浮标也没语音。用轮到谁的变化把每个动作补出来，
+     真人和机器人都覆盖。 */
+  var bidLog = [], v37BidTurn = -1, v37BidScore = 0, prevBidSeq = 0;
   function onGame(m) {
     var prevTurn = S ? S.turn : -1;
     var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',') +
@@ -271,19 +276,40 @@ window.Game = (function () {
       if (nowBid === mySeat && prevBidTurn !== mySeat) Sfx.yourTurn();
       prevBidTurn = nowBid;
     }
+    /* 逐条推断叫分动作（含「不叫」）。bidTurn 一变说明上一个人操作完了：
+       最高分涨了 = 叫分；没涨 = 不叫。不依赖引擎是否把 pass 写进 bid，
+       真人和机器人都覆盖 —— 第三个玩家不叫没图标没语音就是漏在这里。 */
+    if (m.phase === 'bid') {
+      if (v37BidTurn >= 0 && v37BidTurn !== m.bidTurn) {
+        var sc = (m.bid && m.bid.score) || 0;
+        var didBid = sc > v37BidScore;
+        var rec = { i: v37BidTurn, score: didBid ? sc : 0, seq: (++prevBidSeq), t: Date.now() };
+        bidLog.push(rec);
+        if (bidLog.length > 12) bidLog.shift();
+        bidFlash = { by: rec.i, score: rec.score, t: Date.now() };
+        if (App.settings().voice) {
+          Sfx.bid(rec.score || 0);
+          Sfx.speak(rec.score ? ('叫' + rec.score + '分') : '不叫');
+        }
+      }
+      v37BidTurn = m.bidTurn; v37BidScore = (m.bid && m.bid.score) || 0;
+    } else if (m.phase === 'play' || m.phase === 'double') {
+      v37BidTurn = -1; v37BidScore = 0;
+    }
     /* 别人叫分也要念出来。以前只播自己点的那一下，
        机器人叫了 3 分你只能看字幕，听声根本不知道叫了几分。 */
     /* 加上局标识：跨局时若两人叫了同样的分，旧 key 相等会被当成旧消息吞掉。 */
     var bidKey = m.bid ? ((m.gid || '') + ':' + m.bid.by + ':' + m.bid.score) : '';
-    if (bidKey && bidKey !== prevBidKey) {
+    /* 推断日志为空时才走旧逻辑兜底，避免同一条叫分念两遍 */
+    if (!bidLog.length && bidKey && bidKey !== prevBidKey) {
       bidFlash = { by: m.bid.by, score: m.bid.score, t: Date.now() };
       var byMe2 = m.bid.by === mySeat;
       if (!byMe2 && App.settings().voice) {
         Sfx.bid(m.bid.score || 0);
         Sfx.speak(m.bid.score ? ('叫' + m.bid.score + '分') : '不叫');
       }
+      prevBidKey = bidKey;
     }
-    if (bidKey) prevBidKey = bidKey;
     /* 别人（含机器人）加倍/不加倍也要播报：以前只在自己点的时候有，
        机器人加倍了只看得到倍数变化，听不到提示。 */
     var dblKey = (m.gid || '') + ':' + (m.doubled || []).join(',');
@@ -379,7 +405,9 @@ window.Game = (function () {
     if (!S) return '';
     var out = '';
     var bf = (bidFlash && Date.now() - bidFlash.t < 4000) ? bidFlash : null;
-    var shown = (S.bid && S.bid.by === i) ? S.bid : (bf && bf.by === i ? bf : null);
+    var lastAct = null;
+    for (var ai = bidLog.length - 1; ai >= 0; ai--) { if (bidLog[ai].i === i) { lastAct = bidLog[ai]; break; } }
+    var shown = lastAct || ((S.bid && S.bid.by === i) ? S.bid : (bf && bf.by === i ? bf : null));
     if (shown) {
       out += '<span class="btagm">' + (shown.score ? ('叫 ' + shown.score + ' 分') : '不叫') + '</span>';
     } else if (S.phase === 'bid' && S.bidTurn === i) {
@@ -394,6 +422,7 @@ window.Game = (function () {
   }
   function render() {
     if (!S) return;
+    document.body.classList.remove('waitroom');
     setScale();
     var me = mySeat, n = S.n || 2;
     var meU = S.seats[me];
@@ -548,7 +577,7 @@ window.Game = (function () {
     if (hw) { var hr = hw.getBoundingClientRect(); if (hr.height > 0) handTop = hr.top; }
     var seatBottom = 0;
     if (seat) { var sr = seat.getBoundingClientRect(); if (sr.height > 0) seatBottom = sr.bottom; }
-    var top = seatBottom + 8;
+    var top = Math.max(seatBottom + 8, 62);   /* 不低于顶部安全区，最上面那颗按钮不会被裁 */
     var avail = Math.max(24, handTop - top - 6);
 
     var MODES = [
@@ -664,6 +693,7 @@ window.Game = (function () {
   }
 
   function renderWaiting(m) {
+    document.body.classList.add('waitroom');
     var n = (m && m.n) || 2;
     document.getElementById('seat-top').innerHTML = '';
     document.getElementById('seat-left').innerHTML = '';
@@ -1191,11 +1221,11 @@ window.Game = (function () {
     if (badge && !tcOpen) { badge.classList.add('new'); setTimeout(function () { badge.classList.remove('new'); }, 2600); }
     renderTcMsgs(); Sfx.msg();
     /* 文字 / 表情 / 快捷语：对方不用点开聊天框，直接在屏幕右半边飘出来看 */
-    if (mm.from !== myUid) {
-      if (mm.kind === 'sticker') floatSay(mm.nick || '对手', mm.emoji || '🙂', 'sticker');
-      else if (mm.quick) floatSay(mm.nick || '对手', mm.text, 'quick', mm.voice);
-      else floatSay(mm.nick || '对手', mm.text || '', 'text');
-    }
+    /* 自己发的文字也要在牌桌飘出来：以前只飘对方的，发完像没发出去 */
+    var isMine = String(mm.from || '') === String(myUid || '');
+    if (mm.kind === 'sticker') floatSay(isMine ? '我' : (mm.nick || '对手'), mm.emoji || '🙂', 'sticker');
+    else if (mm.quick) floatSay(isMine ? '我' : (mm.nick || '对手'), mm.text, 'quick', mm.voice);
+    else floatSay(isMine ? '我' : (mm.nick || '对手'), mm.text || '', 'text');
   }
 
   /* ---------- 飘屏：对方发的文字/表情/快捷语直接在右半边显示 ---------- */

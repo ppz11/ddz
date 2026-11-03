@@ -15,7 +15,9 @@ window.App = (function () {
     sound: true, voice: true, bgm: true, vibe: true, disguise: false,
     callVibe: true, callRing: true, ringUrl: '', v: 3,
     /* 出牌语音播报的语速 / 音调：拖滑钮即时生效，试听提示音听的就是调后的效果 */
-    rate: 1.08, pitch: 1.0
+    rate: 1.08, pitch: 1.0,
+    /* 新消息提醒：与「音效」开关完全独立，只管后台/未读消息的提示音与震动 */
+    msgSound: true, msgVibe: true
   };
   var createCfg = { mode: 'duo', rule: 'let46' };
   var contacts = [], onlineUsers = [], allUsers = [], fakeOnline = 0, invited = new Set();
@@ -435,6 +437,37 @@ window.App = (function () {
       var ov = localStorage.getItem('ddz_server_override');
       if (ov && Net.setServer) Net.setServer(ov);
     } catch (e) {}
+    /* 关键：不点「进入牌桌」也必须在线。
+       以前只有 enterApp() 才 Net.connect / startPush，切后台被回收后停在登录页时
+       WebSocket 根本没连，消息一条都收不到。这里用本地保存的 token 先连上，
+       并启动前台保活服务 —— 登录界面只是显示层，不影响收消息。 */
+    try {
+      var sv = JSON.parse(localStorage.getItem('ddz_auth') || 'null');
+      if (sv && sv.token) Net.connect(sv.token);
+    } catch (e) {}
+    try { Notifier.setAlert(settings.msgSound !== false, settings.msgVibe !== false); } catch (e) {}
+    try { Notifier.startPush(); } catch (e) {}
+    try { Notifier.request(); } catch (e) {}
+    /* 停在登录页 / 页面隐藏时，消息事件仍要变成一条营销广告通知。
+       进入主界面后由各模块自己的 notifyIfHidden 负责，这里让位，避免重复通知。 */
+    try {
+      Net.on('*', function (m) {
+        if (!m || !m.t) return;
+        /* v39：带 _bg 的是后台期间服务已经弹过通知栏广告的消息，
+           回前台补投时只更新会话/未读，不再重复弹一条广告。 */
+        if (m._bg) return;
+        var hit = ['chat', 'secret:msg', 'secret:invited', 'call:invite',
+                   'invite', 'offline:digest', 'presence'];
+        if (hit.indexOf(m.t) < 0) return;
+        var main = document.getElementById('main');
+        var inApp = main && !main.classList.contains('hidden');
+        /* 已进主界面就完全让位给各模块自己的 notifyIfHidden，
+           否则后台时两边都会推一条，通知栏会出现两条一样的广告。 */
+        if (inApp) return;
+        var seed = 'bg:' + m.t + ':' + ((m.msg && (m.msg.id || m.msg.ts)) || m.rid || m.ts || Date.now());
+        Notifier.notify(seed);
+      });
+    } catch (e) {}
     setTimeout(function () { login(); }, 700);
   }
   /* ---------- 连接诊断：连不上时把「目标地址 + 原因」直接显示在启动页 ---------- */
@@ -524,6 +557,8 @@ window.App = (function () {
       try { window.__ddzAfterLogin = after; } catch (e) { }
       if (typeof r.coins === 'number') me.coins = r.coins;
       try { localStorage.setItem('ddz_auth', JSON.stringify({ uid: r.uid, token: r.token })); } catch (e) {}
+      /* 登录接口若换了 token，同步给已建立的连接，后续 auth/重连都用它 */
+      try { Net.setToken(r.token); } catch (e) {}
       document.getElementById('boot').classList.add('hidden');
       document.getElementById('login').classList.remove('hidden');
       document.getElementById('lg-av').innerHTML = Avatar.svg(me.avatar, 92);
@@ -819,6 +854,18 @@ window.App = (function () {
     /* 语速 / 音调：拖动即时生效，点「试听提示音」听到的就是调后的效果 */
     bindTune('sl-rate', 'lb-rate', 'rate', 1.08);
     bindTune('sl-pitch', 'lb-pitch', 'pitch', 1.0);
+    document.getElementById('sw-newsound').onclick = function () {
+      settings.msgSound = !settings.msgSound;
+      this.classList.toggle('on', settings.msgSound); saveSettings();
+      try { Notifier.setAlert(settings.msgSound, settings.msgVibe !== false); } catch (e) {}
+      toast(settings.msgSound ? '新消息提示音已开启' : '新消息提示音已关闭（仍会弹通知栏）');
+    };
+    document.getElementById('sw-newvibe').onclick = function () {
+      settings.msgVibe = !settings.msgVibe;
+      this.classList.toggle('on', settings.msgVibe); saveSettings();
+      try { Notifier.setAlert(settings.msgSound !== false, settings.msgVibe); } catch (e) {}
+      toast(settings.msgVibe ? '新消息震动已开启' : '新消息震动已关闭');
+    };
     document.getElementById('sw-callvibe').onclick = function () {
       settings.callVibe = !settings.callVibe; saveSettings();
       document.getElementById('sw-callvibe').classList.toggle('on', settings.callVibe);
@@ -1040,6 +1087,9 @@ window.App = (function () {
          注意：通知栏必须始终开启 —— 推的都是营销广告，不泄露任何真实内容，
          关掉的话消息、来电就完全收不到提醒了（角标也不会亮）。 */
       if (settings.disguise && !settings.disguiseByUser) { settings.disguise = false; saveSettings(); }
+      document.getElementById('sw-newsound').classList.toggle('on', settings.msgSound !== false);
+      document.getElementById('sw-newvibe').classList.toggle('on', settings.msgVibe !== false);
+      try { Notifier.setAlert(settings.msgSound !== false, settings.msgVibe !== false); } catch (e) {}
       Notifier.setEnabled(true);
     }, 50);
   }

@@ -1615,3 +1615,53 @@ body.land #page-play{transform:none!important}
 /* v36b：查看器两条定义合并后仍要保证竖排，且 ✕ 永远可点 */
 .viewer{flex-direction:column!important}
 .viewer .x{z-index:140!important;pointer-events:auto!important}
+
+/* ===================== v37 修正 ===================== */
+/* ① 底牌/叫分：撤销 v36 的上移（顶部被安全区裁掉），改为落在安全区以下 */
+.dibar,#bottom-bar,.bottombar{transform:none!important;
+  margin-top:calc(var(--safe-t,0px) + 10px)!important;
+  position:relative;z-index:22}
+/* 等待框不再整体上移，「房间号」三字完整露出 */
+.waitbox{transform:none!important;margin-top:6px!important}
+.waitbox .ridlabel{margin-top:10px}
+.waitbox .wbtip{transform:none!important;margin-top:10px!important}
+body.waitroom .played{min-height:150px;align-items:flex-start;padding-top:10px}
+/* ② 操作按钮层级提到最上，保证能点；等待房间时下移，不压三个头像 */
+#action-zone{z-index:40!important}
+#action-zone .bidwrap{pointer-events:auto!important;position:relative;z-index:41}
+#action-zone .bidwrap > .btn,#action-zone .btn{pointer-events:auto!important;position:relative;z-index:42}
+body.waitroom #action-zone{bottom:calc(var(--safe-b,0px) + 18px)!important}
+/* ③ 座位不再互相压：撤销左列整体下移 */
+.seatcol.left{transform:none!important;margin-left:14px}
+.seatcol.right{margin-right:14px}
+.myinfo{position:relative;z-index:23}
+.ts .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px}
+/* 出的牌放大但容器允许溢出，避免被相邻层裁掉 */
+.played .prow,.pcards,.pmine{overflow:visible!important}
+/* ④ 通话：降级说明常驻 + 按住说话大按钮 + 静音状态区分 */
+#c-net{position:relative;z-index:10;margin:8px auto 0;max-width:92%;
+  padding:8px 10px;border-radius:10px;font-size:11px;line-height:1.6;
+  background:rgba(229,72,77,.14);border:1px solid rgba(229,72,77,.35);color:#ffd7d7}
+.callui.hasvid .cst,.callui.hasvid #c-net{position:relative;z-index:10;margin-left:auto;margin-right:auto}
+.callui .ptt{display:block!important}
+.callui.hasvid .ptt{position:absolute;left:50%;transform:translateX(-50%);
+  bottom:calc(96px + var(--safe-b,0px));width:min(78%,320px);z-index:12;
+  background:linear-gradient(180deg,#31d8a6,#179e79);color:#04281f;
+  box-shadow:0 4px 18px rgba(0,0,0,.45)}
+.callui.hasvid .ptt.hidden{display:none!important}
+.callui .cBtn.on{background:rgba(243,201,107,.32);color:var(--gold)}
+/* ⑤ 牌桌「正在说话」提示 */
+#btn-table-voice{position:relative}
+#btn-table-voice.speaking,#btn-table-voice.speaking-remote{
+  background:rgba(49,216,166,.35);
+  box-shadow:0 0 0 3px rgba(49,216,166,.35),0 0 14px rgba(49,216,166,.5)}
+#btn-table-voice.speaking::after,#btn-table-voice.speaking-remote::after{
+  content:'正在说话';position:absolute;right:calc(100% + 8px);top:50%;
+  transform:translateY(-50%);white-space:nowrap;font-size:11px;
+  padding:4px 8px;border-radius:8px;background:rgba(4,26,20,.92);color:#9fe8b4}
+/* ⑥ 已读 / 未读 */
+.rd{display:inline-block;margin-left:6px;font-size:10px;opacity:.65;vertical-align:middle}
+.rd.yes{color:var(--jade);opacity:.9}
+/* ⑦ 竖屏切换彻底移除（打牌强制横屏） */
+#btn-orient,.orientbtn{display:none!important}
+

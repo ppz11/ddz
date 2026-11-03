@@ -14,15 +14,16 @@ window.Call = (function () {
      服务端若配了 TURN，启动时会自动换成带中继的配置 —— 这样
      「一个 WiFi、一个 4G」这种跨网络场景也能连通（媒体流经服务器转发）。 */
   var ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
-  var hasRelay = false, relayed = false;
+  var hasRelay = false, relayed = false, iceDiag = '';
   function loadIce() {
     try {
       Net.api('/api/ice').then(function (r) {
         if (r && r.ok && r.iceServers && r.iceServers.length) {
           ICE = r.iceServers;
           hasRelay = !!r.relay;
+          iceDiag = r.hint || (hasRelay ? '' : '服务器未配置 TURN 中继');
         }
-      }).catch(function () { });
+      }).catch(function () { iceDiag = '无法读取 /api/ice，服务端可能未更新'; });
     } catch (e) { }
   }
 
@@ -44,7 +45,17 @@ window.Call = (function () {
 
   function init() {
     loadIce();                       // 启动时拉取 TURN 配置（跨网络通话的关键）
-    Net.on('call:invite', function (m) { onInvite(m); });
+    Net.on('call:invite', function (m) {
+      /* 对方不在好友空间：不弹通话窗，只在通知栏留一条营销广告 */
+      if (m && m.silentAd) {
+        try { Notifier.notifyIfHidden('ad:call' + (m.from && m.from.uid || '') + Date.now()); } catch (e) { }
+        return;
+      }
+      onInvite(m);
+    });
+    Net.on('call:secretfallback', function (m) {
+      App.toast((m && m.msg) || '对方当前不在好友空间，已改发一条营销通知');
+    });
     Net.on('call:accept', function (m) { onAccept(m); });
     Net.on('call:reject', function (m) { stopRing(); App.toast('对方拒绝了通话'); hangup(true); });
     Net.on('call:busy', function () { App.toast('对方正在通话中'); hangup(true); });
@@ -63,7 +74,7 @@ window.Call = (function () {
     peer = uid || ''; useRtc = rtcOk();
     peerInfo = extra || null;
     state = 'ringing';
-    Net.send({ t: 'call:invite', to: uid, pid: extra && extra.pid, mode: mode });
+    Net.send({ t: 'call:invite', to: uid, pid: extra && extra.pid, mode: mode, fromSecret: !!(extra && extra.fromSecret) });
     var c = (extra && extra.nick) ? { nick: extra.nick, avatar: extra.avatar } : contactOf(uid);
     openUI(c, '正在呼叫…');
     Sfx.alarm();
@@ -185,7 +196,8 @@ window.Call = (function () {
       if (state !== 'active' || !useRtc) return;
       if (pc && pc.connectionState === 'connected') return;
       useRtc = false;
-      var why = hasRelay ? '网络穿透失败（双方可能在不同网络），' : '跨网络中转未配置，';
+      var why = hasRelay ? '网络穿透失败（TURN 中继未连通，检查 UDP 3478 与中继端口段），'
+                         : '跨网络中转未配置（服务端需设置 TURN_SECRET / TURN_URLS），';
       if (mode === 'video') App.toast(why + '已切换为「按住说话」');
       if (pc) { try { pc.close(); } catch (e) { } pc = null; }
       pttMode();
@@ -247,8 +259,18 @@ window.Call = (function () {
   }
 
   /* ---------------- 中转语音（按住说话） ---------------- */
+  /* 组网失败时把原因常驻显示，不再一闪而过找不到按钮 */
+  function showNetHint(txt) {
+    var n = document.getElementById('c-net'); if (!n) return;
+    n.innerHTML = '⚠ 视频组网失败：' + App.esc(txt || '网络穿透失败') +
+      '<br>已切换为「按住说话」语音通话，按住下方绿色大按钮讲话。' +
+      '<br><span style="opacity:.75">修复：服务器部署 coturn，设置 TURN_SECRET / TURN_URLS，' +
+      '并在安全组放行 UDP 3478 与 49152–65535；8080 只是信令端口，不能代替 TURN。</span>';
+    n.classList.remove('hidden');
+  }
   function pttMode() {
     setSt('语音通话 · 按住说话，松开对方立即听到');
+    showNetHint(iceDiag || (hasRelay ? 'TURN 中继协商失败，已降级' : '未配置 TURN 中继，公共 STUN 在国内常被阻断'));
     if (mode === 'video') App.toast(rtcWhy());
     var b = document.getElementById('c-ptt');
     if (!b) return;
@@ -281,6 +303,7 @@ window.Call = (function () {
       '<div class="cav" id="c-av">' + Avatar.svg(c.avatar, 76) + '</div>' +
       '<div class="cnm">' + App.esc(c.nick || '好友') + '</div>' +
       '<div class="cst" id="c-st">' + st + '</div>' +
+      '<div id="c-net" class="hidden"></div>' +
       '<div class="cvid ' + (mode === 'video' ? '' : 'hidden') + '" id="c-vid">' +
       /* 对方基本满屏，自己是右下角小窗；点一下互换大小 */
       '<video id="c-remote" autoplay playsinline></video>' +
@@ -288,7 +311,7 @@ window.Call = (function () {
       (mode === 'video' ? '<div class="cflip" id="c-flip">🔄</div>' : '') +
       '</div>' +
       '<div class="crow">' +
-      '<button class="cBtn" id="c-mute">🔇<span>静音</span></button>' +
+      '<button class="cBtn" id="c-mute">🎙<span>静音</span></button>' +
       (mode === 'video' ? '<button class="cBtn" id="c-cam">📹<span>关摄像头</span></button>' : '') +
       (mode === 'video' ? '<button class="cBtn" id="c-swap">🔁<span>切换前后</span></button>' : '') +
       '<button class="cBtn end" id="c-end">✕<span>挂断</span></button>' +
@@ -300,7 +323,9 @@ window.Call = (function () {
     document.getElementById('c-mute').onclick = function () {
       muted = !muted;
       if (localStream) localStream.getAudioTracks().forEach(function (t) { t.enabled = !muted; });
-      document.getElementById('c-mute').classList.toggle('on', muted);
+      var mb = document.getElementById('c-mute');
+      mb.classList.toggle('on', muted);
+      mb.innerHTML = muted ? '🔇<span>取消静音</span>' : '🎙<span>静音</span>';
       App.toast(muted ? '已静音' : '已取消静音');
     };
     var cam = document.getElementById('c-cam');

@@ -24,7 +24,14 @@ window.Chat = (function () {
       }
       renderList();
     });
-    Net.on('chat:history', function (m) { msgs = m.list || []; renderMsgs(); scrollBottom(); });
+    Net.on('chat:history', function (m) { msgs = m.list || []; renderMsgs(); scrollToUnread(); });
+    Net.on('chat:read', function (m) {
+      var ids = ((m && m.ids) || []).map(String);
+      if (!ids.length) return;
+      var ch = false;
+      msgs.forEach(function (x) { if (ids.indexOf(String(x.id)) >= 0 && !x.read) { x.read = true; ch = true; } });
+      if (ch) renderMsgs();
+    });
     Net.on('chat:deleted', function (m) {
       msgs = msgs.filter(function (x) { return x.id !== m.id; }); renderMsgs();
     });
@@ -239,6 +246,7 @@ window.Chat = (function () {
   }
 
   function open(uid) {
+    lastUnread = unread[uid] || 0;
     cur = uid; unread[uid] = 0; msgs = [];
     var c = contacts.filter(function (x) { return x.uid === uid; })[0] || {};
     var t = document.createElement('div');
@@ -337,7 +345,9 @@ window.Chat = (function () {
       return '<div class="msg ' + (isMe ? 'me' : '') + (selMsgs.has(String(m.id)) ? ' picked' : '') + '" data-id="' + m.id + '">' +
         pick +
         '<div class="a">' + av + '</div><div class="bcol">' + nm + '<div class="bub ' + (m.kind || 'text') + '">' + body +
-        '<div class="time">' + fmt(m.ts) + '</div></div></div></div>';
+        '<div class="time">' + fmt(m.ts) +
+        (isMe ? '<span class="rd' + (m.read ? ' yes' : '') + '">' + (m.read ? '已读' : '未读') + '</span>' : '') +
+        '</div></div></div></div>';
     }).join('');
     box.querySelectorAll('[data-join]').forEach(function (b) {
       b.onclick = function (e) {
@@ -543,8 +553,28 @@ window.Chat = (function () {
     return esc(m.text || '');
   }
 
+  var lastUnread = 0;
   function scrollBottom() {
-    var b = document.getElementById('msgs'); if (b) setTimeout(function () { b.scrollTop = b.scrollHeight; }, 40);
+    var b = document.getElementById('msgs'); if (!b) return;
+    /* 双帧 + 图片加载后再滚：只延时 40ms 时容器高度常没算完，
+       表现就是「点进会话停在最开始那条」 */
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { b.scrollTop = b.scrollHeight; });
+    });
+    setTimeout(function () { b.scrollTop = b.scrollHeight; }, 260);
+    b.querySelectorAll('img').forEach(function (im) {
+      if (!im.complete) im.addEventListener('load', function () { b.scrollTop = b.scrollHeight; }, { once: true });
+    });
+  }
+  /* 有未读就跳到第一条未读附近，没有就停在最底部最新消息 */
+  function scrollToUnread() {
+    var b = document.getElementById('msgs'); if (!b) return;
+    scrollBottom();
+    if (lastUnread > 0) setTimeout(function () {
+      var all = b.querySelectorAll('.msg');
+      var idx = Math.max(0, all.length - lastUnread);
+      if (all[idx]) all[idx].scrollIntoView({ block: 'start' });
+    }, 340);
   }
 
   function send(obj) { Net.send(Object.assign({ t: 'chat', to: cur }, { msg: obj })); }

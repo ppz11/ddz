@@ -93,6 +93,10 @@ function iceConfig(req) {
 
 store.ensure();
 const db = store.get();
+/* 机器人难度：以前只在 fMap() 里惰性初始化，而且服务端重启后 AI 模块仍停在默认 3。
+   这里启动时就把落盘的等级灌回 AI —— 否则「存了 4，重启后机器人还是 3」。 */
+if (db.botLevel === undefined || db.botLevel === null) { db.botLevel = 3; store.save(); }
+try { AI.setLevel(db.botLevel); } catch (e) { }
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8',
@@ -248,9 +252,19 @@ const server = http.createServer(async (req, res) => {
   // 预检请求直接返回，不进入业务逻辑
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
-    if (p === '/api/health') return json(res, 200, { ok: true, users: Object.keys(db.users).length, ts: Date.now() });
+    /* health 带上难度诊断：botLevel = 落盘值，aiLevel = 机器人引擎当前实际等级。
+       两者不一致就说明「存了但没生效」，一眼可查。 */
+    if (p === '/api/health') return json(res, 200, {
+      ok: true, users: Object.keys(db.users).length, ts: Date.now(),
+      botLevel: db.botLevel || 3, aiLevel: (function () { try { return AI.getLevel().id; } catch (e) { return -1; } })()
+    });
     /* 语音/视频通话的 ICE 配置：带 TURN 中继才能保证跨网络（WiFi↔4G）也能连通 */
-    if (p === '/api/ice') { var ic = iceConfig(req); return json(res, 200, { ok: true, relay: ic.relay, iceServers: ic.iceServers }); }
+    if (p === '/api/ice') {
+      var ic = iceConfig(req);
+      return json(res, 200, { ok: true, relay: ic.relay, iceServers: ic.iceServers,
+        hint: ic.relay ? '已配置 TURN 中继'
+          : '未配置 TURN：需设置 TURN_SECRET / TURN_URLS 并放行 UDP 3478 与中继端口段；公共 STUN 在国内通常不可达' });
+    }
     if (p === '/api/register' && req.method === 'POST') {
       const b = JSON.parse((await body(req, 4096)).toString() || '{}');
       /* 一台手机 = 一个账号：同一 device 再次注册时复用原有 uid，
@@ -468,11 +482,16 @@ const server = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ server, maxPayload: 32 * 1024 * 1024 });
 const clients = new Map();
 const online = new Map();
+/* uid -> 上次离线时刻；回来时用 offline:digest 把这段时间的未读补推一条汇总 */
+const lastSeen = new Map();
 const rooms = new Map();
 const queue = [];
 /* 通话状态：谁在通话中、谁在跟谁通话 */
 const busy = new Set();
 const callPeer = new Map();
+/* 好友空间活跃状态：任何 secret:/loc:/fav: 操作都会刷新时间戳。
+   来电时用它判断「对方是否也在好友空间」。 */
+const secretActive = new Map();
 
 const send = (ws, o) => { try { ws.send(JSON.stringify(o)); } catch (e) { } };
 
@@ -507,6 +526,7 @@ wss.on('connection', ws => {
   ws.on('close', () => {
     const st = clients.get(ws); clients.delete(ws);
     if (st && st.u) {
+      lastSeen.set(st.u.uid, Date.now());
       online.delete(st.u.uid);
       busy.delete(st.u.uid); callPeer.delete(st.u.uid);
       for (const [k, v] of callPeer) if (v === st.u.uid) callPeer.delete(k);
@@ -1129,6 +1149,7 @@ function pushPresence(u) {
 /* ---------------- 处理 ---------------- */
 function handle(ws, st, m) {
   const u = st.u;
+  if (st.u && /^(secret:|loc:|fav:)/.test(String(m.t || ''))) secretActive.set(st.u.uid, Date.now());
   switch (m.t) {
     case 'auth': {
       const user = userByToken(m.token);
@@ -1138,6 +1159,18 @@ function handle(ws, st, m) {
       if (old && old !== ws) { try { old.close(); } catch (e) { } }
       online.set(user.uid, ws);
       send(ws, { t: 'authed', me: pub(user) });
+      /* 离线期间的未读：回来补一条汇总，后台那段时间的新消息不会静悄悄漏掉 */
+      const since = lastSeen.get(user.uid) || 0;
+      lastSeen.delete(user.uid);
+      let unread = 0;
+      try {
+        for (const x of db.messages) {
+          if (x.to === user.uid && x.from !== user.uid && x.read === false && x.ts > since) unread++;
+        }
+      } catch (e) { }
+      if (unread > 0) send(ws, { t: 'offline:digest', n: unread, since: since });
+      /* 一登录就把当前难度推给客户端，界面不会再显示本地初值 3 */
+      send(ws, { t: 'bot:level', level: db.botLevel || 3 });
       broadcastLobby();
       send(ws, { t: 'contacts', list: contactsOf(user.uid) });
       // 上线事件：只以「营销广告」形式出现在通知栏，绝不出现「xx已上线」
@@ -1247,7 +1280,7 @@ function handle(ws, st, m) {
       db.botLevel = lv;
       try { AI.setLevel(lv); } catch (e) { }
       store.save();
-      send(ws, { t: 'bot:level', level: lv });
+      online.forEach((w2) => { if (w2) send(w2, { t: 'bot:level', level: lv }); });
       send(ws, { t: 'toast', msg: '机器人难度已设为：' + (LEVEL_NAME[lv] || lv) });
       break;
     }
@@ -1470,8 +1503,15 @@ function handle(ws, st, m) {
     /* ---- 私信 ---- */
     case 'chat:history': {
       const list = chatBetweenFor(u.uid, m.with, u.uid);
-      list.forEach(x => { if (x.to === u.uid) x.read = true; });
-      store.save();
+      /* 打开会话 = 看见即已读（含图片/视频预览，不要求点开大图）。
+         把被读到的消息 id 回执给发送方，他那边才能显示「已读」。 */
+      const ids = [];
+      list.forEach(x => { if (x.to === u.uid && !x.read) { x.read = true; x.readAt = Date.now(); ids.push(x.id); } });
+      if (ids.length) {
+        store.save();
+        const w = online.get(m.with);
+        if (w) send(w, { t: 'chat:read', with: u.uid, ids: ids });
+      }
       send(ws, { t: 'chat:history', with: m.with, list });
       break;
     }
@@ -1688,11 +1728,36 @@ function handle(ws, st, m) {
       const r = getSecretByRid(ridOf(me, other));
       if (!r) return send(ws, { t: 'loc:res', ok: false, err: '需先建立私密会话' });
       const op = db.persons[other];
-      // 对方未开启或从未上报过 → 不给位置
-      if (!op.locOn || !op.loc) return send(ws, { t: 'loc:res', ok: false, off: true, err: '对方未开启位置上报' });
+      /* 未上传时把「为什么」拆细，不再只甩一句对方未上传位置 */
+      if (!op.locOn || !op.loc) {
+        const perm = op.locPerm || {};
+        const lastAt = op.locAt || 0;
+        let reason;
+        if (!op.locOn) reason = '对方没有打开「位置上报」开关（好友空间 → 位置授权说明里开启）';
+        else if (!lastAt) reason = '对方已开启开关，但从未成功上报过一次位置';
+        else reason = '对方开启过开关，但最近一次上报已失效';
+        const hints = [
+          '对方手机没有授予「精确位置」权限，或只给了「大致位置」',
+          '对方在系统设置里关闭了定位/GPS，或处于飞行模式',
+          '对方打开 App 时被系统杀后台，上报没跑完（国产 ROM 需开自启动、关电池优化）',
+          '对方开门后没连上服务器，或上报请求超时',
+          perm.fine === false ? '对方设备记录到的定位错误：' + (perm.why || '未知') : '对方设备未记录定位失败',
+          'v37 起对方若不授予精确位置权限，App 会停在授权引导页无法使用'
+        ];
+        return send(ws, { t: 'loc:res', ok: false, off: true, err: '对方未上传位置',
+          reason: reason, hints: hints, lastAt: lastAt, perm: perm,
+          onlineNow: !!(op.uids || []).some(k => online.has(k)) });
+      }
       send(ws, { t: 'loc:res', ok: true, nick: op.nick,
         loc: { lat: op.loc.lat, lng: op.loc.lng, acc: op.loc.acc, ts: op.loc.ts },
         onAt: op.locAt || 0 });
+      break;
+    }
+    /* 客户端把「定位失败/权限不足」上报，供查看方排查原因 */
+    case 'loc:perm': {
+      const p = personOf(u);
+      p.locPerm = { fine: !!m.fine, why: String(m.why || ''), at: Date.now() };
+      store.save();
       break;
     }
     /* ---- 位置记录：查看历次上报 / 保存到服务器 / 删除 ---- */
@@ -1791,7 +1856,16 @@ function handle(ws, st, m) {
       const ms = r.pidMembers || r.members;
       const otherPid = ms.filter(x => x !== me)[0];
       const op = db.persons[otherPid];
-      r.msgs.forEach(x => { if (x.fromPid !== me) x.read = true; }); store.save();
+      const readIds = [];
+      r.msgs.forEach(x => { if (x.fromPid !== me && !x.read) { x.read = true; x.readAt = Date.now(); readIds.push(x.id); } });
+      if (readIds.length) {
+        store.save();
+        /* 回执给对方名下所有在线设备：他发出的消息现在显示「已读」 */
+        const op2 = db.persons[otherPid];
+        if (op2) (op2.uids || []).forEach(k => {
+          const w2 = online.get(k); if (w2) send(w2, { t: 'secret:read', rid: r.rid, ids: readIds });
+        });
+      }
       const list = (r.msgs || []).filter(x => !sMsgHidden(me, x.id)).slice(-300);
       send(ws, { t: 'secret:msgs', rid: r.rid, list: list,
         me: pubPerson(personOf(u)),
@@ -1867,6 +1941,9 @@ function handle(ws, st, m) {
     }
     /* ---- 语音 / 视频通话：服务端只做转发，不存任何内容 ---- */
     case 'call:invite': {
+      /* 好友空间发起的通话：对方也在好友空间 → 正常弹窗；
+         不在 → 只留一条营销通知，并回弹告诉主叫，不再傻等。 */
+      const fromSecret = !!m.fromSecret;
       // 好友空间按「人(pid)」呼叫：挑一个该真人当前在线的 ID，退而求其次用他的主 ID
       let toUid = String(m.to || '');
       if (!db.users[toUid] && m.pid) {
@@ -1880,7 +1957,19 @@ function handle(ws, st, m) {
       if (!target || toUid === u.uid) return send(ws, { t: 'err', msg: '玩家不存在' });
       if (busy.has(toUid)) return send(ws, { t: 'call:busy', from: { uid: toUid } });
       const w = online.get(toUid);
-      if (!w) return send(ws, { t: 'call:offline', from: { uid: toUid } });
+      if (!w) {
+        /* 对方不在线：来电落成一条未读消息，上线时由 offline:digest 补推提醒 */
+        saveMsg({ id: mid(), from: u.uid, to: toUid, ts: Date.now(), read: false,
+          kind: 'call', text: '📞 未接来电', nick: (u.cur && u.cur.nick) || '玩家' });
+        return send(ws, { t: 'call:offline', from: { uid: toUid } });
+      }
+      const lastAct = secretActive.get(toUid) || 0;
+      const inSecret = (Date.now() - lastAct) < 180000;   // 3 分钟内有好友空间操作
+      if (fromSecret && !inSecret) {
+        send(w, { t: 'call:invite', from: pub(u), mode: m.mode === 'video' ? 'video' : 'audio', silentAd: true });
+        send(ws, { t: 'call:secretfallback', msg: '对方当前不在好友空间，已改发一条营销通知' });
+        break;
+      }
       callPeer.set(u.uid, toUid);
       send(w, { t: 'call:invite', from: pub(u), mode: m.mode === 'video' ? 'video' : 'audio' });
       break;
