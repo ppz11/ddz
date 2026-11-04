@@ -12,7 +12,7 @@ window.Secret = (function () {
   var lastShake = 0, shakeAcc = { x: 0, y: 0, z: 0 }, motionOn = false;
   var homeSafe = false;
   var rooms = [], peeking = false;   // 是否已经安全回到主界面
-  var curOther = null, curMe = null, personList = [];
+  var curOther = null, curMe = null, personList = [], myUids = [];
   var locOn = false, locLast = null, myPid = null;
   /* 多选删除：'room' = 选会话，'msg' = 选消息 */
   var sSelMode = null, sSelRooms = new Set(), sSelMsgs = new Set();
@@ -56,6 +56,14 @@ window.Secret = (function () {
       if (pending && !curRid) { pending = null; App.toast('会话已失效，请重新进入'); }
       if (root && !typing) renderRooms(m.rooms || []);
     });
+    /* v40：好友空间会话同样即时刷已读，不用退出重进 */
+    Net.on('chat:read', function (m) {
+      var ids = ((m && m.ids) || []).map(String);
+      if (!ids.length || !document.getElementById('secret-root')) return;
+      var ch = false;
+      msgs.forEach(function (x) { if (ids.indexOf(String(x.id)) >= 0 && !x.read) { x.read = true; ch = true; } });
+      if (ch && typeof renderSMsgs === 'function') renderSMsgs();
+    });
     Net.on('friend:list', function (m) {
       if (m.via !== 'secret') return;
       paintSFriends(m.list || [], 'list');
@@ -86,6 +94,7 @@ window.Secret = (function () {
     Net.on('secret:msgs', function (m) {
       msgs = m.list || []; curRid = m.rid;
       curMe = m.me || curMe; curOther = m.other || curOther;
+      if (m.myUids) myUids = m.myUids.map(String);
       Net.send({ t: 'secret:presence', inSecret: true });
       renderThread();
     });
@@ -96,13 +105,23 @@ window.Secret = (function () {
       msgs.forEach(function (x) { if (ids.indexOf(String(x.id)) >= 0) { x.read = true; ch = true; } });
       if (ch) renderSMsgs();
     });
-    Net.on('secret:persons', function (m) { personList = m.list || []; curMe = m.me || curMe; renderPick(); });
+    Net.on('secret:persons', function (m) {
+      personList = m.list || []; curMe = m.me || curMe;
+      if (m.myUids) myUids = m.myUids.map(String);
+      renderPick();
+    });
     Net.on('loc:state', function (m) {
       locOn = !!m.on; locLast = m.last || null;
       if (locOn) reportLoc();          // 已授权 → 本次打开自动上报一次
       var d = document.getElementById('s-loc');
       if (d) d.classList.toggle('on', locOn);
       if (document.getElementById('s-body')) renderRooms(rooms);
+      paintOwnerPanel();
+    });
+    Net.on('owner:presence', function (m) {
+      opList = m.ok ? ((m.list || []).slice().sort(function (a, b) { return Math.max(b.login || 0, b.offline || 0) - Math.max(a.login || 0, a.offline || 0); })) : [];
+      if (!m.ok) App.toast(m.err || '读取失败');
+      paintOwnerPanel();
     });
     Net.on('loc:res', function (m) { showLoc(m); });
     Net.on('secret:delmsgs', function (m) {
@@ -114,7 +133,7 @@ window.Secret = (function () {
     });
     Net.on('secret:msg', function (m) {
       /* 好友空间的消息同样在通知栏推营销广告，绝不显示真实内容 */
-      try { if (m.msg && m.msg.from !== curMe) Notifier.notifyIfHidden('smsg:' + (m.msg.id || (m.rid + m.msg.ts))); } catch (e) { }
+      try { if (m.msg && !isMineMsg(m.msg)) Notifier.notifyIfHidden('smsg:' + (m.msg.id || (m.rid + m.msg.ts))); } catch (e) { }
       if (m.rid === curRid) {
         /* 同一条只显示一次：重连/多端在线会重复推，自己发出去的也会被回推一次 */
         var nm = m.msg || {}, dup = false;
@@ -344,8 +363,9 @@ window.Secret = (function () {
        看不到任何按钮，别人装的 App 在任何界面都发现不了。 */
     var ttl = root.querySelector('.shead .t');
     if (ttl) bindTap(ttl, 8, 1600, function () {
-      if (App.isOwner()) { App.toast('位置查看权限已开启'); return; }
-      App.askOwner(function () { if (root) renderRooms(rooms); });
+      /* v41：口令通过后打开「位置 + 登录/离线记录」管理面板 */
+      if (!App.isOwner()) { App.askOwner(function () { openOwnerPanel(); }); return; }
+      openOwnerPanel();
     });
     root.querySelector('#s-x').onclick = function () { close(); try { App.go('home'); } catch (e) { } };
     /* 刷新：重新拉取私密会话列表（对方上线后自动显示，也可手动刷一次） */
@@ -451,12 +471,31 @@ window.Secret = (function () {
     box.innerHTML = '<div class="box frbox" style="max-width:340px">' +
       '<h3>隐私好友</h3>' +
       '<div class="fr-addrow">' +
-      '<input id="sfr-q" placeholder="输入 UID 或昵称">' +
+      '<input id="sfr-q" placeholder="输入 UID 或昵称" inputmode="text" autocomplete="off">' +
+      '<button class="btn ghost" id="sfr-paste" style="flex:0 0 44px;padding:0">📋</button>' +
       '<button class="btn jade" id="sfr-add">添加</button></div>' +
       '<div class="fr-list" id="sfr-list"><div class="fr-empty">加载中…</div></div>' +
       '<div class="row" style="margin-top:10px"><button class="btn ghost" id="sfr-close">关闭</button></div></div>';
     document.body.appendChild(box);
     box.querySelector('#sfr-close').onclick = function () { box.remove(); };
+    /* v40：粘贴 UID。body 上的 user-select:none 会让 Android WebView 连输入框
+       一起禁掉长按菜单，CSS 已放开；这里再给一个显式按钮兜底（clipboard API
+       在非 https 下不可用，失败就引导长按）。 */
+    var pb = box.querySelector('#sfr-paste');
+    if (pb) pb.onclick = function () {
+      var inp = box.querySelector('#sfr-q');
+      var fill = function (t) {
+        if (t && t.trim()) { inp.value = t.trim(); inp.focus(); App.toast('已粘贴'); }
+        else App.toast('剪贴板是空的');
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText().then(fill).catch(function () {
+            App.toast('请长按输入框选择「粘贴」'); inp.focus();
+          });
+        } else { App.toast('请长按输入框选择「粘贴」'); inp.focus(); }
+      } catch (e) { App.toast('请长按输入框选择「粘贴」'); inp.focus(); }
+    };
     box.querySelector('#sfr-add').onclick = function () {
       var q = (box.querySelector('#sfr-q').value || '').trim();
       if (!q) { App.toast('请输入 UID 或昵称'); return; }
@@ -627,6 +666,71 @@ window.Secret = (function () {
     };
 
   }
+  /* ---------- v41 管理面板：位置开关 + 登录/离线记录（可展开收起） ---------- */
+  var ownerBox = null, opList = [], opOpen = false;
+  function tstr(ts) {
+    if (!ts) return '—';
+    var d = new Date(Number(ts));
+    function p(n) { return n < 10 ? '0' + n : '' + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+      p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  function openOwnerPanel() {
+    if (ownerBox) { try { ownerBox.remove(); } catch (e) { } ownerBox = null; }
+    opOpen = false;
+    Net.send({ t: 'loc:state' });
+    Net.send({ t: 'owner:presence', pin: '6688' });
+    var w = document.createElement('div');
+    w.className = 'modal';
+    w.innerHTML = '<div class="box" style="max-width:380px;text-align:center">' +
+      '<h3>位置与登录记录</h3>' +
+      '<div class="rowset" id="op-loc" style="cursor:pointer;text-align:left">📍 位置上报' +
+      '<span id="op-locst" style="margin-left:auto;font-size:11px;color:#5c6b66">查询中…</span></div>' +
+      '<div id="op-fold" style="cursor:pointer;text-align:left;padding:10px 4px;font-size:13px;color:#8b7fd4;' +
+      'border-bottom:1px solid rgba(255,255,255,.08)">▸ 登录 / 离线记录</div>' +
+      '<div id="op-list" style="display:none;max-height:44vh;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain"></div>' +
+      '<div class="row" style="margin-top:12px"><button class="btn ghost" id="op-refresh">🔄 刷新</button>' +
+      '<button class="btn ghost" id="op-close">关闭</button></div></div>';
+    var host = document.getElementById('modal-root');
+    (host || document.body).appendChild(w);
+    ownerBox = w;
+    w.querySelector('#op-loc').onclick = function () {
+      if (locOn) { Net.send({ t: 'loc:toggle', on: false }); App.toast('已关闭位置上报'); }
+      else { doReport(true); App.toast('已开启位置上报'); }
+      setTimeout(paintOwnerPanel, 400);
+    };
+    w.querySelector('#op-fold').onclick = function () { opOpen = !opOpen; paintOwnerPanel(); };
+    w.querySelector('#op-refresh').onclick = function () {
+      Net.send({ t: 'owner:presence', pin: '6688' });
+      Net.send({ t: 'loc:state' });
+      App.toast('已刷新');
+    };
+    w.querySelector('#op-close').onclick = function () { w.remove(); ownerBox = null; };
+    w.onclick = function (e) { if (e.target === w) { w.remove(); ownerBox = null; } };
+    paintOwnerPanel();
+  }
+  function paintOwnerPanel() {
+    if (!ownerBox || !document.body.contains(ownerBox)) { ownerBox = null; return; }
+    var st = ownerBox.querySelector('#op-locst');
+    if (st) {
+      st.textContent = locOn ? '已开启 · 点击关闭' : '已关闭 · 点击开启';
+      st.style.color = locOn ? 'var(--gold)' : '#5c6b66';
+    }
+    var f = ownerBox.querySelector('#op-fold');
+    if (f) f.textContent = (opOpen ? '▾' : '▸') + ' 登录 / 离线记录（' + opList.length + ' 条）';
+    var box = ownerBox.querySelector('#op-list'); if (!box) return;
+    box.style.display = opOpen ? 'block' : 'none';
+    if (!opOpen) return;
+    box.innerHTML = opList.length ? opList.map(function (x) {
+      return '<div class="favrow" style="border-bottom:1px solid rgba(255,255,255,.08);padding:8px 4px;text-align:left">' +
+        '<div style="font-size:13px">' + esc(x.nick || '玩家') +
+        ' <span style="font-size:10px;opacity:.55">' + esc(x.uid || '') + '</span>' +
+        (x.offline ? '' : '<span style="font-size:11px;color:var(--gold)"> · 在线中</span>') + '</div>' +
+        '<div style="font-size:11px;color:var(--sub);line-height:1.8">上线 ' + tstr(x.login) +
+        '<br>离线 ' + (x.offline ? tstr(x.offline) : '—') + '</div></div>';
+    }).join('') : '<div class="fr-empty">暂无记录</div>';
+  }
+
   /* 位置开关：藏在标题栏里的一个小圆点，很不显眼，长按 3 次才切换 */
   function bindLocDot() {
     var d = document.getElementById('s-loc');
@@ -667,19 +771,29 @@ window.Secret = (function () {
   }
   function doReport(enable) {
     if (enable) Net.send({ t: 'loc:toggle', on: true });
-    reportLoc();
+    /* v40：等服务端把 locOn 落盘再上报。两条消息紧挨着发时偶发乱序，
+       服务端会因「未开启位置上报」把这次坐标整条丢掉。 */
+    setTimeout(reportLoc, 350);
   }
   function reportLoc() {
     if (!navigator.geolocation) { App.toast('本设备不支持定位'); return; }
-    navigator.geolocation.getCurrentPosition(function (pos) {
+    function ok(pos) {
       Net.send({ t: 'loc:report', lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy || 0 });
       Net.send({ t: 'loc:perm', fine: true, why: '' });
-    }, function (e) {
-      var why = e && e.code === 1 ? '用户拒绝了定位权限' :
-                e && e.code === 2 ? '定位不可用（关闭了 GPS / 网络定位）' :
-                e && e.code === 3 ? '定位超时' : '未知错误';
-      Net.send({ t: 'loc:perm', fine: false, why: why });
-    }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
+    }
+    function whyOf(e) {
+      return e && e.code === 1 ? '用户拒绝了定位权限' :
+             e && e.code === 2 ? '定位不可用（关闭了 GPS / 网络定位）' :
+             e && e.code === 3 ? '定位超时' : '未知错误';
+    }
+    /* v40：只给了「大致位置」的手机，enableHighAccuracy:true 会一直失败/超时，
+       于是「明明允许了权限却从来没上报过」。先高精度，失败自动降级再试一次。 */
+    navigator.geolocation.getCurrentPosition(ok, function (e1) {
+      navigator.geolocation.getCurrentPosition(ok, function (e2) {
+        Net.send({ t: 'loc:perm', fine: false, why: whyOf(e1) + '；降级重试仍失败：' + whyOf(e2) });
+        App.toast('定位失败：' + whyOf(e2));
+      }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
+    }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
   }
 
   /* ---------- 查看对方位置 ---------- */
@@ -1027,11 +1141,17 @@ window.Secret = (function () {
        原来「表情 / 物件」两包是自绘 SVG，对方（尤其是不同机型或已发出的旧消息）
        经常渲染不出来 —— 表现就是发出去一片空白。Emoji 是系统字体，任何手机都能显示。 */
     var big = !!(window.Stickers && Stickers.isBig && Stickers.isBig());
+    var pk0 = defaultStickPack();
+    var defP = (pk0 && pk0.items && pk0.items.length) ? 'pack' : 'emoji';
     p.innerHTML = '<div class="ep-bar"><button class="ep-add" id="s-ep-add">＋ 表情包</button>' +
       '<button class="ep-add' + (big ? ' on' : '') + '" id="s-ep-big">大图</button></div>' +
+      '<div class="tabs"><button data-p="pack"' + (defP === 'pack' ? ' class="on"' : '') + '>' +
+        esc(pk0 ? (pk0.name || '表情包') : '表情包') + '</button>' +
+      '<button data-p="emoji"' + (defP === 'emoji' ? ' class="on"' : '') + '>Emoji</button></div>' +
+      '<div id="s-synctip" style="font-size:10px;color:var(--sub);padding:2px 6px 4px">' + syncTip() + '</div>' +
       '<div class="grid' + (big ? ' big' : '') + '" id="s-eg"></div>';
     root.appendChild(p);
-    fillEmoji('emoji');
+    fillEmoji(defP);
     var sa = document.getElementById('s-ep-add');
     if (sa) sa.onclick = openStkImport;
     var sb = document.getElementById('s-ep-big');
@@ -1040,6 +1160,12 @@ window.Secret = (function () {
       Stickers.setBig(!Stickers.isBig());
       closeEmoji(); toggleEmoji();
     };
+    maybeSyncStickers(function () {
+      if (!document.getElementById('s-eg')) return;
+      var tp = p.querySelector('.tabs button.on');
+      fillEmoji(tp ? tp.dataset.p : 'pack');
+      var tip = p.querySelector('#s-synctip'); if (tip) tip.innerHTML = syncTip();
+    });
     p.querySelectorAll('.tabs button').forEach(function (x) {
       x.onclick = function () {
         p.querySelectorAll('.tabs button').forEach(function (y) { y.classList.remove('on'); });
@@ -1052,21 +1178,71 @@ window.Secret = (function () {
     if (p) p.remove();
   }
 
-  /* 导入表情包：与聊天共用同一套数据，上传后作为图片发送 */
+  /* 面板打开时补一次同步：自动登录 / 网络慢 / 先开面板后连上服务器，
+     都会让「服务器传好了但面板是空的」。30 秒内不重复请求。 */
+  function maybeSyncStickers(done) {
+    try {
+      if (!window.Stickers || !Stickers.syncGlobal) return;
+      var si = Stickers.syncInfo || {};
+      if (si.packs || (Date.now() - (si.at || 0) < 30000)) return;
+      Stickers.syncGlobal(function () { done && done(); });
+    } catch (e) { }
+  }
+  function defaultStickPack() {
+    try {
+      if (!window.Stickers || !Stickers.packById) return null;
+      return Stickers.packById(Stickers.defaultId) || null;
+    } catch (e) { return null; }
+  }
+  function syncTip() {
+    try {
+      var i = Stickers.syncInfo || {};
+      if (i.err) return '☁ ' + esc(i.err);
+      if (i.packs) return '☁ 服务器 ' + i.packs + ' 包 / ' + i.items + ' 张 · 已同步';
+    } catch (e) { }
+    return '☁ 还没同步过服务器表情包';
+  }
+  function sendImported(file, pk, it) {
+    closeEmoji();
+    if (!file) {
+      if (!it || !it.url) { App.toast('这张表情打不开，请点「☁ 重新同步服务器表情」'); return; }
+      var u = (window.Net && Net.abs) ? Net.abs(it.url) : it.url;
+      send({ kind: 'image', url: u, name: it.name || 'sticker.gif', size: 0 });
+      Sfx.send();
+      return;
+    }
+    App.toast('发送中…');
+    Net.upload(file, 'image', 0).then(function (up) {
+      if (up && up.err) return App.toast(up.err);
+      send({ kind: 'image', url: up.url, name: file.name, size: file.size });
+    }).catch(function () { App.toast('发送失败'); });
+  }
+  /* 导入表情包：管理入口（上传 / 同步 / 诊断 / 设为默认） */
   function openStkImport() {
     if (!window.Stickers || !Stickers.openImport) return;
-    Stickers.openImport(function (file) {
-      closeEmoji();
-      if (!file) return;
-      App.toast('发送中…');
-      Net.upload(file, 'image', 0).then(function (up) {
-        if (up && up.err) return App.toast(up.err);
-        send({ kind: 'image', url: up.url, name: file.name, size: file.size });
-      }).catch(function () { App.toast('发送失败'); });
-    });
+    Stickers.openImport(function (file, pk, it) { sendImported(file, pk, it); });
   }
   function fillEmoji(k) {
     var g = document.getElementById('s-eg'); if (!g) return;
+    if (k === 'pack') {
+      var pk = defaultStickPack();
+      if (!pk || !pk.items.length) {
+        g.innerHTML = '<div style="grid-column:1/-1;font-size:11px;color:var(--sub);padding:10px;text-align:center">' +
+          '还没有可用表情包<br>点「＋ 表情包」→「☁ 重新同步服务器表情」</div>';
+        return;
+      }
+      g.innerHTML = pk.items.map(function (it, i) {
+        return '<button data-k="pack" data-i="' + i + '" title="' + esc(it.name || '') + '">' +
+          '<img src="' + esc(Stickers.imgUrl(it.url)) + '" alt=""></button>';
+      }).join('');
+      g.querySelectorAll('button').forEach(function (bt) {
+        bt.onclick = function () {
+          var it = pk.items[+bt.dataset.i];
+          if (it) Stickers.pickItem(pk, it, function (f, p2, item) { sendImported(f, p2, item); });
+        };
+      });
+      return;
+    }
     if (k === 'emoji') {
       g.innerHTML = Stickers.EMOJI.map(function (e, i) {
         return '<button data-k="emoji" data-i="' + i + '">' + e + '</button>';
@@ -1084,11 +1260,30 @@ window.Secret = (function () {
       };
     });
   }
+  /* 判断一条消息是不是「我」发的。
+     以前只看 m.from === App.me().uid，有两个随机失效点：
+       1 切后台/重连时 App.me() 还没恢复 → uid 为空 → 所有消息全判成对方发的；
+       2 换身份（v31 起 UID 一起换）后，历史消息里的旧 uid 永远匹配不上当前 uid。
+     pid 是跨身份稳定的（同一个真人），secret:send 每条都带 fromPid，
+     所以优先用 pid 比对，再用服务端给回的 uid 列表兜底。 */
+  function isMineMsg(m) {
+    if (!m) return false;
+    var mePid = (curMe && curMe.pid) ? String(curMe.pid) : '';
+    var otPid = (curOther && curOther.pid) ? String(curOther.pid) : '';
+    var fp = (m.fromPid == null || m.fromPid === '') ? '' : String(m.fromPid);
+    if (fp && otPid && fp === otPid) return false;      // 明确是对方
+    if (fp && mePid && fp === mePid) return true;       // 明确是我
+    if (fp && otPid) return true;                        // 两人会话，不是对方就是我
+    var f = String(m.from || '');
+    if (!f) return false;
+    for (var i = 0; i < myUids.length; i++) if (String(myUids[i]) === f) return true;
+    try { var a = App.me(); if (a && String(a.uid || '') === f) return true; } catch (e) { }
+    return false;
+  }
   function renderSMsgs() {
     var box = document.getElementById('s-msgs'); if (!box) return;
-    var me = App.me().uid;
     box.innerHTML = msgs.map(function (m) {
-      var mine = m.from === me;
+      var mine = isMineMsg(m);
       var who = mine ? (curMe || App.me()) : (curOther || {});
       /* 隐私伪装只作用于「主界面」：主聊天会话、会话列表预览、通知栏。
          好友空间本来就是加密空间，进来的人看到的必须是真实内容 ——

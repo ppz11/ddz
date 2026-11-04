@@ -107,12 +107,48 @@ window.Stickers = (function () {
   /* 用户是否手动选过默认包：选过之后服务器同步不能再抢回去，
      否则「设为默认」看着生效、下一次同步又被覆盖成服务器包。 */
   var LS_DEF_USER = 'ddz_sticker_defuser';
+  var LS_SYNC = 'ddz_sticker_synclog';
   function userPicked() { try { return localStorage.getItem(LS_DEF_USER) === '1'; } catch (e) { return false; } }
   var USER_PACKS = [];
   /* 服务器统一下发的包：房主上传一次，所有玩家登录后自动同步，
      排在列表最前、自动设为默认、不允许本地删除（删了下次同步还会回来）。 */
   var GLOBAL_PACKS = [];
   var DEFAULT_PACK = '';
+  /* 上次同步结果：弹窗「诊断表情」会显示，方便分辨「服务器没更新」还是「App 是旧版」 */
+  var SYNC_INFO = { at: 0, packs: 0, items: 0, err: '还没同步过' };
+
+  /* 可用的图片地址：dataURL / http(s) / 根相对路径 / blob。
+     像 1badb5a8….gif 这种「电脑本地文件名」在手机里根本不存在，
+     以前会被当成正常条目渲染，破图后把 alt 文字铺满半个屏幕。 */
+  function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+  function validUrl(u) {
+    u = String(u || '');
+    return /^(data:image\/|https?:\/\/|blob:|\/)/i.test(u);
+  }
+  /* 统一取可显示的绝对地址：相对 /api/file/xxx 按当前连的服务器补全。
+     缓存里的旧包也走这里，避免「上次存的是相对路径、这次 WebView 是 localhost → 全破图」。 */
+  function imgUrl(u) {
+    if (!validUrl(u)) return '';
+    try { if (window.Net && Net.abs) return Net.abs(u); } catch (e) { }
+    return u;
+  }
+  /* 清洗一个包：丢掉打不开的条目；全部失效的包返回 null */
+  function cleanPack(pk) {
+    if (!pk || !Array.isArray(pk.items)) return null;
+    var items = pk.items.filter(function (it) { return it && validUrl(it.url); }).map(function (it) {
+      var o = { id: it.id, name: it.name, anim: !!it.anim, mime: it.mime };
+      o.url = imgUrl(it.url);
+      return o;
+    });
+    if (!items.length) return null;
+    return { id: pk.id, name: pk.name || '我的表情', items: items, ts: pk.ts, global: !!pk.global };
+  }
+  function packUsable(id) { var p = packById(id); return !!(p && p.items.length); }
+  function clearUserPick() { try { localStorage.removeItem(LS_DEF_USER); } catch (e) { } }
 
   var BIG = false;
   function isBig() { return BIG; }
@@ -121,25 +157,32 @@ window.Stickers = (function () {
   function allPacks() { return GLOBAL_PACKS.concat(USER_PACKS); }
 
   function loadPacks() {
+    try { SYNC_INFO = JSON.parse(localStorage.getItem(LS_SYNC) || 'null') || SYNC_INFO; } catch (e) { }
     try {
-      USER_PACKS = JSON.parse(localStorage.getItem(LS_KEY) || '[]') || [];
+      USER_PACKS = (JSON.parse(localStorage.getItem(LS_KEY) || '[]') || [])
+        .map(function (pk) { var c = cleanPack(pk); return c; })
+        .filter(Boolean);
     } catch (e) { USER_PACKS = []; }
     try {
-      GLOBAL_PACKS = (JSON.parse(localStorage.getItem(LS_GLOBAL) || '[]') || []).map(function (pk) {
-        pk.global = true; return pk;
-      });
+      GLOBAL_PACKS = (JSON.parse(localStorage.getItem(LS_GLOBAL) || '[]') || [])
+        .map(function (pk) { pk.global = true; return cleanPack(pk); })
+        .filter(Boolean);
     } catch (e) { GLOBAL_PACKS = []; }
     try { BIG = localStorage.getItem(LS_BIG) === '1'; } catch (e) { BIG = false; }
     try { DEFAULT_PACK = localStorage.getItem(LS_DEF) || ''; } catch (e) { DEFAULT_PACK = ''; }
-    if (DEFAULT_PACK && !packById(DEFAULT_PACK)) DEFAULT_PACK = '';
-    /* 服务器包优先级最高：没手动选过就用它，保证每个人打开都一样 */
-    if (!DEFAULT_PACK && GLOBAL_PACKS.length) DEFAULT_PACK = GLOBAL_PACKS[0].id;
+    /* 手动选过的默认包如果已经失效（例如旧 JSON 包里全是本地文件名），
+       这个「用户选过」标记会永远挡住服务器包上位 —— 截图里服务器包旁边
+       一直挂着「设为默认」按钮就是这个原因。这里主动解除。 */
+    if (DEFAULT_PACK && !packUsable(DEFAULT_PACK)) { DEFAULT_PACK = ''; clearUserPick(); }
+    if (!DEFAULT_PACK && GLOBAL_PACKS.length) { DEFAULT_PACK = GLOBAL_PACKS[0].id; clearUserPick(); }
     if (!DEFAULT_PACK && USER_PACKS.length) DEFAULT_PACK = USER_PACKS[0].id;
+    savePacks();
   }
   function savePacks() {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(USER_PACKS));
       localStorage.setItem(LS_DEF, DEFAULT_PACK || '');
+      localStorage.setItem(LS_SYNC, JSON.stringify(SYNC_INFO));
     } catch (e) { }
   }
   /* 从服务器拉取统一表情包。返回是否拉到了包。 */
@@ -149,24 +192,32 @@ window.Stickers = (function () {
     N.api('/api/stickers').then(function (r) {
       var list = (r && r.packs) || [];
       GLOBAL_PACKS = list.map(function (pk) {
-        var items = (pk.items || []).filter(function (it) { return it && it.url; }).map(function (it) {
-          return {
-            id: it.id, name: it.name,
-            /* 服务器存的是 /api/file/xxx 相对路径，按当前连的服务器补全。
-               必须先判空再补全：abs('') 会变成光秃秃的服务器地址，反而成了有效值 */
-            url: (window.Net && Net.abs) ? Net.abs(it.url) : it.url,
-            anim: !!it.anim
-          };
+        var items = (pk.items || []).filter(function (it) { return it && validUrl(it.url); }).map(function (it) {
+          return { id: it.id, name: it.name, url: imgUrl(it.url), anim: !!it.anim };
         });
         return { id: pk.id, name: pk.name || '服务器表情', items: items, global: true, ts: pk.ts };
       }).filter(function (pk) { return pk.items.length; });
       try { localStorage.setItem(LS_GLOBAL, JSON.stringify(GLOBAL_PACKS)); } catch (e) { }
-      /* 只有用户没手动选过，才让服务器包当默认；手动选过就尊重用户的选择 */
-      if (GLOBAL_PACKS.length && !userPicked()) DEFAULT_PACK = GLOBAL_PACKS[0].id;
-      if (DEFAULT_PACK && !packById(DEFAULT_PACK)) DEFAULT_PACK = GLOBAL_PACKS.length ? GLOBAL_PACKS[0].id : '';
+      var total = GLOBAL_PACKS.reduce(function (n, p) { return n + p.items.length; }, 0);
+      SYNC_INFO = { at: Date.now(), packs: GLOBAL_PACKS.length, items: total,
+                    err: GLOBAL_PACKS.length ? '' : '服务器返回 0 个表情包（用上传工具发布一次）' };
+      /* 默认包三原则：
+         1 用户手动选的包仍然有效 → 尊重用户；
+         2 没选过 / 选过的包已失效 → 服务器第一个包自动上位（并清掉失效的手动标记）；
+         3 服务器一个包都没有 → 回落到本地包，绝不留空。 */
+      if (GLOBAL_PACKS.length && (!userPicked() || !packUsable(DEFAULT_PACK))) {
+        DEFAULT_PACK = GLOBAL_PACKS[0].id;
+        clearUserPick();
+      }
+      if (!packUsable(DEFAULT_PACK)) DEFAULT_PACK = USER_PACKS.length ? USER_PACKS[0].id : '';
       savePacks();
       cb && cb(GLOBAL_PACKS.length);
-    }).catch(function () { cb && cb(0); });
+    }).catch(function (e) {
+      SYNC_INFO = { at: Date.now(), packs: GLOBAL_PACKS.length, items: 0,
+                    err: '拉取失败：' + (e && e.message ? String(e.message).slice(0, 90) : '连不上服务器') };
+      savePacks();
+      cb && cb(0);
+    });
   }
   function packById(id) {
     var all = allPacks();
@@ -176,14 +227,18 @@ window.Stickers = (function () {
   function newId() { return 'up' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
   /* 新增一包，并把它设为默认（用户要求：新增的作为默认表情包） */
-  function addPack(name, items, cb) {
-    items = (items || []).filter(Boolean);
+  function addPack(name, items, cb, note) {
+    /* 兼容两种调用：addPack(name, items, cb) 与 addPack(name, items, note, cb) */
+    if (typeof cb === 'string') { note = cb; cb = arguments[3]; }
+    items = (items || []).filter(function (it) { return it && validUrl(it.url); })
+                         .map(function (it) { it.url = imgUrl(it.url); return it; });
     if (!items.length) { cb && cb('没有可用的表情'); return null; }
     var pk = { id: newId(), name: String(name || '我的表情').slice(0, 20), items: items, ts: Date.now() };
     USER_PACKS.push(pk);
     DEFAULT_PACK = pk.id;                 // 新增即默认
+    try { localStorage.setItem(LS_DEF_USER, '1'); } catch (e) { }
     savePacks();
-    cb && cb(null, pk);
+    cb && cb(note || null, pk);
     return pk;
   }
   function removePack(id) {
@@ -196,9 +251,11 @@ window.Stickers = (function () {
     return true;
   }
   function setDefault(id) {
+    if (!packUsable(id)) { try { window.App && App.toast && App.toast('这个包里没有能显示的表情，不能设为默认'); } catch (e) { } return false; }
     DEFAULT_PACK = id;
     try { localStorage.setItem(LS_DEF_USER, '1'); } catch (e) { }
     savePacks();
+    return true;
   }
 
   /* ---------- 动态表情识别 ----------
@@ -346,29 +403,56 @@ window.Stickers = (function () {
     }
     /* 配置里写的是电脑本地文件名（例如 1badb5a8….gif）时，手机里根本没有这些文件，
        导入后就是一片空白。这里直接说清楚，别让人以为是功能坏了。 */
-    var bad = items.filter(function (it) {
-      var u = String(it.url || '');
-      return !u || !/^(https?:|data:|\/|blob:)/i.test(u);
-    });
+    var bad = items.filter(function (it) { return !validUrl(it.url); });
     if (bad.length === items.length) {
       var ex = String(bad[0].url || '').slice(0, 20);
       cb && cb('配置里的图片地址是本地文件名' + (ex ? '（如 ' + ex + '）' : '') +
         '，手机上打不开。请改用「选图片」多选导入');
       return;
     }
-    addPack(name, items, cb);
+    /* 混着本地文件名的配置：只保留能打开的，别把破图带进包里 */
+    items = items.filter(function (it) { return validUrl(it.url); })
+                 .map(function (it) { it.url = imgUrl(it.url); return it; });
+    addPack(name, items, bad.length ? ('已跳过 ' + bad.length + ' 张打不开的表情') : '', cb);
   }
 
   /* 取某一包里某个表情的可显示内容 */
   function packItemHTML(id, idx) {
     var pk = packById(id); if (!pk) return '';
     var it = pk.items[idx]; if (!it) return '';
-    return '<img src="' + it.url + '" alt="' + (it.name || '') + '">';
+    return imgTag(it.url);
   }
   /* 整包预览（用于面板列表） */
   function packThumb(id) {
     var pk = packById(id); if (!pk || !pk.items.length) return '';
-    return '<img src="' + pk.items[0].url + '">';
+    return imgTag(pk.items[0].url);
+  }
+
+  /* 统一图片标签：URL 失效时不显示破图（alt 会铺满半个屏幕），
+     onerror 换成一个小占位，诊断面板里能查到具体是哪几张。 */
+  function imgTag(u, cls) {
+    var src = imgUrl(u);
+    if (!src) return '<span class="sk-bad' + (cls ? ' ' + cls : '') + '">?</span>';
+    return '<img src="' + src + '" alt="" ' + (cls ? 'class="' + cls + '" ' : '') +
+      'onerror="this.style.visibility=\'hidden\'">';
+  }
+
+  /* 选中一张表情交给调用方。
+     服务器包里存的是 URL，不是 dataURL：以前一律塞给 dataURLtoFile，
+     atob 解析失败返回 null → 调用方直接 return，表现就是「点表情没反应 /
+     提示发送失败」。现在服务器已有这张图，直接复用地址，不再下载再上传。 */
+  function pickItem(pk, it, onPick) {
+    if (!pk || !it) return null;
+    var u = imgUrl(it.url);
+    if (!u) { try { window.App && App.toast && App.toast('这张表情打不开，请重新同步'); } catch (e) { } return null; }
+    var out;
+    if (/^(https?:\/\/|\/)/.test(u)) {
+      out = { file: null, item: { url: u, name: it.name || 'sticker.gif', anim: !!it.anim, fromServer: true } };
+    } else {
+      out = { file: dataURLtoFile(u, (it.name || 'sticker') + (it.anim ? '.gif' : '.png'), it.mime), item: it };
+    }
+    if (onPick) onPick(out.file, pk, out.item);
+    return out;
   }
 
   /* dataURL → File，便于走上传接口把表情发给对方 */
@@ -386,15 +470,22 @@ window.Stickers = (function () {
   function openImport(onPick) {
     var box = document.createElement('div');
     box.className = 'modal'; box.id = 'stk-import';
+    function syncLine() {
+      if (!SYNC_INFO || !SYNC_INFO.at) return '服务器表情：还没同步过（登录后自动同步，或点下方按钮）';
+      var d = new Date(SYNC_INFO.at);
+      var t = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+      return '服务器表情：' + SYNC_INFO.packs + ' 包 / ' + SYNC_INFO.items + ' 张 · 上次同步 ' + t +
+        (SYNC_INFO.err ? ' · <span style="color:#e5a04d">' + esc(SYNC_INFO.err) + '</span>' : '');
+    }
     function packsHTML() {
       var all = allPacks();
       if (!all.length) return '<div style="text-align:center;color:var(--sub);font-size:12px;padding:10px 0">还没有导入的表情包</div>';
       return all.map(function (pk) {
         var on = (pk.id === DEFAULT_PACK) ? ' on' : '';
         return '<div class="spk' + on + '" data-id="' + pk.id + '">' +
-          '<div class="th"><img src="' + (pk.items[0] && pk.items[0].url) + '"></div>' +
-          '<div class="nm">' + (pk.global ? '☁ ' : '') + (pk.name || '我的表情') + '（' + pk.items.length + '）</div>' +
-          '<div class="op"><button data-a="def">设为默认</button>' +
+          '<div class="th">' + (pk.items[0] ? imgTag(pk.items[0].url) : '') + '</div>' +
+          '<div class="nm">' + (pk.global ? '☁ ' : '') + (pk.name || '我的表情') + '（' + pk.items.length + ' 张）</div>' +
+          '<div class="op">' + (on ? '<span class="sk-def">✔ 默认</span>' : '<button data-a="def">设为默认</button>') +
           (pk.global ? '<span style="font-size:10px;opacity:.6;padding:0 6px">服务器</span>'
             : '<button data-a="del">删除</button>') + '</div></div>';
       }).join('');
@@ -403,8 +494,7 @@ window.Stickers = (function () {
       var pk = packById(DEFAULT_PACK);
       if (!pk) return '<div style="text-align:center;color:var(--sub);font-size:12px;padding:14px 0">先导入一个表情包</div>';
       return pk.items.map(function (it, i) {
-        return '<button class="stk" data-i="' + i + '">' +
-          '<img src="' + it.url + '" alt="' + (it.name || '') + '">' +
+        return '<button class="stk" data-i="' + i + '">' + imgTag(it.url) +
           (it.anim ? '<span class="gif">GIF</span>' : '') + '</button>';
       }).join('');
     }
@@ -417,7 +507,9 @@ window.Stickers = (function () {
       '<button class="btn" id="sk-img" style="flex:1 1 44%;min-width:0">选图片</button>' +
       '<button class="btn" id="sk-json" style="flex:1 1 44%;min-width:0">上传配置</button>' +
       '<button class="btn' + (BIG ? ' jade' : '') + '" id="sk-big" style="flex:1 1 44%;min-width:0">大图' + (BIG ? '开' : '关') + '</button>' +
-      '<button class="btn" id="sk-diag" style="flex:1 1 44%;min-width:0">诊断表情</button></div>' +
+      '<button class="btn" id="sk-diag" style="flex:1 1 44%;min-width:0">诊断表情</button>' +
+      '<button class="btn jade" id="sk-sync" style="flex:1 1 94%;min-width:0">☁ 重新同步服务器表情</button></div>' +
+      '<div id="sk-syncinfo" style="font-size:11px;color:var(--sub);line-height:1.6;margin:-2px 0 8px">' + syncLine() + '</div>' +
       '<div class="spk-list" id="sk-list" style="max-height:22vh;overflow-y:auto;-webkit-overflow-scrolling:touch">' +
       packsHTML() + '</div>' +
       '<div class="sk-grid" id="sk-grid" style="margin-top:10px;max-height:34vh;overflow-y:auto;-webkit-overflow-scrolling:touch">' +
@@ -439,24 +531,38 @@ window.Stickers = (function () {
     var db = box.querySelector('#sk-diag');
     if (db) db.onclick = function () {
       var all = allPacks();
-      if (!all.length) { window.App && App.toast && App.toast('还没有表情包'); return; }
       var lines = [];
+      lines.push('<b>服务器同步</b>：' + syncLine());
+      lines.push('当前默认包：<b>' + esc((packById(DEFAULT_PACK) || {}).name || '无') + '</b>');
+      if (!all.length) lines.push('本机还没有任何表情包');
       all.forEach(function (pk) {
-        var n = 0, ex = '';
+        var n = 0, ex = '', sample = '';
         pk.items.forEach(function (it) {
           var u = String(it.url || '');
-          if (!u || !/^(https?:|data:|\/|blob:)/i.test(u)) { n++; if (!ex) ex = String(u).slice(0, 34); }
+          if (!sample) sample = u;
+          if (!validUrl(u)) { n++; if (!ex) ex = u.slice(0, 34); }
         });
-        lines.push('\u00b7 ' + (pk.name || '\u6211\u7688\u8868\u60c5') + '：\u5171 ' + pk.items.length + ' \u5f20' +
-          (n ? ('\uff0c' + n + ' \u5f20\u6253\u4e0d\u5f00' + (ex ? '\uff08\u4f8b\uff1a' + ex + '\uff09' : '')) : '\uff0c\u5168\u90e8\u53ef\u7528'));
+        lines.push('· ' + esc(pk.name || '我的表情') + '（' + (pk.global ? '服务器' : '本机') + '）：' +
+          pk.items.length + ' 张' + (n ? ('，<span style="color:#e5a04d">' + n + ' 张打不开</span>') : '，全部可用') +
+          '<br><span style="font-size:10px;opacity:.65;word-break:break-all">样例：' + esc(sample.slice(0, 90)) + '</span>');
       });
+      lines.push('<span style="font-size:11px;color:#5c6b66">若这里显示 0 包或「拉取失败」：先确认服务端已更新，' +
+        '再点「☁ 重新同步服务器表情」。打不开的地址通常是电脑本地文件名，手机里没有这些文件。</span>');
       try {
-        window.App.modal('<h3>\u8868\u60c5\u5305\u8bca\u65ad</h3><p style="font-size:12px;line-height:1.8">' +
-          lines.join('<br>') + '</p><p style="font-size:11px;color:#5c6b66">' +
-          '\u6253\u4e0d\u5f00\u7684\u901a\u5e38\u662f\u914d\u7f6e\u91cc\u586b\u4e86\u7535\u8111\u672c\u5730\u6587\u4ef6\u540d\uff0c\u6539\u7528\u300c\u9009\u56fe\u7247\u300d\u591a\u9009\u5bfc\u5165\u5373\u53ef</p>' +
-          '<div class="row"><button class="btn ghost" data-a="0">\u5173\u95ed</button></div>',
+        window.App.modal('<h3>表情包诊断</h3><p style="font-size:12px;line-height:1.8">' +
+          lines.join('<br>') + '</p><div class="row"><button class="btn ghost" data-a="0">关闭</button></div>',
           [{ sel: '[data-a="0"]' }]);
       } catch (e) { window.App && App.toast && App.toast(lines.join(' / ')); }
+    };
+    var sb = box.querySelector('#sk-sync');
+    if (sb) sb.onclick = function () {
+      sb.disabled = true; sb.textContent = '同步中…';
+      syncGlobal(function (n) {
+        sb.disabled = false; sb.textContent = '☁ 重新同步服务器表情';
+        var e2 = box.querySelector('#sk-syncinfo'); if (e2) e2.innerHTML = syncLine();
+        refresh();
+        try { window.App && App.toast && App.toast(n ? ('已同步 ' + n + ' 个服务器表情包') : '没拉到服务器表情包，请看诊断'); } catch (err) { }
+      });
     };
     fi.onchange = function () {
       fromFiles(fi.files, function (err, pk) {
@@ -483,6 +589,7 @@ window.Stickers = (function () {
     function refresh() {
       var l = box.querySelector('#sk-list'); if (l) l.innerHTML = packsHTML();
       var g = box.querySelector('#sk-grid'); if (g) { g.innerHTML = gridHTML(); g.classList.toggle('big', BIG); }
+      var si = box.querySelector('#sk-syncinfo'); if (si) si.innerHTML = syncLine();
       bindList(); bindGrid();
     }
     var skRefresh = refresh;
@@ -505,24 +612,27 @@ window.Stickers = (function () {
         var fire = function () {
           var pk = packById(DEFAULT_PACK); if (!pk) return;
           var it = pk.items[+b.dataset.i]; if (!it) return;
-          onPick && onPick(dataURLtoFile(it.url, (it.name || 'sticker') + (it.anim ? '.gif' : '.png'), it.mime), pk, it);
+          pickItem(pk, it, onPick);
           close();
         };
         b.onclick = function () { if (moved) { moved = false; return; } fire(); };
         /* 长按 → 大图预览：先看清楚再决定发不发 */
         b.addEventListener('touchstart', function () {
-          moved = false; tm = setTimeout(function () { moved = true; preview(b.querySelector('img').src); }, 420);
+          moved = false; tm = setTimeout(function () { moved = true;
+            var pk = packById(DEFAULT_PACK), it = pk && pk.items[+b.dataset.i];
+            if (it) preview(it.url); }, 420);
         }, { passive: true });
         b.addEventListener('touchend', function () { clearTimeout(tm); }, { passive: true });
         b.addEventListener('touchmove', function () { clearTimeout(tm); }, { passive: true });
-        b.addEventListener('contextmenu', function (e) { e.preventDefault(); preview(b.querySelector('img').src); });
+        b.addEventListener('contextmenu', function (e) { e.preventDefault();
+          var pk = packById(DEFAULT_PACK), it = pk && pk.items[+b.dataset.i]; if (it) preview(it.url); });
       });
     }
     /* 大图预览浮层：点任意处关闭 */
     function preview(src) {
       var ov = document.createElement('div');
       ov.className = 'stk-preview';
-      ov.innerHTML = '<img src="' + src + '">';
+      ov.innerHTML = imgTag(src);
       ov.onclick = function () { ov.remove(); };
       document.body.appendChild(ov);
     }
@@ -553,6 +663,8 @@ window.Stickers = (function () {
     syncGlobal: syncGlobal,
     get globalPacks() { return GLOBAL_PACKS; },
     packItemHTML: packItemHTML, packThumb: packThumb, reload: loadPacks,
+    imgUrl: imgUrl, validUrl: validUrl, pickItem: pickItem,
+    get syncInfo() { return SYNC_INFO; },
     openImport: openImport, dataURLtoFile: dataURLtoFile,
     isBig: isBig, setBig: setBig
   };

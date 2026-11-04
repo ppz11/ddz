@@ -128,12 +128,9 @@
     var kv = Object.keys(cnt).map(Number).filter(function (v) { return v !== mainV; })
       .sort(function (a, b) { return a - b; });
     if (!kv.length) return '';
-    var parts = kv.map(function (v) {
-      var c = cnt[v];
-      if (c >= 2 && take === 2) return '一对' + rankName(v);
-      if (c >= 2) return rankName(v);
-      return rankName(v);
-    });
+    /* v40：这里只返回「点数」，量词由 speak() 加。
+       以前 take===2 返回「一对3」，speak 又拼「带一对」，念成「三张5带一对一对3」。 */
+    var parts = kv.map(function (v) { return rankName(v); });
     return parts.join('、');
   }
   function speak(info, cards) {

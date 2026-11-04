@@ -1,6 +1,11 @@
 /* ===================== 私信聊天（文字/语音/图片/视频/文件/表情） ===================== */
 window.Chat = (function () {
   var contacts = [], cur = null, msgs = [], unread = {}, panel = null;
+  var readAck = new Set();   /* v40：回执到达时不在该会话，也要记住，下次渲染直接显示已读 */
+  /* v41：会话滚动锚点 —— 进入时跳到第一条未读，用户一动手就停止自动纠正 */
+  var scrollAnchor = null, userMoved = false, anchorToken = 0;
+  /* v41：好友名单缓存 —— 会话删掉后从好友列表点开，仍能显示昵称头像 */
+  var friendCache = {};
   var rec = null, chunks = [], stream = null, recStart = 0, recTimer = null, canceling = false;
   /* 多选删除：'conv' = 选会话，'msg' = 选消息 */
   var selMode = null, selConvs = new Set(), selMsgs = new Set();
@@ -16,7 +21,10 @@ window.Chat = (function () {
     Net.on('chat', function (m) {
       // 通知栏永远只推送斗地主营销广告，绝不泄露真实内容
       if (m.msg.from !== App.me().uid) Notifier.notifyIfHidden(m.msg.id || (m.msg.from + m.msg.ts));
-      if (cur && (m.msg.from === cur || m.msg.to === cur)) { pushMsg(m.msg); scrollBottom(); Sfx.msg(); }
+      if (cur && (m.msg.from === cur || m.msg.to === cur)) {
+        pushMsg(m.msg);   /* v41：滚动由 pushMsg 按「是否在底部」自行决定 */
+        Sfx.msg();
+      }
       else {
         unread[m.msg.from] = (unread[m.msg.from] || 0) + 1;
         Sfx.msg();
@@ -24,21 +32,34 @@ window.Chat = (function () {
       }
       renderList();
     });
-    Net.on('chat:history', function (m) { msgs = m.list || []; renderMsgs(); scrollToUnread(); });
+    Net.on('chat:history', function (m) {
+      msgs = m.list || []; renderMsgs();
+      /* v41：history 到达后统一设锚点，多次重试直到容器/图片尺寸稳定 */
+      scrollToUnread();
+    });
     Net.on('chat:read', function (m) {
       var ids = ((m && m.ids) || []).map(String);
       if (!ids.length) return;
-      var ch = false;
-      msgs.forEach(function (x) { if (ids.indexOf(String(x.id)) >= 0 && !x.read) { x.read = true; ch = true; } });
-      if (ch) renderMsgs();
+      ids.forEach(function (id) { readAck.add(id); });
+      msgs.forEach(function (x) { if (ids.indexOf(String(x.id)) >= 0) x.read = true; });
+      /* v41：只改对应气泡的「已读」两个字，不整表重建（滑动时不会卡一下） */
+      var b = document.getElementById('msgs');
+      if (b) b.querySelectorAll('.msg').forEach(function (el) {
+        if (ids.indexOf(String(el.dataset.id)) >= 0) {
+          var rd2 = el.querySelector('.rd');
+          if (rd2) { rd2.textContent = '已读'; rd2.className = 'rd yes'; }
+        }
+      });
+      renderList();
     });
     Net.on('chat:deleted', function (m) {
-      msgs = msgs.filter(function (x) { return x.id !== m.id; }); renderMsgs();
+      msgs = msgs.filter(function (x) { return String(x.id) !== String(m.id); });
+      dropMsgNodes([String(m.id)]);
     });
     Net.on('chat:deletedbatch', function (m) {
       var ids = (m.ids || []).map(String);
       msgs = msgs.filter(function (x) { return ids.indexOf(String(x.id)) < 0; });
-      renderMsgs();
+      dropMsgNodes(ids);
     });
     /* 单向删除：服务端不会再给对方推送删除事件，这里只处理自己这边的回执 */
     Net.on('chat:threadsdeleted', function (m) {
@@ -201,6 +222,8 @@ window.Chat = (function () {
 
   /* 好友列表渲染（搜索结果复用同一套卡片） */
   function paintFriends(list, mode) {
+    /* v41：缓存好友资料，供「会话删掉后从好友列表点开」时显示昵称 */
+    (list || []).forEach(function (f) { if (f.uid) friendCache[String(f.uid)] = f; });
     var box = document.getElementById('friend-box'); if (!box) return;
     var el = box.querySelector('#fr-list'); if (!el) return;
     if (!list || !list.length) {
@@ -248,7 +271,7 @@ window.Chat = (function () {
   function open(uid) {
     lastUnread = unread[uid] || 0;
     cur = uid; unread[uid] = 0; msgs = [];
-    var c = contacts.filter(function (x) { return x.uid === uid; })[0] || {};
+    var c = contacts.filter(function (x) { return String(x.uid) === String(uid); })[0] || friendCache[String(uid)] || {};
     var t = document.createElement('div');
     t.className = 'thread'; t.id = 'thread';
     t.innerHTML =
@@ -273,6 +296,9 @@ window.Chat = (function () {
       '<input type="file" id="f-vid" accept="video/*" class="hidden">' +
       '<input type="file" id="f-file" class="hidden">';
     document.getElementById('pages').appendChild(t);
+    /* v41：每次开会话重置滚动状态；手势监听只绑一次 */
+    userMoved = false; scrollAnchor = null; anchorToken++;
+    bindScrollGuards();
     document.getElementById('th-back').onclick = close;
     /* 会话内「管理」：一键进入消息多选删除；长按单条消息也能删除 */
     var mg = document.getElementById('th-manage');
@@ -307,6 +333,10 @@ window.Chat = (function () {
     document.getElementById('f-img').onchange = function (e) { sendFile(e.target.files[0], 'image'); };
     document.getElementById('f-vid').onchange = function (e) { sendFile(e.target.files[0], 'video'); };
     document.getElementById('f-file').onchange = function (e) { sendFile(e.target.files[0], 'file'); };
+    /* v41：会话被删过后，好友名单点开时先让服务端把会话放回列表（旧消息仍不显示） */
+    if (!contacts.some(function (x) { return String(x.uid) === String(uid); })) {
+      Net.send({ t: 'chat:reopen', with: uid });
+    }
     Net.send({ t: 'chat:history', with: uid });
     renderList();
   }
@@ -325,15 +355,50 @@ window.Chat = (function () {
     s.textContent = c.online ? '在线' : '离线';
     s.className = 's ' + (c.online ? 'on' : 'off');
   }
-  function pushMsg(m) { msgs.push(m); if (msgs.length > 300) msgs.shift(); renderMsgs(); }
+  /* v41：新消息只 append 一个节点；整表 innerHTML 重建是滑动卡顿的主因 */
+  function pushMsg(m) {
+    if (msgs.length && String(msgs[msgs.length - 1].id) === String(m.id)) return;
+    msgs.push(m); if (msgs.length > 300) msgs.shift();
+    var box = document.getElementById('msgs'); if (!box) return;
+    var atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 70;
+    var wrap = document.createElement('div');
+    wrap.innerHTML = msgHtml(m);
+    bindMsgNodes(wrap);
+    while (wrap.firstChild) box.appendChild(wrap.firstChild);
+    paintMsgBar();
+    /* 只跟随一次，不启动「进入会话」那套多轮重试，用户正在翻历史时不会被拉回 */
+    if (atBottom || !userMoved) {
+      scrollAnchor = { type: 'bottom' };
+      box.scrollTop = box.scrollHeight;
+      setTimeout(function () {
+        var bb = document.getElementById('msgs');
+        if (bb && !userMoved) bb.scrollTop = bb.scrollHeight;
+      }, 120);
+    }
+  }
+  function dropMsgNodes(ids) {
+    var b = document.getElementById('msgs');
+    if (b) b.querySelectorAll('.msg').forEach(function (el) {
+      if (ids.indexOf(String(el.dataset.id)) >= 0) el.remove();
+    });
+    paintMsgBar();
+  }
 
   function renderMsgs() {
     var box = document.getElementById('msgs'); if (!box) return;
-    /* 用字符串比较，避免数字/字符串 uid 类型不一致时把自己发的消息错判成对方的
-       （此前会出现「我和对方的消息挤在同一列」） */
-    var me = String(App.me().uid || '');
-    box.innerHTML = msgs.map(function (m) {
-      var isMe = String(m.from) === me;
+    box.innerHTML = msgs.map(msgHtml).join('');
+    bindMsgNodes(box);
+    paintMsgBar();
+    var mg = document.getElementById('th-manage');
+    if (mg) mg.textContent = selMode === 'msg' ? '完成' : '管理';
+  }
+  /* 单条消息 HTML 独立出来：新消息只生成一个节点并绑定 */
+  function msgHtml(m) {
+    var me = String((App.me() && App.me().uid) || '');
+      /* 本机身份还没恢复（重连时序）时不要把所有消息判成对方：
+         用 fromPid 与当前会话的另一方比对，兜底成「不是对方就是我」。 */
+      var isMe = me ? (String(m.from) === me)
+                    : (cur ? (String(m.from) !== String(cur)) : false);
       var who = isMe ? App.me() : (contacts.filter(function (c) { return String(c.uid) === String(m.from); })[0] || {});
       var av = Avatar.svg(who.avatar, 32);
       var body = bubble(m);
@@ -346,10 +411,14 @@ window.Chat = (function () {
         pick +
         '<div class="a">' + av + '</div><div class="bcol">' + nm + '<div class="bub ' + (m.kind || 'text') + '">' + body +
         '<div class="time">' + fmt(m.ts) +
-        (isMe ? '<span class="rd' + (m.read ? ' yes' : '') + '">' + (m.read ? '已读' : '未读') + '</span>' : '') +
+        (isMe ? (function () { var rd = m.read || readAck.has(String(m.id));
+          return '<span class="rd' + (rd ? ' yes' : '') + '">' + (rd ? '已读' : '未读') + '</span>'; })() : '') +
         '</div></div></div></div>';
-    }).join('');
-    box.querySelectorAll('[data-join]').forEach(function (b) {
+  }
+  /* 绑定可复用：renderMsgs 传整个容器，pushMsg 传只包含新节点的包裹层 */
+  function bindMsgNodes(root) {
+
+    root.querySelectorAll('[data-join]').forEach(function (b) {
       b.onclick = function (e) {
         e.stopPropagation();
         var g = String(b.dataset.join || '').trim();
@@ -359,7 +428,7 @@ window.Chat = (function () {
       };
     });
     /* 缩略图：取回 blob 再显示，避免直链在某些 WebView 下渲染失败 */
-    box.querySelectorAll('.thumb').forEach(function (th) {
+    root.querySelectorAll('.thumb').forEach(function (th) {
       var src = th.getAttribute('data-src');
       var kind = th.getAttribute('data-kind');
       var nm = th.getAttribute('data-name');
@@ -384,7 +453,7 @@ window.Chat = (function () {
       } catch (e) { show(src); }
       th.onclick = function (e) { e.stopPropagation(); App.viewMedia(src, false, nm); };
     });
-    box.querySelectorAll('.bub img,.bub video').forEach(function (el) {
+    root.querySelectorAll('.bub img,.bub video').forEach(function (el) {
       var nm = el.closest('.msg') ? (el.getAttribute('src') || '').split('/').pop() : '';
       el.onclick = function (e) { e.stopPropagation(); App.viewMedia(el.getAttribute('src'), el.tagName === 'VIDEO', nm); };
       // 图片加载失败 → 显示可重试的占位，避免只剩一块空白
@@ -411,11 +480,11 @@ window.Chat = (function () {
         };
       }
     });
-    box.querySelectorAll('[data-play]').forEach(function (b) {
+    root.querySelectorAll('[data-play]').forEach(function (b) {
       b.onclick = function (e) { e.stopPropagation(); playVoice(b.dataset.play, b); };
     });
     /* 图片 / 视频 / 文件支持保存；短语音不提供下载（点一下直接播就行，存下来没意义） */
-    box.querySelectorAll('[data-save],[data-dl]').forEach(function (b) {
+    root.querySelectorAll('[data-save],[data-dl]').forEach(function (b) {
       var a = b.tagName === 'A' ? b : null;
       var u = String((a && a.getAttribute('href')) || b.dataset.save || b.dataset.dl || '');
       var nm = String((a && a.getAttribute('download')) || b.dataset.name || '');
@@ -439,15 +508,15 @@ window.Chat = (function () {
   }
 
     /* 视频 / 图片长按也能保存 */
-    box.querySelectorAll('.bub video,.bub img').forEach(function (el) {
+    root.querySelectorAll('.bub video,.bub img').forEach(function (el) {
       longPress(el, function () {
         saveToDevice(el.src, (el.src || '').split('/').pop() || 'file');
       });
     });
-    box.querySelectorAll('[data-mpick]').forEach(function (b) {
+    root.querySelectorAll('[data-mpick]').forEach(function (b) {
       b.onclick = function (e) { e.stopPropagation(); toggleMsg(b.dataset.mpick); };
     });
-    box.querySelectorAll('.msg').forEach(function (el) {
+    root.querySelectorAll('.msg').forEach(function (el) {
       if (selMode === 'msg') {
         el.onclick = function () { toggleMsg(el.dataset.id); };
         return;
@@ -469,9 +538,6 @@ window.Chat = (function () {
         ]);
       });
     });
-    paintMsgBar();
-    var mg = document.getElementById('th-manage');
-    if (mg) mg.textContent = selMode === 'msg' ? '完成' : '管理';
   }
 
   function bubble(m) {
@@ -554,27 +620,56 @@ window.Chat = (function () {
   }
 
   var lastUnread = 0;
-  function scrollBottom() {
-    var b = document.getElementById('msgs'); if (!b) return;
-    /* 双帧 + 图片加载后再滚：只延时 40ms 时容器高度常没算完，
-       表现就是「点进会话停在最开始那条」 */
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () { b.scrollTop = b.scrollHeight; });
-    });
-    setTimeout(function () { b.scrollTop = b.scrollHeight; }, 260);
-    b.querySelectorAll('img').forEach(function (im) {
-      if (!im.complete) im.addEventListener('load', function () { b.scrollTop = b.scrollHeight; }, { once: true });
+  function bindScrollGuards() {
+    var b = document.getElementById('msgs');
+    if (!b || b.dataset.v41scroll) return;
+    b.dataset.v41scroll = '1';
+    /* 只认真实手势：touch / 滚轮 / 鼠标按下。程序设置 scrollTop 不会触发这些事件 */
+    ['touchstart', 'touchmove', 'wheel', 'mousedown'].forEach(function (ev) {
+      b.addEventListener(ev, function () { userMoved = true; }, { passive: true });
     });
   }
-  /* 有未读就跳到第一条未读附近，没有就停在最底部最新消息 */
-  function scrollToUnread() {
+  function applyAnchor(tok, force) {
     var b = document.getElementById('msgs'); if (!b) return;
-    scrollBottom();
-    if (lastUnread > 0) setTimeout(function () {
-      var all = b.querySelectorAll('.msg');
-      var idx = Math.max(0, all.length - lastUnread);
-      if (all[idx]) all[idx].scrollIntoView({ block: 'start' });
-    }, 340);
+    if (tok !== anchorToken) return;
+    if (!force && userMoved) return;
+    var anc = scrollAnchor || { type: 'bottom' };
+    var topOf = function (box) {
+      if (anc.type !== 'unread') return box.scrollHeight;
+      var all = box.querySelectorAll('.msg');
+      var el = all[Math.max(0, all.length - anc.n)];
+      if (!el) return box.scrollHeight;
+      return Math.max(0, el.offsetTop - box.offsetTop - 8);
+    };
+    b.scrollTop = topOf(b);
+    /* 容器刚建好时高度常为 0，图片/视频加载后还会变高：
+       这几轮重试都用同一个锚点，不会再被「滚到底」的旧回调抢走 */
+    [0, 60, 180, 400, 800, 1500].forEach(function (ms) {
+      setTimeout(function () {
+        if (tok !== anchorToken || (!force && userMoved)) return;
+        var box = document.getElementById('msgs'); if (!box) return;
+        box.scrollTop = topOf(box);
+      }, ms);
+    });
+    b.querySelectorAll('img,video').forEach(function (im) {
+      if (im.complete || im.dataset.v41im) return;
+      im.dataset.v41im = '1';
+      ['load', 'loadeddata', 'error'].forEach(function (ev) {
+        im.addEventListener(ev, function () {
+          setTimeout(function () { applyAnchor(tok, force); }, 0);
+        }, { once: true });
+      });
+    });
+  }
+  function scrollBottom() {
+    scrollAnchor = { type: 'bottom' };
+    applyAnchor(++anchorToken, !userMoved);
+  }
+  /* 进入会话：有未读就停在第一条未读，没有就停在最底部最新消息 */
+  function scrollToUnread() {
+    userMoved = false;
+    scrollAnchor = lastUnread > 0 ? { type: 'unread', n: lastUnread } : { type: 'bottom' };
+    applyAnchor(++anchorToken, true);
   }
 
   function send(obj) { Net.send(Object.assign({ t: 'chat', to: cur }, { msg: obj })); }
@@ -711,19 +806,66 @@ window.Chat = (function () {
   }
 
   /* ---------------- 表情面板 ---------------- */
+  /* 面板打开时补一次同步：自动登录 / 网络慢 / 先开面板后连上服务器，
+     都会让「服务器传好了但面板是空的」。30 秒内不重复请求。 */
+  function maybeSyncStickers(done) {
+    try {
+      if (!window.Stickers || !Stickers.syncGlobal) return;
+      var si = Stickers.syncInfo || {};
+      if (si.packs || (Date.now() - (si.at || 0) < 30000)) return;
+      Stickers.syncGlobal(function () { done && done(); });
+    } catch (e) { }
+  }
+  function defaultStickPack() {
+    try {
+      if (!window.Stickers || !Stickers.packById) return null;
+      return Stickers.packById(Stickers.defaultId) || null;
+    } catch (e) { return null; }
+  }
+  /* 服务器同步状态（包数 / 张数 / 失败原因），显示在面板顶上，
+     一眼就能分辨「没上传」还是「App 没同步」。 */
+  function syncTip() {
+    try {
+      var i = Stickers.syncInfo || {};
+      if (i.err) return '☁ ' + esc(i.err);
+      if (i.packs) return '☁ 服务器 ' + i.packs + ' 包 / ' + i.items + ' 张 · 已同步';
+    } catch (e) { }
+    return '☁ 还没同步过服务器表情包';
+  }
   function togglePanel() {
     if (panel) return closePanel();
     panel = document.createElement('div');
     panel.className = 'emoji-panel'; panel.id = 'emoji-panel';
-    /* 只保留 Emoji，去掉「表情 / 物件」两个自绘 SVG 包和顶部切换栏 */
     var big = !!(window.Stickers && Stickers.isBig && Stickers.isBig());
+    var pk0 = defaultStickPack();
+    var defP = (pk0 && pk0.items && pk0.items.length) ? 'pack' : 'emoji';
+    /* 服务器/导入的表情包直接进面板，并且默认打开这一页 ——
+       以前面板只有系统 Emoji，上传成功的动图只能去「＋表情包」弹窗里找，
+       用户看到的就是「传上去了，可手机里用不了」。 */
     panel.innerHTML = '<div class="ep-bar"><button class="ep-add" id="ep-add">＋ 表情包</button>' +
       '<button class="ep-add' + (big ? ' on' : '') + '" id="ep-big">大图</button></div>' +
+      '<div class="tabs"><button data-p="pack"' + (defP === 'pack' ? ' class="on"' : '') + '>' +
+        esc(pk0 ? (pk0.name || '表情包') : '表情包') + '</button>' +
+      '<button data-p="emoji"' + (defP === 'emoji' ? ' class="on"' : '') + '>Emoji</button></div>' +
+      '<div id="emo-synctip" style="font-size:10px;color:var(--sub);padding:2px 6px 4px">' + syncTip() + '</div>' +
       '<div class="grid' + (big ? ' big' : '') + '" id="emo-grid"></div>';
     document.getElementById('thread').appendChild(panel);
-    fill('emoji');
+    fill(defP);
     var add = document.getElementById('ep-add');
     if (add) add.onclick = openImport;
+    maybeSyncStickers(function () {
+      if (!panel || !document.getElementById('emo-grid')) return;
+      var tp = panel.querySelector('.tabs button.on');
+      fill(tp ? tp.dataset.p : 'pack');
+      var tip = panel.querySelector('#emo-synctip');
+      if (tip) tip.innerHTML = syncTip();
+    });
+    panel.querySelectorAll('.tabs button').forEach(function (t) {
+      t.onclick = function () {
+        panel.querySelectorAll('.tabs button').forEach(function (x) { x.classList.remove('on'); });
+        t.classList.add('on'); fill(t.dataset.p);
+      };
+    });
     /* 大图模式：面板格子放大到 3 列，表情看得更清楚 */
     var bg = document.getElementById('ep-big');
     if (bg) bg.onclick = function () {
@@ -734,8 +876,25 @@ window.Chat = (function () {
   }
   function fill(p) {
     var g = document.getElementById('emo-grid'); if (!g) return;
-    /* 只保留 Emoji：自绘 SVG 贴纸在对方手机上经常渲染不出来（一片空白），
-       Emoji 走系统字体，任何机型都能正常显示。 */
+    if (p === 'pack') {
+      var pk = defaultStickPack();
+      if (!pk || !pk.items.length) {
+        g.innerHTML = '<div style="grid-column:1/-1;font-size:11px;color:var(--sub);padding:10px;text-align:center">' +
+          '还没有可用表情包<br>点「＋ 表情包」→「☁ 重新同步服务器表情」</div>';
+        return;
+      }
+      g.innerHTML = pk.items.map(function (it, i) {
+        return '<button data-k="pack" data-i="' + i + '" title="' + esc(it.name || '') + '">' +
+          '<img src="' + esc(Stickers.imgUrl(it.url)) + '" alt=""></button>';
+      }).join('');
+      g.querySelectorAll('button').forEach(function (b) {
+        b.onclick = function () {
+          var it = pk.items[+b.dataset.i];
+          if (it) Stickers.pickItem(pk, it, function (f, p2, item) { sendImported(f, p2, item); });
+        };
+      });
+      return;
+    }
     g.innerHTML = Stickers.EMOJI.map(function (e, i) { return '<button data-k="emoji" data-i="' + i + '">' + e + '</button>'; }).join('');
     g.querySelectorAll('button').forEach(function (b) {
       b.onclick = function () { sendSticker('emoji', b.dataset.i); };
@@ -743,18 +902,28 @@ window.Chat = (function () {
   }
   function closePanel() { if (panel) { panel.remove(); panel = null; } }
 
-  /* 导入表情包：把选中的表情上传后作为图片发出去，对方能正常看到 */
+  /* 选中一张自定义/服务器表情后的统一发送逻辑 */
+  function sendImported(file, pk, it) {
+    closePanel();
+    /* 服务器包里的表情本来就在服务器上：直接复用地址发，不用「下载→再上传」一遍。
+       以前 file 为 null 就直接 return，表现是点表情没反应 / 提示发送失败。 */
+    if (!file) {
+      if (!it || !it.url) { App.toast('这张表情打不开，请点「☁ 重新同步服务器表情」'); return; }
+      var u = (window.Net && Net.abs) ? Net.abs(it.url) : it.url;
+      send({ kind: 'image', url: u, name: it.name || 'sticker.gif', size: 0 });
+      Sfx.send();
+      return;
+    }
+    App.toast('发送中…');
+    Net.upload(file, 'image', 0).then(function (up) {
+      if (up && up.err) return App.toast(up.err);
+      send({ kind: 'image', url: up.url, name: file.name, size: file.size });
+    }).catch(function () { App.toast('发送失败'); });
+  }
+  /* 导入表情包：管理入口（上传 / 同步 / 诊断 / 设为默认） */
   function openImport() {
     if (!window.Stickers || !Stickers.openImport) return;
-    Stickers.openImport(function (file) {
-      closePanel();
-      if (!file) return;
-      App.toast('发送中…');
-      Net.upload(file, 'image', 0).then(function (up) {
-        if (up && up.err) return App.toast(up.err);
-        send({ kind: 'image', url: up.url, name: file.name, size: file.size });
-      }).catch(function () { App.toast('发送失败'); });
-    });
+    Stickers.openImport(function (file, pk, it) { sendImported(file, pk, it); });
   }
 
   /* ---------------- 附件菜单 ---------------- */

@@ -145,12 +145,17 @@ window.Game = (function () {
   function bindTableVoice() {
     var btn = document.getElementById('btn-table-voice');
     if (!btn || !window.Rec) return;
+    var lastSend = 0;
     function flag(on) {
       if (speaking === on) return;
       speaking = on;
       Net.send({ t: 'table:speaking', gid: gid, on: on });
     }
     window.Rec.hold(btn, function (r) {
+      /* touch + 模拟 mouse 补发会触发两次录制，900ms 内只认第一次 */
+      var now = Date.now();
+      if (now - lastSend < 900) return;
+      lastSend = now;
       flag(false);
       Net.upload(r.file, 'voice', r.dur).then(function (up) {
         if (up && up.err) { toast(up.err); return; }
@@ -279,7 +284,9 @@ window.Game = (function () {
     /* 逐条推断叫分动作（含「不叫」）。bidTurn 一变说明上一个人操作完了：
        最高分涨了 = 叫分；没涨 = 不叫。不依赖引擎是否把 pass 写进 bid，
        真人和机器人都覆盖 —— 第三个玩家不叫没图标没语音就是漏在这里。 */
-    if (m.phase === 'bid') {
+    /* v40：叫满 3 分时 phase 从 bid 直接跳 play/double，
+       旧判断只看 m.phase==='bid'，最后一个人（含「不叫」）永远不播。 */
+    if (m.phase === 'bid' || (v37BidTurn >= 0 && (m.phase === 'play' || m.phase === 'double'))) {
       if (v37BidTurn >= 0 && v37BidTurn !== m.bidTurn) {
         var sc = (m.bid && m.bid.score) || 0;
         var didBid = sc > v37BidScore;
@@ -287,13 +294,16 @@ window.Game = (function () {
         bidLog.push(rec);
         if (bidLog.length > 12) bidLog.shift();
         bidFlash = { by: rec.i, score: rec.score, t: Date.now() };
-        if (App.settings().voice) {
+        /* 自己刚点过叫分时本地已念过，状态推断别再念第二遍；机器人/别人照常播 */
+        var justMine = (rec.i === mySeat && Date.now() - lastLocalBid.t < 600);
+        if (!justMine && App.settings().voice) {
           Sfx.bid(rec.score || 0);
           Sfx.speak(rec.score ? ('叫' + rec.score + '分') : '不叫');
         }
       }
       v37BidTurn = m.bidTurn; v37BidScore = (m.bid && m.bid.score) || 0;
-    } else if (m.phase === 'play' || m.phase === 'double') {
+      if (m.phase !== 'bid') { v37BidTurn = -1; v37BidScore = 0; }
+    } else {
       v37BidTurn = -1; v37BidScore = 0;
     }
     /* 别人叫分也要念出来。以前只播自己点的那一下，
@@ -580,9 +590,10 @@ window.Game = (function () {
     var top = Math.max(seatBottom + 8, 62);   /* 不低于顶部安全区，最上面那颗按钮不会被裁 */
     var avail = Math.max(24, handTop - top - 6);
 
+    /* v40：一律优先 2×2（横着四个挡打牌），竖排只在 2×2 也塞不下时兜底 */
     var MODES = [
-      [], ['compact'], ['tiny'],
       ['grid2'], ['grid2', 'compact'], ['grid2', 'tiny'],
+      [], ['compact'], ['tiny'],
       ['rowmode'], ['rowmode', 'compact'], ['rowmode', 'tiny']
     ];
     var pick = null, pickH = 0;
@@ -901,7 +912,8 @@ window.Game = (function () {
     var need = (S.last && S.last.by !== mySeat) ? S.last.info : null;
     if (!need) { toast('你是先手，必须出牌'); return; }
     Sfx.pass();
-    if (App.settings().voice) Sfx.speak('过');
+    /* v40：走统一播报出口，会清掉排队中的上一家牌型语音 */
+    if (App.settings().voice) Sfx.announce({ type: 'pass' });
     sel = {};
     Net.send({ t: 'game:play', ids: [] });
   }
@@ -926,7 +938,9 @@ window.Game = (function () {
     var nm = DDZ.speak(h.info);
     if (nm) toast('建议：' + nm);
   }
+  var lastLocalBid = { t: 0, seat: -1 };
   function bid(act) {
+    lastLocalBid = { t: Date.now(), seat: mySeat };
     /* act: 0=不叫 1/2/3=分数；也可能是 'grab'(抢) / 'nograb'(不抢) */
     var n = (act === 'grab') ? 3 : (act === 'nograb' ? 0 : (Number(act) || 0));
     Sfx.bid(n);
@@ -1182,6 +1196,8 @@ window.Game = (function () {
     var el = document.getElementById('tc-in'); if (!el) return;
     var v = el.value.trim(); if (!v) return;
     el.value = ''; tcSend({ kind: 'text', text: v }); Sfx.send();
+    /* 自己发的文字也在牌桌飘一次（服务端回显不再重复） */
+    floatSay('我', v, 'text');
     /* 发完自动收起：不用再手动点 ✕，也不挡着看牌 */
     if (tcOpen) toggleTableChat();
   }
@@ -1212,8 +1228,11 @@ window.Game = (function () {
     /* 短语音不再进聊天框：直接在房间里播出来，不占画面 */
     if (mm.kind === 'voice') {
       Sfx.msg();
-      if (mm.url) autoPlayVoice(mm.url);
-      if (mm.from !== myUid) floatSay(mm.nick || '对手', '🎤 语音', 'voice');
+      /* v40：自己发的短语音不再本机重播（回声）；只有对方才自动播放 */
+      if (mm.from !== myUid) {
+        if (mm.url) autoPlayVoice(Net.abs(mm.url));
+        floatSay(mm.nick || '对手', '🎤 语音', 'voice');
+      } else { App.toast('短语音已发送'); }
       return;
     }
     tcMsgs.push(mm); if (tcMsgs.length > 200) tcMsgs.shift();
@@ -1223,9 +1242,13 @@ window.Game = (function () {
     /* 文字 / 表情 / 快捷语：对方不用点开聊天框，直接在屏幕右半边飘出来看 */
     /* 自己发的文字也要在牌桌飘出来：以前只飘对方的，发完像没发出去 */
     var isMine = String(mm.from || '') === String(myUid || '');
-    if (mm.kind === 'sticker') floatSay(isMine ? '我' : (mm.nick || '对手'), mm.emoji || '🙂', 'sticker');
-    else if (mm.quick) floatSay(isMine ? '我' : (mm.nick || '对手'), mm.text, 'quick', mm.voice);
-    else floatSay(isMine ? '我' : (mm.nick || '对手'), mm.text || '', 'text');
+    /* v40：自己发的在发送入口已本地飘一次，服务端回显只入聊天框，不再重复飘屏。
+       以前快捷语/表情/文字都显示两条，根因就是本地 + 回显各一次。 */
+    if (!isMine) {
+      if (mm.kind === 'sticker') floatSay(mm.nick || '对手', mm.emoji || '🙂', 'sticker');
+      else if (mm.quick) floatSay(mm.nick || '对手', mm.text, 'quick', mm.voice);
+      else floatSay(mm.nick || '对手', mm.text || '', 'text');
+    }
   }
 
   /* ---------- 飘屏：对方发的文字/表情/快捷语直接在右半边显示 ---------- */
@@ -1312,7 +1335,7 @@ window.Game = (function () {
     var p = document.createElement('div');
     p.id = 'stick-panel'; p.className = 'quick-panel stick';
     var tabs = '<div class="sp-tabs">' +
-      '<span class="sp-tab on" data-p="">Emoji</span>' +
+      '<span class="sp-tab" data-p="">Emoji</span>' +
       packs.map(function (pk) {
         return '<span class="sp-tab" data-p="' + esc(pk.id) + '">' + esc((pk.name || '表情').slice(0, 6)) + '</span>';
       }).join('') + '</div>';
@@ -1358,10 +1381,9 @@ window.Game = (function () {
       t.onclick = function () { show(t.dataset.p || ''); };
     });
     document.getElementById('page-play').appendChild(p);
-    /* 默认打开 Emoji 页：表情最多、一眼能挑到；
-       导入的包在旁边 tab 里，点一下就能切过去（以前默认落在包里，
-       包里只有几张时看着「表情面板很小、没几个可选」）。 */
-    show('');
+    /* 默认打开「默认表情包」页：服务器上传一次，所有人的打牌面板直接就能点。
+       没有包时才回落到 Emoji。 */
+    show(packs.length ? packs[0].id : '');
     setTimeout(function () { if (p.parentNode) p.remove(); }, 8000);
   }
 

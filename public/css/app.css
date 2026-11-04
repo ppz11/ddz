@@ -390,7 +390,9 @@ body.land .tablevoice{bottom:calc(108px + var(--safe-b) + 8px)}
 .thread header .n{font-size:15px;font-weight:700}
 .thread header .s{font-size:10px;color:var(--jade)}
 .thread header .s.off{color:var(--sub)}
-.msgs{flex:1;overflow-y:auto;padding:12px 12px 4px;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:9px}
+.msgs{flex:1;overflow-y:auto;padding:12px 12px 4px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;display:flex;flex-direction:column;gap:9px}
+/* v41：减少滚动时的重排成本；增量渲染后气泡不再整表重建 */
+.msg{contain:layout style}
 .msg{display:flex;gap:8px;align-items:flex-end;animation:popin .2s both}
 @keyframes popin{from{opacity:0;transform:translateY(8px) scale(.96)}to{opacity:1;transform:none}}
 .msg.me{flex-direction:row-reverse}
@@ -1665,3 +1667,68 @@ body.waitroom #action-zone{bottom:calc(var(--safe-b,0px) + 18px)!important}
 /* ⑦ 竖屏切换彻底移除（打牌强制横屏） */
 #btn-orient,.orientbtn{display:none!important}
 
+
+
+/* ============================================================
+   v40 覆盖层（放最后，!important 保证不被前面 body.land 规则压回去）
+   ============================================================ */
+/* ① body 上的 user-select:none 会连 input 一起禁掉，Android WebView 里
+   长按输入框弹不出「粘贴」菜单 —— 这是复制 UID 粘不进去的真凶。 */
+input, textarea, [contenteditable="true"]{
+  -webkit-user-select:text !important;user-select:text !important;
+  -webkit-touch-callout:default !important}
+
+/* ⑥ 底牌 / 叫分 / 加倍贴到屏幕顶部，与金币同一行，不再占牌桌中间 */
+#page-play .table{padding-top:calc(40px * var(--k,1)) !important;overflow:visible !important}
+#page-play .dibar{
+  position:absolute !important;top:0 !important;left:0 !important;right:0 !important;
+  height:calc(36px * var(--k,1)) !important;min-height:0 !important;
+  padding:2px calc(150px + env(safe-area-inset-right,0px)) 0 calc(10px + var(--safe-t,0px)) !important;
+  justify-content:flex-start !important;align-items:center !important;
+  overflow:visible !important;z-index:8 !important;pointer-events:none !important}
+#page-play .dibar .bcards,#page-play .dibar .btag{pointer-events:auto}
+
+/* ⑥ 玩家头像全部隐藏，只留昵称 */
+#page-play .seatcol .ts .av,#page-play .topseats .ts .av,
+#page-play .seatleft .ts .av,#page-play .seatright .ts .av,
+#page-play .tseat .av,#page-play .myinfo .av{display:none !important}
+
+/* ⑥ 去掉右侧那个没用的 ×6 倍数角标 */
+#page-play .cinf,#page-play .myinfo .mult{display:none !important}
+
+/* ⑥ 各家出的牌再放大一档，且不被压住 */
+#page-play .played .pc,#page-play .pcards .pc,#page-play .myplayed .pc{
+  --card-w:calc(46px * var(--k,1)) !important;
+  --card-h:calc(65px * var(--k,1)) !important}
+#page-play .played,#page-play .pcards{overflow:visible !important;z-index:9 !important}
+
+/* ⑥ 等待出牌提示去掉一圈黑色阴影 */
+#page-play .mid .notice{background:transparent !important;box-shadow:none !important;
+  border:0 !important;text-shadow:0 1px 3px rgba(0,0,0,.65) !important}
+
+/* ⑥ 不出 / 提示 / 出牌 放大并紧贴手牌 */
+#page-play .acts{gap:calc(10px * var(--k,1)) !important;
+  padding-bottom:calc(3px + var(--safe-b,0px)) !important}
+#page-play .acts .btn{min-width:calc(86px * var(--k,1)) !important;
+  padding:calc(11px * var(--k,1)) calc(14px * var(--k,1)) !important;
+  font-size:calc(15px * var(--k,1)) !important}
+
+/* ⑤ 右侧四按钮：2×2 且始终在最上层（三人场座位多，之前被盖住按不了） */
+#page-play .tablerail{z-index:60 !important;pointer-events:auto !important;
+  right:calc(10px + env(safe-area-inset-right,0px)) !important}
+#page-play .tablerail .railbtn{pointer-events:auto !important;
+  font-size:calc(var(--rb,42px) * .55) !important}
+
+/* ⑥ 左侧玩家信息下移、不再与我的信息 / 顶部重叠 */
+#page-play .seatcol.left,#page-play .seatleft{
+  transform:translateY(calc(12px * var(--k,1))) !important}
+#page-play .topseats{padding-top:calc(var(--safe-t,0px) + 40px) !important}
+
+/* v42 表情包：默认徽标、失效占位、同步状态 */
+.spk .sk-def{font-size:10px;padding:2px 7px;border-radius:7px;background:var(--gold);color:#3a2600;font-weight:800;white-space:nowrap}
+.spk .th .sk-bad,.sk-grid .stk .sk-bad{display:grid;place-items:center;width:100%;height:100%;font-size:11px;color:var(--sub);background:rgba(255,255,255,.04);border-radius:6px}
+#sk-syncinfo{word-break:break-all}
+
+/* v42 表情面板：自定义/服务器动图直接进格子，不要撑破布局 */
+.emoji-panel .grid button,.s-emoji .grid button{overflow:hidden;padding:3px}
+.emoji-panel .grid button img,.s-emoji .grid button img{width:100%;height:100%;object-fit:contain;display:block}

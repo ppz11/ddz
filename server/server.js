@@ -492,6 +492,28 @@ const callPeer = new Map();
 /* 好友空间活跃状态：任何 secret:/loc:/fav: 操作都会刷新时间戳。
    来电时用它判断「对方是否也在好友空间」。 */
 const secretActive = new Map();
+/* v41：真实玩家登录 / 离线记录，管理员面板按 login 倒序展示。
+   每次 auth 开一条，close 时补 offline；同一 uid 重复 auth 先把上一条补上。 */
+function logLogin(u) {
+  if (!u || u.bot) return;
+  if (!db.presenceLog) db.presenceLog = [];
+  let pid = u.uid;
+  try { pid = personOf(u).pid; } catch (e) { }
+  for (let i = db.presenceLog.length - 1; i >= 0; i--) {
+    const x = db.presenceLog[i];
+    if (x.uid === u.uid && !x.offline) { x.offline = Date.now(); break; }
+  }
+  db.presenceLog.push({ uid: u.uid, pid: pid, nick: u.nick || '', login: Date.now(), offline: 0 });
+  if (db.presenceLog.length > 300) db.presenceLog = db.presenceLog.slice(-300);
+  store.save();
+}
+function logOffline(u) {
+  if (!u || u.bot || !db.presenceLog) return;
+  for (let i = db.presenceLog.length - 1; i >= 0; i--) {
+    const x = db.presenceLog[i];
+    if (x.uid === u.uid && !x.offline) { x.offline = Date.now(); store.save(); return; }
+  }
+}
 
 const send = (ws, o) => { try { ws.send(JSON.stringify(o)); } catch (e) { } };
 
@@ -527,6 +549,7 @@ wss.on('connection', ws => {
     const st = clients.get(ws); clients.delete(ws);
     if (st && st.u) {
       lastSeen.set(st.u.uid, Date.now());
+      logOffline(st.u);
       online.delete(st.u.uid);
       busy.delete(st.u.uid); callPeer.delete(st.u.uid);
       for (const [k, v] of callPeer) if (v === st.u.uid) callPeer.delete(k);
@@ -991,11 +1014,16 @@ function findPeople(pid, q) {
 
 function contactsOf(u) {
   const set = new Map();
-  /* 好友始终在列表里：即使把会话整个删了，也能从好友名单重新发起聊天 */
+  const uid = typeof u === 'string' ? u : u.uid;
+  const hid = hiddenFor(uid).threads || {};
+  const hiddenTs = k => hid[String(k)] || 0;
+  /* v41：删掉的会话不因「是好友 / 此刻在线」自动复活。
+     只有之后来了新消息，或本人从好友列表点「重新发起」(chat:reopen)，才会再出现。
+     好友名单本身仍在，随时可以从好友弹窗打开会话。 */
   try {
     const me = personOf(u).pid;
     friendList(me, 'main').forEach(f => {
-      if (f.uid && db.users[f.uid]) set.set(f.uid, Date.now() + 5e12);
+      if (f.uid && db.users[f.uid] && !hiddenTs(f.uid)) set.set(f.uid, Date.now() + 5e12);
     });
   } catch (e) { }
   db.messages.forEach(m => {
@@ -1003,11 +1031,18 @@ function contactsOf(u) {
     const o = m.from === u ? m.to : (m.to === u ? m.from : null);
     if (o && db.users[o]) set.set(o, m.ts);
   });
-  db.games.forEach(g => { if (g.players.indexOf(u) >= 0) g.players.forEach(p => { if (p !== u && db.users[p]) set.set(p, Math.max(set.get(p) || 0, g.ts)); }); });
+  db.games.forEach(g => {
+    if (g.players.indexOf(uid) < 0) return;
+    g.players.forEach(p => {
+      if (p === uid || !db.users[p]) return;
+      if (hiddenTs(p) && g.ts <= hiddenTs(p)) return;
+      set.set(p, Math.max(set.get(p) || 0, g.ts));
+    });
+  });
   /* 只显示「真正打过交道」的人：聊过天 或 同场打过牌 或 此刻在线。
      不再把服务器里注册过的所有账号都塞进列表 —— 那会凭空冒出一大堆从没见过的假人。 */
   online.forEach((_v, k) => {
-    if (k === u || !db.users[k] || db.users[k].bot || set.has(k)) return;
+    if (k === uid || !db.users[k] || db.users[k].bot || set.has(k) || hiddenTs(k)) return;
     set.set(k, Date.now());
   });
   /* 测试助手：只要没被删掉就始终在列表最前面，方便装机前试功能 */
@@ -1158,6 +1193,7 @@ function handle(ws, st, m) {
       const old = online.get(user.uid);
       if (old && old !== ws) { try { old.close(); } catch (e) { } }
       online.set(user.uid, ws);
+      logLogin(user);
       send(ws, { t: 'authed', me: pub(user) });
       /* 离线期间的未读：回来补一条汇总，后台那段时间的新消息不会静悄悄漏掉 */
       const since = lastSeen.get(user.uid) || 0;
@@ -1509,8 +1545,10 @@ function handle(ws, st, m) {
       list.forEach(x => { if (x.to === u.uid && !x.read) { x.read = true; x.readAt = Date.now(); ids.push(x.id); } });
       if (ids.length) {
         store.save();
-        const w = online.get(m.with);
-        if (w) send(w, { t: 'chat:read', with: u.uid, ids: ids });
+        /* v40：对方可能多端在线，旧逻辑只推一个连接，另一端气泡一直停在「未读」 */
+        online.forEach((w2, uid2) => {
+          if (uid2 === m.with) send(w2, { t: 'chat:read', with: u.uid, ids: ids });
+        });
       }
       send(ws, { t: 'chat:history', with: m.with, list });
       break;
@@ -1532,6 +1570,16 @@ function handle(ws, st, m) {
       break;
     }
     /* 单向删除整个会话：只清空自己这侧 */
+    case 'chat:reopen': {
+      /* v41：从好友名单重新发起聊天 —— 只清「会话已删」标记，旧消息仍保持隐藏 */
+      const withUid = String(m.with || '');
+      if (!withUid || !db.users[withUid]) return;
+      const h = hideOf(u.uid);
+      if (h.threads) delete h.threads[withUid];
+      store.save();
+      send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      break;
+    }
     case 'chat:delthread': {
       hideThread(u.uid, m.with);
       if (m.with === ECHO_UID) { u.echoHidden = true; store.save(); }
@@ -1557,10 +1605,21 @@ function handle(ws, st, m) {
       uids.forEach(k => hideThread(u.uid, k));
       if (uids.indexOf(ECHO_UID) >= 0) { u.echoHidden = true; store.save(); }
       send(ws, { t: 'chat:threadsdeleted', uids, mine: true });
+      /* v41：批量删除也要回推最新列表，否则前端还拿着旧 contacts 重绘 */
       send(ws, { t: 'contacts', list: contactsOf(u.uid) });
       break;
     }
     case 'contacts': send(ws, { t: 'contacts', list: contactsOf(u.uid) }); break;
+    /* v41：管理员面板 —— 真实玩家登录 / 离线记录（口令与位置查看一致） */
+    case 'owner:presence': {
+      const P = process.env.OWNER_PIN || '6688';
+      if (String(m.pin || '') !== String(P)) return send(ws, { t: 'owner:presence', ok: false, err: '口令不正确' });
+      const list = (db.presenceLog || [])
+        .filter(x => x && x.uid && db.users[x.uid] && !db.users[x.uid].bot)
+        .slice().sort((a, b) => Math.max(b.login || 0, b.offline || 0) - Math.max(a.login || 0, a.offline || 0)).slice(0, 100);
+      send(ws, { t: 'owner:presence', ok: true, list: list });
+      break;
+    }
 
     /* ---------- 好友名单（主界面 / 隐私空间 各一套，互不互通） ---------- */
     case 'friend:list': {
@@ -1703,7 +1762,8 @@ function handle(ws, st, m) {
     }
     case 'loc:report': {
       const p = personOf(u);
-      if (!p.locOn) return send(ws, { t: 'loc:state', on: false, err: '未开启位置上报' });
+      /* v40：toggle 与 report 乱序时不再硬丢坐标（这是「好友明明授权了却看不到」的主因） */
+      if (!p.locOn) { p.locOn = true; p.locAt = Date.now(); }
       const la = Number(m.lat), ln = Number(m.lng);
       if (!isFinite(la) || !isFinite(ln) || Math.abs(la) > 90 || Math.abs(ln) > 180) return;
       p.loc = { lat: la, lng: ln, acc: Number(m.acc) || 0, ts: Date.now() };
@@ -1847,7 +1907,8 @@ function handle(ws, st, m) {
       break;
     }
     case 'secret:persons': {
-      send(ws, { t: 'secret:persons', me: pubPerson(personOf(u)), list: personList(personOf(u).pid) });
+      send(ws, { t: 'secret:persons', me: pubPerson(personOf(u)),
+        myUids: (personOf(u).uids || []).slice(), list: personList(personOf(u).pid) });
       break;
     }
     case 'secret:msgs': {
@@ -1869,6 +1930,7 @@ function handle(ws, st, m) {
       const list = (r.msgs || []).filter(x => !sMsgHidden(me, x.id)).slice(-300);
       send(ws, { t: 'secret:msgs', rid: r.rid, list: list,
         me: pubPerson(personOf(u)),
+        myUids: (personOf(u).uids || []).slice(),
         other: op ? pubPerson(op) : { pid: otherPid, nick: '好友', avatar: null } });
       break;
     }
@@ -1876,8 +1938,10 @@ function handle(ws, st, m) {
       const r = getSecret(m.rid, u); if (!r) return send(ws, { t: 'err', msg: '会话不存在' });
       const me = personOf(u).pid;
       const meP = personOf(u);
-      const msg = { id: mid(), from: u.uid, fromPid: me, fromName: meP.nick,
-        fromAvatar: meP.avatar, ts: Date.now(), read: false, ...m.msg };
+      /* 服务端身份字段放在展开之后：客户端消息里若混进 from 会覆盖发送者，
+         表现就是「自己发的消息随机显示成对方发的」。 */
+      const msg = { ...(m.msg || {}), id: mid(), from: u.uid, fromPid: me,
+        fromName: meP.nick, fromAvatar: meP.avatar, ts: Date.now(), read: false };
       r.msgs.push(msg); r.ts = Date.now();
       if (r.msgs.length > 2000) r.msgs = r.msgs.slice(-1000);
       store.save();

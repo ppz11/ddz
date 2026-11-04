@@ -12,7 +12,7 @@ function ensure() {
 }
 function blank() {
   return { users: {}, messages: [], secretRooms: [], games: [], seq: 1000, uploads: {},
-    hidden: {}, secretHidden: {} };
+    hidden: {}, secretHidden: {}, presenceLog: [] };
 }
 
 let db = null;
@@ -32,6 +32,8 @@ function load() {
   // 单向删除：记录「谁把哪条消息 / 哪个会话藏起来了」，只影响本人
   if (!db.hidden) db.hidden = {};
   if (!db.secretHidden) db.secretHidden = {};
+  /* v41：真实玩家登录/离线记录（管理员面板） */
+  if (!db.presenceLog) db.presenceLog = [];
   return db;
 }
 function get() { return db || load(); }

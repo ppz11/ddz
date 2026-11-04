@@ -268,7 +268,12 @@ window.Sfx = (function () {
     if (!voiceOn) return;
     var t = info && info.type;
     /* 音效与语音错开 200ms：同时响的话音效会把人声盖掉，听着就是「嗡一下」 */
-    var say = function (txt) { setTimeout(function () { speakText(txt); }, 200); };
+    /* v40：新播报清掉还在排队的上一条，避免「点过」却念出上一家的牌型 */
+    var pendingSay = null;
+    var say = function (txt) {
+      if (pendingSay) { clearTimeout(pendingSay); pendingSay = null; }
+      pendingSay = setTimeout(function () { speakText(txt); pendingSay = null; }, 200);
+    };
     /* 叫分 / 加倍：之前只有「嗡」一声，听不出叫了几分。
        现在分数不同音高不同，并念出「1分」「2分」「3分」「不叫」「抢地主」「加倍」。 */
     if (t === 'bid') {
@@ -284,7 +289,13 @@ window.Sfx = (function () {
     if (t === 'nodouble') { tone(400, 0.12, 'sine', 0.12, 300); say('不加倍'); return; }
     /* 「过 / 不要」：以前是裸调 speak，音效和人声叠在一起很容易被盖掉，
        机器人过牌时表现就是只有图标、听不到声音。统一走这里，音效与人声错开。 */
-    if (t === 'pass') { say('过'); return; }
+    if (t === 'pass') {
+      /* 立刻打断：清排队 + 取消引擎正在念的话，然后马上说「过」 */
+      if (pendingSay) { clearTimeout(pendingSay); pendingSay = null; }
+      try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (x) { }
+      speakText('过');
+      return;
+    }
     if (t === 'rocket') { rocketSfx(); say('王炸'); return; }
     if (t === 'bomb') { bombSfx(); say('炸弹'); return; }
     /* DDZ.speak(info, cards) 需要牌面才能算出「三张5带一张9」；

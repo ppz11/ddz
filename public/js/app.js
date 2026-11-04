@@ -596,6 +596,9 @@ window.App = (function () {
     try { Notifier.startPush(); } catch (e) { }
     Net.send({ t: 'lobby' });
     Net.send({ t: 'contacts' });
+    /* 自动登录会跳过 boot 的登录接口，那条路径上的表情包同步就丢了。
+       这里补一次，保证「服务器传一次 → 每台手机打开都有」不依赖登录方式。 */
+    if (window.Stickers && Stickers.syncGlobal) setTimeout(function () { Stickers.syncGlobal(); }, 900);
     loadHistory();
     go('home');
     startFakeOnline();
