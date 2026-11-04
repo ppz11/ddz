@@ -14,6 +14,12 @@ window.Secret = (function () {
   var rooms = [], peeking = false;   // 是否已经安全回到主界面
   var curOther = null, curMe = null, personList = [], myUids = [];
   var locOn = false, locLast = null, myPid = null;
+  /* v43：点「📍 位置」后弹窗关闭，点击事件穿透到底层会话项的长按菜单，
+     于是又弹出「删除该会话 / 多选删除」。用时间闸门屏蔽 1.5 秒。 */
+  var suppressSheetUntil = 0;
+  function blockSheet(ms) { suppressSheetUntil = Date.now() + (ms || 1500); }
+  function sheetBlocked() { return Date.now() < suppressSheetUntil; }
+
   /* 多选删除：'room' = 选会话，'msg' = 选消息 */
   var sSelMode = null, sSelRooms = new Set(), sSelMsgs = new Set();
   /* 冷启动先读本地缓存，避免界面先闪一下「3」；真值以服务端查询为准 */
@@ -597,7 +603,8 @@ window.Secret = (function () {
       });
       b.querySelectorAll('[data-loc]').forEach(function (bt) {
         bt.onclick = function (e) {
-          e.stopPropagation();
+          e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+          blockSheet(1800);
           var r = rooms.filter(function (x) { return x.rid === bt.dataset.loc; })[0];
           if (!r) return;
           curRid = r.rid; curOther = r.other;
@@ -610,6 +617,7 @@ window.Secret = (function () {
           openThread(el.dataset.rid);
         };
         longPress(el, function () {
+          if (sheetBlocked()) return;
           var rid = el.dataset.rid;
           var r = rooms.filter(function (x) { return x.rid === rid; })[0] || {};
           var nm = (r.other && r.other.nick) || '好友';
@@ -724,7 +732,7 @@ window.Secret = (function () {
     box.innerHTML = opList.length ? opList.map(function (x) {
       return '<div class="favrow" style="border-bottom:1px solid rgba(255,255,255,.08);padding:8px 4px;text-align:left">' +
         '<div style="font-size:13px">' + esc(x.nick || '玩家') +
-        ' <span style="font-size:10px;opacity:.55">' + esc(x.uid || '') + '</span>' +
+        ' <span style="font-size:10px;opacity:.55">' + esc(x.pid || x.uid || '') + '</span>' +
         (x.offline ? '' : '<span style="font-size:11px;color:var(--gold)"> · 在线中</span>') + '</div>' +
         '<div style="font-size:11px;color:var(--sub);line-height:1.8">上线 ' + tstr(x.login) +
         '<br>离线 ' + (x.offline ? tstr(x.offline) : '—') + '</div></div>';
@@ -802,6 +810,7 @@ window.Secret = (function () {
     Net.send({ t: 'loc:get', pid: curOther.pid });
   }
   function showLoc(m) {
+    blockSheet(2200);
     if (!m.ok) {
       /* 不只甩一句「对方未上传位置」，把能查到的原因和排查项都列出来 */
       var hints = m.hints || [];
@@ -1233,7 +1242,9 @@ window.Secret = (function () {
       }
       g.innerHTML = pk.items.map(function (it, i) {
         return '<button data-k="pack" data-i="' + i + '" title="' + esc(it.name || '') + '">' +
-          '<img src="' + esc(Stickers.imgUrl(it.url)) + '" alt=""></button>';
+          (window.Stickers && Stickers.cellImg
+             ? Stickers.cellImg(Stickers.imgUrl(it.url), Stickers.capOf(it, i))
+             : '<img src="' + esc(Stickers.imgUrl(it.url)) + '" alt="">') + '</button>';
       }).join('');
       g.querySelectorAll('button').forEach(function (bt) {
         bt.onclick = function () {

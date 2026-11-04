@@ -575,6 +575,13 @@ window.Sfx = (function () {
     setScene: setScene, cardDrop: cardDrop,
     bgm: startBgm, stopBgm: stopBgm, duck: duck,
     announce: announce, speak: speakText, ttsInfo: ttsInfo, nativeTtsReady: nativeTtsReady,
+    /* v43：播报「过」之前清掉排队中的上一手牌型，避免念出上上家的牌 */
+    cancelSpeak: function () {
+      /* pendingSay 是 announce 内的闭包变量，这里只做引擎级打断；
+         announce({type:'pass'}) 自身已会清排队并立即念「过」。 */
+      try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) { }
+      try { if (window.DDZNative && DDZNative.ttsStop) DDZNative.ttsStop(); } catch (e) { }
+    },
     /* 预览：依次试听「叫分 / 加倍 / 各种牌型」的提示音，方便调音量语速 */
     preview: function (list) {
       var seq = list || ['bid:1', 'bid:2', 'bid:3', 'pass', 'grab', 'double', 'single', 'pair', 'bomb'];

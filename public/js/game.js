@@ -198,6 +198,7 @@ window.Game = (function () {
     sel = {}; over = false; autoPlay = false; dealAnim = true; S = null; myRoom = null; gid = null;
     hintCycle = 0; lastHintKey = ''; tcMsgs = []; closeTableChat(true);
     bidLog = []; v37BidTurn = -1; v37BidScore = 0; prevBidSeq = 0;
+    lastActEvtKey = ''; lastBidEvtKey = ''; lastSpokenCards = '';
     tipShownFor = '';
     clearInterval(timer);
     var rt = document.getElementById('rule-tip'); if (rt) rt.classList.add('hidden');
@@ -249,18 +250,54 @@ window.Game = (function () {
      于是「不叫」的玩家既没浮标也没语音。用轮到谁的变化把每个动作补出来，
      真人和机器人都覆盖。 */
   var bidLog = [], v37BidTurn = -1, v37BidScore = 0, prevBidSeq = 0;
+  var lastActEvtKey = '', lastBidEvtKey = '', lastSpokenCards = '';
   function onGame(m) {
     var prevTurn = S ? S.turn : -1;
     var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',') +
                     '|t' + S.turn + '|c' + (S.counts || []).join('.') + '|g' + (S.gid || '')) : '';
     S = m; mySeat = m.seat; gid = m.gid; rule = m.rule;
     document.getElementById('mid-notice').classList.add('hidden');
+    /* v43：服务端显式下发动作事件，按 gid+seq 去重后直接播报。
+       旧推断靠「turn/counts 变了就当新动作」，有人「过」时 m.last 仍是
+       上上家的牌 → 又念一遍上上家出的牌；机器人叫分也会漏。 */
+    var evtHandled = false, aEvt = m.actEvt || null, bEvt = m.bidEvt || null;
+    var aKey = aEvt ? ((m.gid || '') + ':a' + aEvt.seq) : '';
+    if (aEvt && aKey !== lastActEvtKey) {
+      lastActEvtKey = aKey; evtHandled = true;
+      if (aEvt.act === 'pass') {
+        lastSpokenCards = '';
+        if (aEvt.by !== mySeat) {
+          Sfx.pass();
+          if (App.settings().voice) {
+            try { Sfx.cancelSpeak && Sfx.cancelSpeak(); } catch (e) { }
+            Sfx.announce({ type: 'pass' });
+          }
+        }
+      } else if (aEvt.act === 'play' && m.last && (m.last.cards || []).length) {
+        var bigE = m.last.info && (m.last.info.type === 'bomb' || m.last.info.type === 'rocket');
+        Sfx.cardDrop(bigE);
+        if (aEvt.by !== mySeat && m.last.info) Sfx.announce(m.last.info, m.last.cards);
+      }
+    }
+    if (bEvt) {
+      var bKey = (m.gid || '') + ':b' + bEvt.seq;
+      if (bKey !== lastBidEvtKey) {
+        lastBidEvtKey = bKey;
+        bidLog.push({ i: bEvt.by, score: bEvt.score || 0, seq: bEvt.seq, t: Date.now() });
+        if (bidLog.length > 12) bidLog.shift();
+        bidFlash = { by: bEvt.by, score: bEvt.score || 0, t: Date.now() };
+        if (bEvt.by !== mySeat && App.settings().voice) {
+          Sfx.bid(bEvt.score || 0);
+          Sfx.speak(bEvt.score ? ('叫' + bEvt.score + '分') : '不叫');
+        }
+      }
+    }
     /* 出牌 / 不出的提示音：对手的牌型还要语音播报 */
     /* key 里带上「轮到谁 + 各家剩余张数」：连续两次「过」时 by:cards 完全一样，
        旧逻辑会当成同一件事直接跳过，表现就是「过」有时有图标和声音、有时没有。 */
     var roundKey = '|t' + m.turn + '|c' + (m.counts || []).join('.') + '|g' + (m.gid || '');
     var nowLast = m.last ? (m.last.by + ':' + (m.last.cards || []).map(function (c) { return c.id; }).join(',') + roundKey) : '';
-    if (nowLast && nowLast !== prevLast) {
+    if (!evtHandled && !aEvt && nowLast && nowLast !== prevLast) {
       var byMe = m.last.by === mySeat;
       if ((m.last.cards || []).length) {
         var big = m.last.info && (m.last.info.type === 'bomb' || m.last.info.type === 'rocket');
@@ -286,7 +323,7 @@ window.Game = (function () {
        真人和机器人都覆盖 —— 第三个玩家不叫没图标没语音就是漏在这里。 */
     /* v40：叫满 3 分时 phase 从 bid 直接跳 play/double，
        旧判断只看 m.phase==='bid'，最后一个人（含「不叫」）永远不播。 */
-    if (m.phase === 'bid' || (v37BidTurn >= 0 && (m.phase === 'play' || m.phase === 'double'))) {
+    if (!bEvt && (m.phase === 'bid' || (v37BidTurn >= 0 && (m.phase === 'play' || m.phase === 'double')))) {
       if (v37BidTurn >= 0 && v37BidTurn !== m.bidTurn) {
         var sc = (m.bid && m.bid.score) || 0;
         var didBid = sc > v37BidScore;
@@ -311,7 +348,7 @@ window.Game = (function () {
     /* 加上局标识：跨局时若两人叫了同样的分，旧 key 相等会被当成旧消息吞掉。 */
     var bidKey = m.bid ? ((m.gid || '') + ':' + m.bid.by + ':' + m.bid.score) : '';
     /* 推断日志为空时才走旧逻辑兜底，避免同一条叫分念两遍 */
-    if (!bidLog.length && bidKey && bidKey !== prevBidKey) {
+    if (!bEvt && !bidLog.length && bidKey && bidKey !== prevBidKey) {
       bidFlash = { by: m.bid.by, score: m.bid.score, t: Date.now() };
       var byMe2 = m.bid.by === mySeat;
       if (!byMe2 && App.settings().voice) {
@@ -591,10 +628,10 @@ window.Game = (function () {
     var avail = Math.max(24, handTop - top - 6);
 
     /* v40：一律优先 2×2（横着四个挡打牌），竖排只在 2×2 也塞不下时兜底 */
+    /* v43：真机上仍退化成横排四个挡住手牌 —— 去掉竖排/横排回退，
+       只保留 2×2（按 --rb 三档缩放），再靠 CSS !important 硬锁。 */
     var MODES = [
-      ['grid2'], ['grid2', 'compact'], ['grid2', 'tiny'],
-      [], ['compact'], ['tiny'],
-      ['rowmode'], ['rowmode', 'compact'], ['rowmode', 'tiny']
+      ['grid2'], ['grid2', 'compact'], ['grid2', 'tiny']
     ];
     var pick = null, pickH = 0;
     for (var i = 0; i < MODES.length; i++) {
@@ -603,7 +640,7 @@ window.Game = (function () {
       if (h > 0 && h <= avail && w <= vw - 8) { pick = MODES[i]; pickH = h; break; }
       if (h > 0 && (!pickH || h < pickH)) { pickH = h; pick = MODES[i]; }
     }
-    if (!pick) pick = ['rowmode', 'tiny'];
+    if (!pick) pick = ['grid2', 'tiny'];
     rail.className = 'tablerail' + (pick.length ? ' ' + pick.join(' ') : '');
     var hh = rail.offsetHeight || 120;
     if (top + hh > handTop - 6) top = Math.max(seatBottom + 2, handTop - hh - 6);
@@ -1361,7 +1398,9 @@ window.Game = (function () {
       var items = (pk && pk.items) || [];
       grid.innerHTML = items.map(function (it, i) {
         return '<button class="sp-i" data-i="' + i + '" title="' + esc(it.name || '') + '">' +
-          '<img src="' + esc(it.url) + '" alt=""></button>';
+          (window.Stickers && Stickers.cellImg
+             ? Stickers.cellImg(it.url, Stickers.capOf(it, i))
+             : '<img src="' + esc(it.url) + '" alt="">') + '</button>';
       }).join('') || '<div style="font-size:11px;color:var(--sub);padding:8px">这个包还是空的</div>';
       grid.querySelectorAll('.sp-i').forEach(function (b) {
         b.onclick = function () { var it = items[+b.dataset.i]; if (it) sendSticker(it); };

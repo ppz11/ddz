@@ -428,6 +428,22 @@ window.Stickers = (function () {
     return imgTag(pk.items[0].url);
   }
 
+
+  /* v43：动图预览看不清 / 自带表情叠在一起 —— 真机上 aspect-ratio 不被支持，
+     格子高度塌成 0，img 的 height:100% 撑不开，多张图就叠在一起。
+     这里改成固定高度 + 绝对定位图片 + 底部简短文字说明。 */
+  function capOf(it, i) {
+    var n = String((it && (it.label || it.name)) || '')
+      .replace(/\.[a-z0-9]+$/i, '').trim();
+    if (!n || /^[0-9a-f_\-]{12,}$/i.test(n) || n.length > 14) n = '动图 ' + (i + 1);
+    return n.length > 8 ? n.slice(0, 8) : n;
+  }
+  function cellImg(u, label) {
+    return '<img src="' + esc(u) + '" alt="" ' +
+      'onerror="this.style.display=\'none\';this.parentNode.classList.add(\'cellbad\')">' +
+      '<span class="stk-cap">' + esc(label) + '</span>';
+  }
+
   /* 统一图片标签：URL 失效时不显示破图（alt 会铺满半个屏幕），
      onerror 换成一个小占位，诊断面板里能查到具体是哪几张。 */
   function imgTag(u, cls) {
@@ -494,7 +510,7 @@ window.Stickers = (function () {
       var pk = packById(DEFAULT_PACK);
       if (!pk) return '<div style="text-align:center;color:var(--sub);font-size:12px;padding:14px 0">先导入一个表情包</div>';
       return pk.items.map(function (it, i) {
-        return '<button class="stk" data-i="' + i + '">' + imgTag(it.url) +
+        return '<button class="stk" data-i="' + i + '">' + cellImg(imgUrl(it.url), capOf(it, i)) +
           (it.anim ? '<span class="gif">GIF</span>' : '') + '</button>';
       }).join('');
     }
@@ -666,6 +682,7 @@ window.Stickers = (function () {
     imgUrl: imgUrl, validUrl: validUrl, pickItem: pickItem,
     get syncInfo() { return SYNC_INFO; },
     openImport: openImport, dataURLtoFile: dataURLtoFile,
-    isBig: isBig, setBig: setBig
+    isBig: isBig, setBig: setBig,
+    capOf: capOf, cellImg: cellImg
   };
 })();

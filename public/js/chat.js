@@ -885,7 +885,9 @@ window.Chat = (function () {
       }
       g.innerHTML = pk.items.map(function (it, i) {
         return '<button data-k="pack" data-i="' + i + '" title="' + esc(it.name || '') + '">' +
-          '<img src="' + esc(Stickers.imgUrl(it.url)) + '" alt=""></button>';
+          (window.Stickers && Stickers.cellImg
+             ? Stickers.cellImg(Stickers.imgUrl(it.url), Stickers.capOf(it, i))
+             : '<img src="' + esc(Stickers.imgUrl(it.url)) + '" alt="">') + '</button>';
       }).join('');
       g.querySelectorAll('button').forEach(function (b) {
         b.onclick = function () {

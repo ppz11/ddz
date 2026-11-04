@@ -1732,3 +1732,87 @@ input, textarea, [contenteditable="true"]{
 /* v42 表情面板：自定义/服务器动图直接进格子，不要撑破布局 */
 .emoji-panel .grid button,.s-emoji .grid button{overflow:hidden;padding:3px}
 .emoji-panel .grid button img,.s-emoji .grid button img{width:100%;height:100%;object-fit:contain;display:block}
+
+
+/* ============================================================
+   v43 覆盖层（按 9 张真机截图实测修正，放最后 !important 生效）
+   ============================================================ */
+/* ① 表情格子：固定高度，不用 aspect-ratio（老 WebView 不支持 → 高度塌 0，多图叠一起） */
+:root{--stk-cell:72px}
+.emoji-panel .grid,.s-emoji .grid,.sk-grid,.quick-panel.stick .sp-grid{
+  overflow-y:auto!important;-webkit-overflow-scrolling:touch!important;
+  touch-action:pan-y!important;overscroll-behavior:contain!important;
+  height:auto!important;max-height:44vh!important;min-height:150px!important;
+  align-content:start!important}
+.emoji-panel .grid.big,.s-emoji .grid.big,.sk-grid.big{--stk-cell:104px}
+.emoji-panel .grid button,.s-emoji .grid button,.sk-grid .stk,
+.quick-panel.stick .sp-grid button,.quick-panel.stick .sp-grid .sp-e{
+  position:relative!important;height:var(--stk-cell)!important;
+  min-height:var(--stk-cell)!important;aspect-ratio:auto!important;
+  overflow:hidden!important;padding:2px!important;
+  display:flex!important;flex-direction:column!important;
+  align-items:center!important;justify-content:center!important;
+  flex:0 0 auto!important}
+.emoji-panel .grid button img,.s-emoji .grid button img,.sk-grid .stk img,
+.quick-panel.stick .sp-grid button img{
+  position:absolute!important;left:3px!important;right:3px!important;top:3px!important;
+  bottom:15px!important;width:auto!important;height:auto!important;
+  max-width:calc(100% - 6px)!important;max-height:calc(100% - 18px)!important;
+  object-fit:contain!important;display:block!important;background:none!important}
+.stk-cap{position:absolute;left:1px;right:1px;bottom:1px;z-index:2;
+  font-size:9px;line-height:12px;color:#cfe6d9;text-align:center;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  background:rgba(3,22,16,.72);border-radius:0 0 7px 7px;padding:0 2px}
+.cellbad .stk-cap{color:var(--gold);height:100%;display:flex;align-items:center;
+  justify-content:center;border-radius:7px;font-size:11px}
+.emoji-panel .tabs,.s-emoji .tabs,.quick-panel.stick .sp-tabs{
+  flex-wrap:wrap!important;overflow:visible!important;max-height:none!important;
+  gap:5px!important}
+.emoji-panel .tabs button,.s-emoji .tabs button{flex:0 0 auto!important}
+/* 牌桌表情面板被 z-index:60 的快捷栏盖住 → 提到最上，加大并可滚动 */
+#stick-panel{z-index:80!important;width:min(56vw,330px)!important;
+  max-width:none!important;max-height:62vh!important;overflow:hidden!important;
+  bottom:calc(8% + var(--safe-b,0px))!important;right:calc(2% + var(--safe-t,0px))!important;
+  display:flex!important;flex-direction:column!important}
+#stick-panel .sp-tabs{flex:0 0 auto!important;max-height:30vh;overflow-y:auto!important}
+#stick-panel .sp-grid{flex:1 1 auto!important;max-height:none!important;
+  min-height:120px!important;grid-template-columns:repeat(3,1fr)!important;gap:7px!important}
+#stick-panel .sp-tab{font-size:12px!important;padding:5px 9px!important}
+
+/* ③ 底牌/叫分：居中贴顶，不再横跨整屏压住各家出的牌 */
+#page-play .dibar,#page-play #bottom-bar,#page-play .bottombar{
+  left:50%!important;right:auto!important;width:max-content!important;
+  max-width:64%!important;transform:translateX(-50%)!important;
+  justify-content:center!important;text-align:center!important;
+  padding:2px 10px!important;margin-top:calc(var(--safe-t,0px) + 4px)!important;
+  top:0!important;background:rgba(4,26,20,.55)!important;border-radius:0 0 12px 12px!important}
+#page-play .table{padding-top:calc(24px * var(--k,1))!important}
+#page-play .topseats{padding-top:calc(var(--safe-t,0px) + 20px)!important}
+/* 各家出的牌再放大一档 */
+#page-play .played .pc,#page-play .pcards .pc,#page-play .myplayed .pc{
+  --card-w:calc(52px * var(--k,1))!important;--card-h:calc(74px * var(--k,1))!important}
+#page-play .played .pc .pt,#page-play .pcards .pc .pt{font-size:calc(23px * var(--k,1))!important}
+/* ⑥ 剩 N 张：加大、统一换行到徽标下方，左右座位位置一致 */
+#page-play .ts-i{display:flex!important;flex-direction:column!important;
+  align-items:flex-start!important;gap:2px!important}
+#page-play .ts .cnt,#page-play .myinfo .cnt{
+  display:block!important;font-size:calc(15px * var(--k,1))!important;
+  font-weight:700!important;color:#ffe08a!important;letter-spacing:.5px!important;
+  white-space:nowrap!important;text-align:left!important}
+/* ③ 我的昵称/身份：下移到手牌上方、靠近最左第一张牌，不再与左侧玩家重叠 */
+#page-play .myinfo{position:absolute!important;left:5%!important;top:57%!important;
+  bottom:auto!important;transform:none!important;justify-content:flex-start!important;
+  flex-direction:column!important;align-items:flex-start!important;gap:2px!important;
+  z-index:24!important;background:rgba(4,26,20,.42);border-radius:10px;padding:5px 8px}
+/* ④⑨ 右侧四按钮：硬锁 2×2，不再横排挡手牌 */
+#page-play .tablerail{flex-flow:row wrap!important;
+  width:calc(2 * var(--rb,42px) + var(--rg,7px))!important;
+  z-index:60!important}
+#page-play .tablerail .railbtn{flex:0 0 var(--rb,42px)!important}
+#page-play .tablerail.rowmode{flex-flow:row wrap!important;
+  width:calc(2 * var(--rb,42px) + var(--rg,7px))!important}
+/* ⑤ 面板内滚动不影响牌桌 */
+.emoji-panel,.s-emoji{z-index:70!important}
+
+#stick-panel .sp-grid{display:grid!important;align-content:start!important}
+#stick-panel .sp-tabs button,#stick-panel .sp-tab{white-space:nowrap!important}

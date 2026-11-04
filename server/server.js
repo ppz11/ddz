@@ -635,7 +635,10 @@ function pushGame(room) {
   room.seats.forEach((s, i) => {
     if (!s || s.bot) return;
     const w = online.get(s.uid); if (!w) return;
-    send(w, { t: 'game', gid: room.gid, ...gameView(g, i, room) });
+    /* v43：附带显式动作事件（带自增 seq）。客户端不再靠状态差推断，
+       否则有人「过」时 m.last 仍是上上家的牌，会被误判成又出了一遍。 */
+    send(w, { t: 'game', gid: room.gid, ...gameView(g, i, room),
+      actEvt: g.actEvt || null, bidEvt: g.bidEvt || null });
   });
 }
 function pushResult(room) {
@@ -680,6 +683,10 @@ function botAct(room, seat) {
       if (g.rule === 'let46') act = g.landlord < 0 ? AI.bid(g, seat) : AI.grab(g, seat);
       else act = AI.bid(g, seat);
       const r = DDZ.applyBid(g, seat, act);
+      if (!r.err) {
+        g.evtSeq = (g.evtSeq || 0) + 1;
+        g.bidEvt = { by: seat, score: (g.bid && g.bid.score) || 0, seq: g.evtSeq, gid: room.gid };
+      }
       if (r.redeal) {
         room.game = DDZ.newGame(room.rule);
         room.game.bidTurn = room.game.firstBidder;
@@ -691,6 +698,14 @@ function botAct(room, seat) {
     } else if (g.phase === 'play') {
       const a = AI.play(g, seat);
       const r = DDZ.applyPlay(g, seat, a.ids || []);
+
+            if (!r.err) {
+
+              g.evtSeq = (g.evtSeq || 0) + 1;
+
+              g.actEvt = { by: seat, act: (Array.isArray(a.ids || []) && a.ids || [].length) ? 'play' : 'pass', seq: g.evtSeq, gid: room.gid };
+
+            }
       if (r.err) { console.error('[bot play]', r.err); DDZ.applyPlay(g, seat, []); }
       pushGame(room);
       if (g.phase === 'over') { saveGame(room); pushResult(room); return; }
@@ -1484,6 +1499,9 @@ function handle(ws, st, m) {
       const seat = seatOf(room, u);
       const r = DDZ.applyBid(room.game, seat, m.act);
       if (r.err) return send(ws, { t: 'err', msg: r.err });
+      const bg = room.game;
+      bg.evtSeq = (bg.evtSeq || 0) + 1;
+      bg.bidEvt = { by: seat, score: (bg.bid && bg.bid.score) || 0, seq: bg.evtSeq, gid: room.gid };
       if (r.redeal) {
         room.game = DDZ.newGame(room.rule);
         room.game.bidTurn = room.game.firstBidder;
@@ -1512,6 +1530,9 @@ function handle(ws, st, m) {
       const seat = seatOf(room, u);
       const r = DDZ.applyPlay(room.game, seat, m.ids || []);
       if (r.err) return send(ws, { t: 'err', msg: r.err });
+      const pg = room.game, played = (m.ids || []).length > 0;
+      pg.evtSeq = (pg.evtSeq || 0) + 1;
+      pg.actEvt = { by: seat, act: played ? 'play' : 'pass', seq: pg.evtSeq, gid: room.gid };
       pushGame(room);
       if (room.game.phase === 'over') { saveGame(room); pushResult(room); return; }
       scheduleBots(room);
@@ -1614,9 +1635,11 @@ function handle(ws, st, m) {
     case 'owner:presence': {
       const P = process.env.OWNER_PIN || '6688';
       if (String(m.pin || '') !== String(P)) return send(ws, { t: 'owner:presence', ok: false, err: '口令不正确' });
+      /* v43：uid 换身份会变，真人唯一标识是 pid —— 面板一律按 pid 展示。 */
       const list = (db.presenceLog || [])
-        .filter(x => x && x.uid && db.users[x.uid] && !db.users[x.uid].bot)
-        .slice().sort((a, b) => Math.max(b.login || 0, b.offline || 0) - Math.max(a.login || 0, a.offline || 0)).slice(0, 100);
+        .filter(x => x && (x.pid || x.uid))
+        .slice().sort((a, b) => Math.max(b.login || 0, b.offline || 0) - Math.max(a.login || 0, a.offline || 0)).slice(0, 100)
+        .map(x => ({ pid: x.pid || x.uid || '', nick: x.nick || '', login: x.login || 0, offline: x.offline || 0 }));
       send(ws, { t: 'owner:presence', ok: true, list: list });
       break;
     }
