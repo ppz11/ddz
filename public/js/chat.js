@@ -811,6 +811,11 @@ window.Chat = (function () {
   function maybeSyncStickers(done) {
     try {
       if (!window.Stickers || !Stickers.syncGlobal) return;
+      /* v49：缓存里已有 1 包就再也不重拉，导致服务器上新存的说明文字永远下不来 */
+      if (Stickers.needForceSync && Stickers.needForceSync()) {
+        Stickers.forceSync(function () { done && done(); });
+        return;
+      }
       var si = Stickers.syncInfo || {};
       if (si.packs || (Date.now() - (si.at || 0) < 30000)) return;
       Stickers.syncGlobal(function () { done && done(); });
@@ -828,7 +833,7 @@ window.Chat = (function () {
     try {
       var i = Stickers.syncInfo || {};
       if (i.err) return '☁ ' + esc(i.err);
-      if (i.packs) return '☁ 服务器 ' + i.packs + ' 包 / ' + i.items + ' 张 · 已同步';
+      if (i.packs) return '☁ 服务器 ' + i.packs + ' 包 / ' + i.items + ' 张 · 已同步 · <b style="color:var(--gold)">v49</b>';
     } catch (e) { }
     return '☁ 还没同步过服务器表情包';
   }
@@ -876,6 +881,8 @@ window.Chat = (function () {
   }
   function fill(p) {
     var g = document.getElementById('emo-grid'); if (!g) return;
+    /* v49：系统 Emoji 页用小格子（7 列），动图包保持大格子 */
+    g.className = 'grid' + (window.Stickers && Stickers.isBig && Stickers.isBig() ? ' big' : '') + ' mode-' + p;
     if (p === 'pack') {
       var pk = defaultStickPack();
       if (!pk || !pk.items.length) {

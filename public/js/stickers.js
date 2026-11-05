@@ -108,6 +108,13 @@ window.Stickers = (function () {
      否则「设为默认」看着生效、下一次同步又被覆盖成服务器包。 */
   var LS_DEF_USER = 'ddz_sticker_defuser';
   var LS_SYNC = 'ddz_sticker_synclog';
+  /* v49：旧版同步时把 label 丢了，缓存里存的是「动图 N」那份数据。
+     装新版后必须强制重拉一次，否则本地缓存永远盖着服务器上的说明文字。 */
+  var LS_SYNCVER = 'ddz_sticker_syncver';
+  var SYNC_VER = 'v49-label';
+  function syncVersionOK() { try { return localStorage.getItem(LS_SYNCVER) === SYNC_VER; } catch (e) { return false; } }
+  function markSyncVersion() { try { localStorage.setItem(LS_SYNCVER, SYNC_VER); } catch (e) { } }
+
   function userPicked() { try { return localStorage.getItem(LS_DEF_USER) === '1'; } catch (e) { return false; } }
   var USER_PACKS = [];
   /* 服务器统一下发的包：房主上传一次，所有玩家登录后自动同步，
@@ -133,8 +140,11 @@ window.Stickers = (function () {
      缓存里的旧包也走这里，避免「上次存的是相对路径、这次 WebView 是 localhost → 全破图」。 */
   function imgUrl(u) {
     if (!validUrl(u)) return '';
-    try { if (window.Net && Net.abs) return Net.abs(u); } catch (e) { }
-    return u;
+    var a = u;
+    try { if (window.Net && Net.abs) a = Net.abs(u) || u; } catch (e) { }
+    /* 最后一道：仍是根相对地址就拼死兜底，绝不让 <img> 去请求 localhost */
+    if (/^\/(?!\/)/.test(a)) a = (window.APP_SERVER || 'http://101.201.106.149:8080').replace(/\/$/, '') + a;
+    return a;
   }
   /* 清洗一个包：丢掉打不开的条目；全部失效的包返回 null */
   function cleanPack(pk) {
@@ -194,7 +204,11 @@ window.Stickers = (function () {
       var list = (r && r.packs) || [];
       GLOBAL_PACKS = list.map(function (pk) {
         var items = (pk.items || []).filter(function (it) { return it && validUrl(it.url); }).map(function (it) {
-          return { id: it.id, name: it.name, url: imgUrl(it.url), anim: !!it.anim };
+          /* v49 真凶：这里以前只留 id/name/url/anim，把房主写的 label 丢了，
+             手机面板只能回退成「动图 1 / 动图 2 …」。cleanPack 里补过 label，
+             但服务器同步走的是这条独立路径，一直漏着。 */
+          return { id: it.id, name: it.name, label: String(it.label || ''), mime: it.mime,
+                   url: imgUrl(it.url), anim: !!it.anim };
         });
         return { id: pk.id, name: pk.name || '服务器表情', items: items, global: true, ts: pk.ts };
       }).filter(function (pk) { return pk.items.length; });
@@ -211,6 +225,7 @@ window.Stickers = (function () {
         clearUserPick();
       }
       if (!packUsable(DEFAULT_PACK)) DEFAULT_PACK = USER_PACKS.length ? USER_PACKS[0].id : '';
+      markSyncVersion();
       savePacks();
       cb && cb(GLOBAL_PACKS.length);
     }).catch(function (e) {
@@ -445,9 +460,31 @@ window.Stickers = (function () {
   function cellImg(u, label) {
     var src = imgUrl(u);
     if (!src) return '<span class="sk-bad">?</span><span class="stk-cap">' + esc(label) + '</span>';
-    return '<img src="' + esc(src) + '" alt="" ' +
-      'onerror="if(!this.dataset.r&&this.src.indexOf(\'data:\')!==0){this.dataset.r=1;this.src+=(this.src.indexOf(\'?\')>=0?\'&\':\'?\')+\'r=1\'}else{this.style.display=\'none\';this.parentNode.classList.add(\'cellbad\')}">' +
+    return '<img src="' + esc(src) + '" data-u="' + esc(src) + '" alt="" ' +
+      'onerror="window.Stickers&&Stickers.__imgFail(this)">' +
       '<span class="stk-cap">' + esc(label) + '</span>';
+  }
+  /* 直链加载失败时：先带参数重试一次，再走 fetch→blob（绕过 WebView 对跨域
+     <img> 的混合内容拦截），两次都不行才显示 🖼 占位。 */
+  function imgFail(img) {
+    if (!img || img.dataset.fail) return;
+    var p = img.parentNode, u = img.getAttribute('data-u') || img.src;
+    if (!img.dataset.retry) {
+      img.dataset.retry = 1;
+      img.src = u + (u.indexOf('?') >= 0 ? '&' : '?') + 'r=1';
+      return;
+    }
+    img.dataset.fail = 1;
+    function bad() { img.style.display = 'none'; if (p) p.classList.add('cellbad'); }
+    try {
+      fetch(u).then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.blob(); })
+        .then(function (b) {
+          delete img.dataset.fail; delete img.dataset.retry;
+          img.src = URL.createObjectURL(b);
+          img.style.display = '';
+          if (p) p.classList.remove('cellbad');
+        }).catch(bad);
+    } catch (e) { bad(); }
   }
 
   /* 统一图片标签：URL 失效时不显示破图（alt 会铺满半个屏幕），
@@ -689,6 +726,9 @@ window.Stickers = (function () {
     get syncInfo() { return SYNC_INFO; },
     openImport: openImport, dataURLtoFile: dataURLtoFile,
     isBig: isBig, setBig: setBig,
-    capOf: capOf, cellImg: cellImg
+    capOf: capOf, cellImg: cellImg, __imgFail: imgFail,
+    /* 装新版后第一次打开面板强制重拉一次，覆盖旧缓存里没 label 的包 */
+    needForceSync: function () { return !syncVersionOK(); },
+    forceSync: function (cb) { syncGlobal(cb || function () { }); }
   };
 })();

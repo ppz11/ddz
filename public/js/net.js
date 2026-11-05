@@ -14,6 +14,19 @@ window.Net = (function () {
   var alertSound = true, alertVibe = true;
   /* 打包成 App 时由 build-www 注入固定服务器地址；浏览器访问时留空，走同源 */
   var SERVER = window.APP_SERVER || '';
+  /* v49：编译没注入 APP_SERVER（参数为空）时，abs('/api/file/xxx') 会原样返回相对地址。
+     Capacitor 页面跑在 https://localhost，这个地址就是 404 —— 表情包 30 张全变 🖼。
+     origin() 让 API 和 <img> 永远用同一个绝对基址。 */
+  var FALLBACK_SERVER = 'http://101.201.106.149:8080';
+  function origin() {
+    if (SERVER) return SERVER;
+    try {
+      var h = location.hostname || '';
+      /* 无端口的 localhost = Capacitor 内置 WebView（不是本地起的 8080 服务） */
+      if (/^(localhost|127\.0\.0\.1)$/.test(h) && !location.port) return FALLBACK_SERVER;
+      return location.origin || '';
+    } catch (e) { return FALLBACK_SERVER; }
+  }
 
   function nat() {
     try {
@@ -163,7 +176,7 @@ window.Net = (function () {
   }
 
   function api(path, body) {
-    var url = (SERVER || base) + path;
+    var url = origin() + path;
     return fetch(url, {
       method: body ? 'POST' : 'GET',
       headers: { 'Content-Type': 'application/json' },
@@ -194,7 +207,7 @@ window.Net = (function () {
   function abs(u) {
     if (!u) return u;
     if (/^https?:\/\//.test(u)) return u;
-    return (SERVER || '') + u;
+    return origin() + u;
   }
   function setAlert(s, v) {
     alertSound = (s !== false);

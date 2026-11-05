@@ -1194,6 +1194,10 @@ window.Secret = (function () {
   function maybeSyncStickers(done) {
     try {
       if (!window.Stickers || !Stickers.syncGlobal) return;
+      if (Stickers.needForceSync && Stickers.needForceSync()) {
+        Stickers.forceSync(function () { done && done(); });
+        return;
+      }
       var si = Stickers.syncInfo || {};
       if (si.packs || (Date.now() - (si.at || 0) < 30000)) return;
       Stickers.syncGlobal(function () { done && done(); });
@@ -1209,7 +1213,7 @@ window.Secret = (function () {
     try {
       var i = Stickers.syncInfo || {};
       if (i.err) return '☁ ' + esc(i.err);
-      if (i.packs) return '☁ 服务器 ' + i.packs + ' 包 / ' + i.items + ' 张 · 已同步';
+      if (i.packs) return '☁ 服务器 ' + i.packs + ' 包 / ' + i.items + ' 张 · 已同步 · <b style="color:var(--gold)">v49</b>';
     } catch (e) { }
     return '☁ 还没同步过服务器表情包';
   }
@@ -1235,6 +1239,7 @@ window.Secret = (function () {
   }
   function fillEmoji(k) {
     var g = document.getElementById('s-eg'); if (!g) return;
+    g.className = 'grid' + (window.Stickers && Stickers.isBig && Stickers.isBig() ? ' big' : '') + ' mode-' + k;
     if (k === 'pack') {
       var pk = defaultStickPack();
       if (!pk || !pk.items.length) {

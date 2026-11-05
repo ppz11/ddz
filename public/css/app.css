@@ -1955,3 +1955,19 @@ input, textarea, [contenteditable="true"]{
   .rest-view .rv-cards .pc{--card-w:32px!important;--card-h:45px!important}
   .rest-view .rv-foot .btn{padding:6px 18px;font-size:13px}
 }
+
+
+/* ============ v49：系统 Emoji 格子调小，动图包保持大图 ============
+   之前所有格子统一 96px / 5 列，Emoji 页一个笑脸占掉一大块，
+   一屏只能看十几个。按页分模式：Emoji 7 列 54px，动图 5 列 96px。 */
+.emoji-panel .grid.mode-emoji,.s-emoji .grid.mode-emoji{
+  --stk-cell:54px;
+  grid-template-columns:repeat(7,1fr)!important;
+  gap:4px!important;
+  max-height:34vh!important;
+  min-height:120px!important}
+.emoji-panel .grid.mode-emoji button,.s-emoji .grid.mode-emoji button{
+  font-size:25px!important;border-radius:9px!important;padding:1px!important}
+.emoji-panel .grid.mode-pack,.s-emoji .grid.mode-pack{--stk-cell:96px}
+/* 动图格子里文字别被挤没 */
+.emoji-panel .grid.mode-pack .stk-cap,.s-emoji .grid.mode-pack .stk-cap{font-size:11px!important}
