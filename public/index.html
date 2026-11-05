@@ -131,9 +131,11 @@
             </div>
           </div>
         </div>
+        <!-- 底牌：放在 .table 外面，用 absolute 贴屏幕最上。
+             放在 grid 里时，position:fixed 在「原生锁方向失败、#app 被 rotate」
+             的真机上会相对未旋转视口定位，飘到屏幕中部。 -->
+        <div class="dibar" id="bottom-bar"></div>
         <div class="table">
-          <!-- 底牌：统一放在牌桌最上方 -->
-          <div class="dibar" id="bottom-bar"></div>
           <!-- 左右两侧：对手分列，出牌都朝牌桌中间展开 -->
           <div class="field">
             <div class="seatleft" id="seat-left"></div>

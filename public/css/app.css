@@ -1971,3 +1971,80 @@ input, textarea, [contenteditable="true"]{
 .emoji-panel .grid.mode-pack,.s-emoji .grid.mode-pack{--stk-cell:96px}
 /* 动图格子里文字别被挤没 */
 .emoji-panel .grid.mode-pack .stk-cap,.s-emoji .grid.mode-pack .stk-cap{font-size:11px!important}
+
+
+/* ============================================================
+   v50 覆盖层：牌桌三处位置问题（真机截图 122/123/124）
+   1) 叫分 / 出牌按钮压住手牌
+   2) 底牌与叫分加倍信息没贴屏幕最上、我的昵称身份被切出屏幕
+   3) 各家出的牌仍叠着看不清，我出的与对手出的大小不一致
+   ============================================================ */
+/* ① 底牌条已挪出 .table（见 index.html），改为 absolute 而非 fixed：
+      原生锁方向失败时 #app 会整体 rotate(90deg)，fixed 相对「未旋转的视口」
+      会飘到屏幕中部；absolute 相对牌桌坐标系，永远贴视觉屏幕最上方。 */
+#page-play > .dibar,
+#page-play > #bottom-bar{
+  position:absolute!important;
+  top:calc(var(--safe-t,0px) + 0px)!important;
+  left:50%!important;right:auto!important;transform:translateX(-50%)!important;
+  width:max-content!important;max-width:78%!important;margin:0!important;
+  padding:3px 12px!important;z-index:34!important;pointer-events:none!important;
+  justify-content:center!important;text-align:center!important;
+  background:rgba(4,26,20,.66)!important;border-radius:0 0 12px 12px!important}
+#page-play .table{padding-top:calc(34px * var(--k,1))!important;overflow:visible!important}
+#page-play .topseats{padding-top:calc(var(--safe-t,0px) + 30px)!important}
+
+/* ② 按钮区：去掉 grid-row 后 bottom 才相对整张牌桌计算（此前 grid 第 5 行
+      高度为 0，bottom 实际贴着那个空行，按钮被手牌盖住）。上移到手牌上方，
+      留约 20px 空隙，既不再压牌，也不会离手牌太远。 */
+#page-play #action-zone{
+  grid-row:auto!important;grid-column:auto!important;
+  bottom:calc(var(--card-h,116px) + 54px + var(--safe-b,0px))!important;
+  z-index:72!important}
+#page-play #action-zone .bidwrap{background:rgba(4,26,20,.84)!important;z-index:73!important}
+
+/* ③ 我的昵称 / 身份：同样脱离 0 高度的 grid 第 6 行，改按整张牌桌定位，
+      抬到左侧座位下方、手牌上方；不再被底部切掉。 */
+#page-play .myinfo{
+  grid-row:auto!important;grid-column:auto!important;
+  top:auto!important;
+  bottom:calc(var(--card-h,116px) + 50px + var(--safe-b,0px))!important;
+  left:1%!important;max-width:min(158px,17vw)!important;
+  padding:3px 6px!important;gap:1px!important;z-index:24!important;
+  background:rgba(4,26,20,.5)!important;border-radius:8px;
+  justify-content:flex-start!important;flex-direction:column!important;
+  align-items:flex-start!important;transform:none!important}
+#page-play .myinfo .nm{font-size:11px!important;white-space:nowrap!important}
+#page-play .myinfo .rl,#page-play .myinfo .cnt{font-size:11px!important;
+  padding:2px 7px!important;margin-left:0!important}
+
+/* ④ 出的牌：取消叠放和 scale(1.28)，统一成 48×68×k —— 比手牌略小
+      （我出的「再小一点」），比原来 32×45 放大 1.28 倍的对手牌更清楚
+      （「玩家出的牌再大一点」），并且两边完全一致。多张时横向滑动看全。 */
+/* 注意：旧版有一条 #page-play .seatcol .pcards .pc{width:36px} 直接写死宽度，
+   只改 --card-w 变量压不过它 —— 必须把 width/height 也显式锁死。 */
+#page-play .played .pc,
+#page-play .pcards .pc,
+#page-play .myplayed .pc{
+  --card-w:calc(44px * var(--k,1))!important;
+  --card-h:calc(62px * var(--k,1))!important;
+  width:calc(44px * var(--k,1))!important;
+  height:calc(62px * var(--k,1))!important;
+  transform:none!important}
+#page-play .prow.stack .pc{margin-left:0!important}
+#page-play .prow.stack{flex-wrap:nowrap!important;gap:calc(3px * var(--k,1))!important}
+#page-play .pcards,#page-play .played{
+  flex-wrap:nowrap!important;overflow-x:auto!important;overflow-y:hidden!important;
+  -webkit-overflow-scrolling:touch!important}
+#page-play .pcards::-webkit-scrollbar,#page-play .played::-webkit-scrollbar{display:none}
+#page-play .played .pc .rk,
+#page-play .pcards .pc .rk,
+#page-play .myplayed .pc .rk{font-size:calc(var(--card-h,62px) * .27)!important}
+#page-play .played .pc .ctr,
+#page-play .pcards .pc .ctr,
+#page-play .myplayed .pc .ctr{font-size:calc(var(--card-h,62px) * .34)!important}
+#page-play .myplayed{margin-bottom:calc(18px * var(--k,1))!important;z-index:30!important}
+
+/* ⑤ 矮屏上左侧座位与我的信息仍有交叠：左列整体上移，顶部仍留出底牌条高度 */
+#page-play .seatcol.left,
+#page-play .seatleft{transform:translateY(calc(-10px * var(--k,1)))!important}
