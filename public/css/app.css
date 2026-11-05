@@ -1816,3 +1816,142 @@ input, textarea, [contenteditable="true"]{
 
 #stick-panel .sp-grid{display:grid!important;align-content:start!important}
 #stick-panel .sp-tabs button,#stick-panel .sp-tab{white-space:nowrap!important}
+
+
+/* ============================================================
+   v44 覆盖层（按本轮 6 张真机截图修正，放最后 !important 生效）
+   ============================================================ */
+/* ① 底牌 / 叫分 / 加倍：贴屏幕最顶（安全区下 2px），不再悬在牌桌上沿挡住出的牌 */
+#page-play .dibar,#page-play #bottom-bar,#page-play .bottombar{
+  position:fixed!important;top:calc(var(--safe-t,0px) + 2px)!important;
+  left:50%!important;right:auto!important;transform:translateX(-50%)!important;
+  width:max-content!important;max-width:78%!important;margin:0!important;
+  padding:3px 12px!important;z-index:34!important;pointer-events:none!important;
+  background:rgba(4,26,20,.66)!important;border-radius:0 0 12px 12px!important}
+#page-play .table{padding-top:calc(30px * var(--k,1))!important;overflow:visible!important}
+#page-play .topseats{padding-top:calc(var(--safe-t,0px) + 30px)!important}
+
+/* ② 我的昵称 / 身份：再往左靠、收窄缩小，不压住最左侧的手牌 */
+#page-play .myinfo{left:1%!important;top:55%!important;
+  max-width:min(158px,17vw)!important;padding:3px 6px!important;gap:1px!important;
+  background:rgba(4,26,20,.5)!important;border-radius:8px}
+#page-play .myinfo .nm{font-size:11px!important;white-space:nowrap!important}
+#page-play .myinfo .rl,#page-play .myinfo .cnt{font-size:11px!important;
+  padding:2px 7px!important;margin-left:0!important}
+
+/* ③ 各家出的牌：层级提到最上、允许溢出，不再被上方那一条压住 */
+#page-play .field,#page-play .mid,#page-play .played,#page-play .played .prow,
+#page-play .myplayed,#page-play .pmine,#page-play .pcards,
+#page-play .seatcol,#page-play .seatleft,#page-play .seatright{overflow:visible!important}
+#page-play .played,#page-play .played .prow,#page-play .myplayed,
+#page-play .pmine,#page-play .pcards,#page-play .seatcol .pcards{
+  position:relative!important;z-index:30!important}
+#page-play .played .pc,#page-play .pcards .pc,#page-play .myplayed .pc{
+  transform:scale(1.28)!important;transform-origin:center top!important}
+/* 等待提示只做提示，不挡牌、不吃点击 */
+#page-play .mid .notice{pointer-events:none!important;z-index:31!important;
+  position:absolute!important;top:2px!important;left:50%!important;
+  transform:translateX(-50%)!important;white-space:nowrap!important;
+  background:rgba(4,26,20,.32)!important;box-shadow:none!important}
+
+/* ④ 我出的牌整体上移、按钮下移贴手牌，两者彻底错开 */
+#page-play .myplayed{margin-bottom:calc(52px * var(--k,1))!important;z-index:30!important}
+#page-play #action-zone{bottom:calc(var(--card-h,116px) + 4px + var(--safe-b,0px))!important;
+  z-index:72!important}
+#page-play #action-zone .bidwrap{background:rgba(4,26,20,.84)!important;z-index:73!important}
+#page-play .acts .btn,#page-play #action-zone .btn{
+  min-width:calc(94px * var(--k,1))!important;
+  font-size:calc(16px * var(--k,1))!important;
+  padding:calc(11px * var(--k,1)) calc(16px * var(--k,1))!important}
+
+/* ⑤ 表情格子：动图预览在上、说明文字在下，格子加大 */
+:root{--stk-cell:96px}
+.emoji-panel .grid.big,.s-emoji .grid.big,.sk-grid.big,
+#stick-panel .sp-grid.big{--stk-cell:132px}
+.emoji-panel .grid button,.s-emoji .grid button,.sk-grid .stk,
+.quick-panel.stick .sp-grid button,#stick-panel .sp-i{
+  flex-direction:column!important;justify-content:flex-start!important;
+  height:var(--stk-cell)!important;min-height:var(--stk-cell)!important;
+  padding:3px!important;gap:0!important}
+.emoji-panel .grid button img,.s-emoji .grid button img,.sk-grid .stk img,
+.quick-panel.stick .sp-grid button img,#stick-panel .sp-i img{
+  position:static!important;left:auto!important;right:auto!important;
+  top:auto!important;bottom:auto!important;
+  flex:1 1 auto!important;width:100%!important;height:auto!important;
+  max-width:100%!important;max-height:none!important;min-height:0!important;
+  object-fit:contain!important;display:block!important;background:none!important}
+.stk-cap{position:static!important;flex:0 0 auto!important;z-index:2;
+  width:100%!important;height:19px!important;line-height:19px!important;
+  font-size:11px!important;color:#ffe6ae!important;
+  background:rgba(3,22,16,.86)!important;border-radius:0 0 7px 7px!important;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.cellbad{background:rgba(243,201,107,.09)!important}
+.cellbad .stk-cap{height:19px!important;display:block!important;
+  border-radius:0 0 7px 7px!important}
+/* 包切换标签整行可横向滚动，不被裁掉 */
+.emoji-panel .tabs,.s-emoji .tabs,#stick-panel .sp-tabs{
+  flex-wrap:nowrap!important;overflow-x:auto!important;overflow-y:hidden!important;
+  -webkit-overflow-scrolling:touch!important;max-height:none!important}
+
+/* v44：图片最终取不回来时，格子上方给个明确的占位图标，不是一片空 */
+.cellbad::before{content:'🖼';position:absolute;left:0;right:0;top:4px;
+  height:calc(100% - 24px);display:flex;align-items:center;justify-content:center;
+  font-size:28px;opacity:.5;pointer-events:none}
+
+
+/* ============ v48 一局结束后的「剩牌展示」 ============
+   固定全屏、竖排四段，绝不跟牌桌元素抢位置：
+   顶部标题 / 左右两位对手 / 我的牌居中靠下 / 底部关闭按钮。 */
+.rest-view{
+  position:fixed!important;inset:0!important;z-index:200!important;
+  display:flex!important;flex-direction:column!important;
+  padding:calc(6px + var(--safe-t,0px)) 12px calc(6px + var(--safe-b,0px))!important;
+  background:linear-gradient(180deg,rgba(4,28,21,.97),rgba(2,14,11,.98))!important;
+  overflow:hidden!important;
+}
+.rest-view .rv-top{flex:0 0 auto;text-align:center;padding-bottom:4px}
+.rest-view .rv-title{font-size:18px;font-weight:800;color:var(--gold,#f3c96b);letter-spacing:2px}
+.rest-view .rv-sub{font-size:11px;color:var(--sub,#7d938b);margin-top:2px}
+.rest-view .rv-mid{
+  flex:1 1 auto!important;min-height:0!important;
+  display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;
+}
+.rest-view .rv-bot{flex:0 0 auto;display:flex;justify-content:center;padding:4px 0 6px}
+.rest-view .rv-foot{flex:0 0 auto;display:flex;justify-content:center;padding-bottom:2px}
+.rest-view .rv-foot .btn{min-width:190px;padding:9px 22px;font-size:14px}
+.rest-view .rv-block{
+  width:46%!important;max-width:46%!important;min-width:0!important;
+  background:rgba(6,42,32,.66);border:1px solid rgba(243,201,107,.18);
+  border-radius:12px;padding:7px 9px 9px;box-sizing:border-box;
+}
+.rest-view .rv-block.mine{width:min(88%,660px)!important;max-width:88%!important}
+.rest-view .rv-block.rv-ghost{
+  display:flex;align-items:center;justify-content:center;
+  font-size:11px;color:var(--sub,#7d938b);border-style:dashed;min-height:62px;
+}
+.rest-view .rv-head{
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  font-size:12px;color:var(--txt,#eaf5ef);margin-bottom:6px;line-height:1.2;
+}
+.rest-view .rv-head b{font-size:13px;font-weight:800}
+.rest-view .rv-head i{font-style:normal;font-size:11px;color:var(--sub,#7d938b);font-weight:400}
+.rest-view .rv-head .rl{font-size:10px;padding:2px 7px;margin:0}
+.rest-view .rv-head .rv-cnt{font-size:11px;color:var(--sub,#7d938b);margin-left:auto;white-space:nowrap}
+.rest-view .rv-cards{
+  display:flex!important;flex-wrap:nowrap!important;align-items:center!important;
+  overflow-x:auto!important;overflow-y:hidden!important;
+  -webkit-overflow-scrolling:touch;touch-action:pan-x!important;
+  padding-bottom:3px;min-height:56px;
+}
+.rest-view .rv-cards .pc{flex:0 0 auto!important;margin-left:calc(var(--card-w,40px) * -1 * var(--rov,0.3))!important;box-shadow:-3px 0 8px rgba(0,0,0,.45)}
+.rest-view .rv-cards .pc:first-child{margin-left:0!important}
+.rest-view .rv-empty{font-size:13px;color:#9fe8b4;padding:18px 0;text-align:center}
+@media (max-height:400px){
+  .rest-view .rv-title{font-size:15px}
+  .rest-view .rv-sub{display:none}
+  .rest-view .rv-block{padding:4px 7px 6px}
+  .rest-view .rv-head{margin-bottom:3px}
+  .rest-view .rv-cards{min-height:45px}
+  .rest-view .rv-cards .pc{--card-w:32px!important;--card-h:45px!important}
+  .rest-view .rv-foot .btn{padding:6px 18px;font-size:13px}
+}

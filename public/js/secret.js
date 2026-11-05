@@ -613,6 +613,8 @@ window.Secret = (function () {
       });
       b.querySelectorAll('.sitem').forEach(function (el) {
         el.onclick = function () {
+          /* 长按刚弹过菜单，随后的合成 click 不再顺便进会话 */
+          if (longPressFired()) return;
           if (sSelMode === 'room') { toggleRoom(el.dataset.rid); return; }
           openThread(el.dataset.rid);
         };
@@ -1507,21 +1509,35 @@ window.Secret = (function () {
       App.toast('已开始下载');
     } catch (e) { App.toast('保存失败'); }
   }
+  /* v44：单击会话项绝不弹删除菜单。
+     原来 500ms + 只在元素上绑 pointerup，手指抬起落在别处时定时器没清 →
+     点一下就弹「删除该会话」。改成 700ms + 全局 pointerup 兜底 + 触发后屏蔽 click。 */
+  var lpTimer = null, lpSuppressUntil = 0;
+  function longPressFired() { return Date.now() < lpSuppressUntil; }
+  ['pointerup', 'pointercancel'].forEach(function (n) {
+    document.addEventListener(n, function () {
+      if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+    });
+  });
   /* 长按：手指轻微抖动不打断（超过 10px 才算拖动取消），否则在手机上很难触发 */
   /* 长按：安卓 WebView 默认会弹系统「复制/选择」菜单打断 JS 长按，
      所以必须阻止 contextmenu；同时去掉过于敏感的 pointerleave
      （手指轻微移动就会取消，导致手机上几乎触发不了）。 */
   function longPress(el, fn) {
-    var t = null, x0 = 0, y0 = 0;
-    function clear() { if (t) { clearTimeout(t); t = null; } }
+    var x0 = 0, y0 = 0;
+    function clear() { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } }
     el.addEventListener('pointerdown', function (e) {
       x0 = e.clientX; y0 = e.clientY;
-      clear(); t = setTimeout(fn, 500);
+      clear();
+      lpTimer = setTimeout(function () {
+        lpTimer = null;
+        lpSuppressUntil = Date.now() + 1000;
+        fn();
+      }, 700);
     });
     el.addEventListener('pointermove', function (e) {
       if (Math.abs(e.clientX - x0) > 14 || Math.abs(e.clientY - y0) > 14) clear();
     });
-    ['pointerup', 'pointercancel'].forEach(function (n) { el.addEventListener(n, clear); });
     el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   }
     function withUser(pid) { if (!pid) return; Net.send({ t: 'secret:create', withPid: pid }); }

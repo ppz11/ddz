@@ -1,9 +1,22 @@
 /* ============================================================
  *  斗地主核心规则引擎（服务端 / 前端共用同一份）
- *  支持三种玩法：
- *    let46     二人 46 张（去掉 3、4），抢地主让牌机制
- *    duo37     二人 37 张（54 张随机去掉 17 张），叫分抢地主，先出完者胜
- *    trio54    三人 54 张，叫分抢地主，农民一方出完即胜
+ *  支持四种玩法：
+ *    let46     二人 46 张（去掉 3、4），叫分抢地主 + 加倍，先出完者胜
+ *    duo37     二人 37 张（54 张随机去掉 17 张），叫分抢地主 + 加倍，先出完者胜
+ *    cut37     二人 37 张「减牌竞叫」：竞叫减 N 张定地主，农民剩 <=N 张即胜；
+ *              不设玩家主动加倍，但春天/反春天/炸弹照常翻倍，基础倍数 1
+ *    trio54    三人 54 张，叫分抢地主 + 加倍，农民一方出完即胜
+ *
+ *  v46 规则（逐条与用户确认后实现）：
+ *   · 三人只有 54 张；二人可选 46 张 / 37 张；37 张建房时选「叫分加倍」或「减牌」
+ *   · 叫分 1~3 分，每人仅一次机会，后叫者必须严格高于当前最高分；叫满 3 分提前定庄
+ *   · 加倍权只属于「叫分提前结束、从头到尾没轮到叫分」的玩家；一人 x2、两人 x4
+ *     轮到叫分但选了不叫、以及叫过分的玩家，都不能加倍
+ *   · 减牌：首叫「减1 / 减2 / 不叫」，之后「上家+1 / 上家+2 / 不叫」；
+ *     一旦有人不叫立刻定庄：最后叫数字的人当地主，不叫的人当农民，门槛 N = 最后那个数字；
+ *     首叫直接不叫 → 对方当地主、N = 1；减牌玩法没有「玩家主动加倍」阶段，
+ *     但结算时春天/反春天/炸弹/王炸照常翻倍（基础倍数 1，不拿 N 当底分）
+ *   · 减牌胜负：农民手牌 <=N 当场立刻判农民胜；地主必须赶在农民降到 N 张之前出完才算赢
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -378,6 +391,14 @@
 
   /* ---------------- 对局状态 ---------------- */
   function seatCount(rule) { return rule === 'trio54' ? 3 : 2; }
+  function isCut(rule) { return rule === 'cut37'; }
+  /* 本轮可选的减牌数：首叫 1/2，之后只能在上家基础上 +1 或 +2。
+     没有人为上限，唯一物理约束是不能超过自己手上牌的张数。 */
+  function cutOptions(g) {
+    var hi = g.cutHigh || 0;
+    if (!g.cutSeq || !g.cutSeq.length) return [1, 2];
+    return [hi + 1, hi + 2];
+  }
 
   function newGame(rule, rnd) {
     rnd = rnd || Math.random;
@@ -395,6 +416,8 @@
       phase: 'bid', bid: null, landlord: -1, bidTurn: openSeat, bidSeq: [],
       doubleSeats: [], doubleIdx: 0, doubled: [],
       grabCount: 0, letCount: rule === 'let46' ? 1 : 0, multiplier: 1,
+      /* v46 减牌竞叫状态 */
+      cutHigh: 0, cutBidder: -1, cutTarget: 0, cutSeq: [],
       turn: -1, last: null, lastSeat: [], passFlag: 0, bidPasses: 0,
       playedCount: [], bombCount: 0, spring: false, antiSpring: false,
       winner: -1, winnerSide: null, result: null, bots: []
@@ -407,19 +430,59 @@
   function applyBid(g, seat, act) {
     if (g.phase !== 'bid') return { err: '当前不是叫地主阶段' };
     var n = g.seats;
-    if (g.rule === 'trio54' || g.rule === 'duo37') {
+    /* v46 减牌竞叫（仅二人 37 张）：复用 phase='bid'，但完全是另一套定庄规则。
+       「减 N 张」是竞叫的数字，不是真的从手牌里拿走牌；
+       数字越大代表地主越有把握「在农民剩 N 张之前出完」。 */
+    if (g.rule === 'cut37') {
+      var hi = g.cutHigh || 0;
+      if (act.type === 'cut') {
+        var cn = Number(act.count);
+        var opts = cutOptions(g);
+        if (Math.floor(cn) !== cn || opts.indexOf(cn) < 0)
+          return { err: '本轮只能减 ' + opts.join(' 或 ') + ' 张' };
+        /* 减牌数不可能超过自己手牌数，否则开局农民就已经达标，竞叫失去意义。
+           这也是「没有最高」之外的唯一物理上限，保证竞叫一定会结束。 */
+        if (cn > g.hands[seat].length)
+          return { err: '减牌数不能超过自己的手牌张数' };
+        g.cutHigh = cn; g.cutBidder = seat;
+        g.cutSeq.push({ seat: seat, act: 'cut', count: cn });
+        g.bidSeq.push({ seat: seat, act: 'bid', score: cn });
+        g.bid = { score: cn, by: seat };
+        g.bidTurn = 1 - seat;
+        return { ok: true };
+      }
+      g.cutSeq.push({ seat: seat, act: 'pass' });
+      g.bidSeq.push({ seat: seat, act: 'pass' });
+      /* 一旦有人不叫，本局立刻定庄，不再往下轮 */
+      return finishCut(g);
+    }
+    /* v46：46 张也走叫分制（用户第 11 条：选叫分加倍就跟 46 张和 54 张一样）。
+       只有减牌玩法走上面的独立分支。 */
+    if (g.rule !== 'cut37') {
       // 叫分制：每人一次机会，从明牌者开始轮流；叫 3 分立即定地主
-      var bidCount = g.bidSeq.filter(function (b) { return b.act === 'bid'; }).length;
       if (act.type === 'bid') {
-        if (!g.bid || act.score > g.bid.score) g.bid = { score: act.score, by: seat };
-        g.bidSeq.push({ seat: seat, act: 'bid', score: act.score });
-        if (act.score >= 3) {
+        /* v45：后叫的人必须「严格高于」当前最高分，不能叫一样的分数。
+           以前只是不更新 g.bid，却照样把这次动作记成一次有效叫分，
+           于是一桌人都能显示「叫 1 分」。这里直接在引擎层拒绝。 */
+        var sc = Number(act.score), cur = g.bid ? g.bid.score : 0;
+        if (!(sc >= 1 && sc <= 3) || Math.floor(sc) !== sc)
+          return { err: '叫分只能是 1、2 或 3 分' };
+        if (sc <= cur)
+          return { err: '叫分必须比当前最高分高（当前 ' + cur + ' 分）' };
+        g.bid = { score: sc, by: seat };
+        g.bidSeq.push({ seat: seat, act: 'bid', score: sc });
+        if (sc >= 3) {
           /* 叫满 3 分直接定地主，叫分就提前结束了。
-             规则：此时「还没轮到叫分」的人有权选择是否加倍（他们没机会表达过意见）；
-             「已经叫过分」的人没有这个权力。
-             所以 eligible = 从头到尾没在 bidSeq 里出现过的座位。 */
-          var acted = {};
-          g.bidSeq.forEach(function (b) { acted[b.seat] = 1; });
+             规则（v45 明确）：只有「没轮到叫分」的人能选加倍；
+             已经叫过分（以及已经轮到过、选择不叫）的人都没有这个权力。
+             doubleExcluded 同时下发给前端，界面上直接写明为什么不能加倍。 */
+          var acted = {}, bidders = {};
+          g.bidSeq.forEach(function (b) {
+            acted[b.seat] = 1;
+            if (b.act === 'bid') bidders[b.seat] = 1;
+          });
+          g.doubleExcluded = Object.keys(acted).map(Number);
+          g.doubleBidders = Object.keys(bidders).map(Number);
           g.doubleSeats = [];
           for (var di = 0; di < n; di++) if (!acted[di]) g.doubleSeats.push(di);
           var fr = finishBid(g);
@@ -474,6 +537,13 @@
     if (g.phase !== 'double') return { err: '当前不是加倍阶段' };
     var q = g.doubleSeats || [];
     if (!q.length) { g.phase = 'play'; return { ok: true, started: true }; }
+    /* v45：即使 doubleSeats 被改坏，也要挡住「已经叫过分 / 已经轮到叫分」的人。
+       加倍权只属于叫分提前结束时、从头到尾没轮到叫分的玩家，且必须轮流决定。 */
+    var ex = g.doubleExcluded || [];
+    if (ex.indexOf(seat) >= 0) {
+      return { err: (g.doubleBidders || []).indexOf(seat) >= 0
+        ? '已经叫过分的玩家不能再加倍' : '你已经轮到叫分，不能加倍' };
+    }
     if (q[g.doubleIdx] !== seat) return { err: '还没轮到你加倍' };
     if (yes) { g.multiplier = (g.multiplier || 1) * 2; (g.doubled = g.doubled || []).push(seat); }
     g.doubleIdx++;
@@ -487,15 +557,47 @@
     return (g.doubleIdx < q.length) ? q[g.doubleIdx] : -1;
   }
 
-  function finishBid(g) {
-    if (g.rule === 'let46') {
-      if (g.landlord < 0) return { redeal: true };
-    } else {
-      if (!g.bid) return { redeal: true };
-      g.landlord = g.bid.by;
-      g.multiplier = g.bid.score || 1;
-      g.letCount = 0;
+  /* v46 减牌定庄：
+     最后叫出数字的人当地主，选「不叫」的人当农民；
+     门槛 N = 最后叫的那个数字。首叫直接不叫 → 对方当地主、N = 1。 */
+  function finishCut(g) {
+    var last = null;
+    for (var ci = g.cutSeq.length - 1; ci >= 0; ci--) {
+      if (g.cutSeq[ci].act === 'cut') { last = g.cutSeq[ci]; break; }
     }
+    var N = last ? last.count : 1;
+    var lord = last ? last.seat : (1 - g.firstBidder);
+    g.cutTarget = N;
+    g.landlord = lord;
+    g.letCount = N;
+    g.multiplier = 1;                 // 基础倍数 1（不拿竞叫 N 当底分），春天/炸弹在结算时照算
+    g.doubleExcluded = [0, 1];         // 两人都参与了竞叫，谁都不能加倍
+    g.doubleBidders = [];
+    g.doubleSeats = [];
+    g.hands[lord] = sortCards(g.hands[lord].concat(g.bottom));
+    g.phase = 'play';
+    g.turn = lord;
+    g.last = null;
+    return { ok: true, started: true, cutTarget: N, cutLandlord: lord };
+  }
+
+  function finishBid(g) {
+    /* v45：叫分没提前结束（全员都轮过）时，没有任何人有加倍权，
+       把名单补齐，前端/服务端双重校验都不会漏。 */
+    if (!g.doubleExcluded) {
+      var seen = {};
+      (g.bidSeq || []).forEach(function (b) { seen[b.seat] = 1; });
+      g.doubleExcluded = Object.keys(seen).map(Number);
+      g.doubleBidders = (g.bidSeq || []).filter(function (b) { return b.act === 'bid'; })
+        .map(function (b) { return b.seat; });
+      g.doubleSeats = [];
+    }
+    /* v46：46 张也走叫分制，不再有「抢地主让牌」定庄。
+       所有非减牌玩法统一由最高叫分者当地主。 */
+    if (!g.bid) return { redeal: true };
+    g.landlord = g.bid.by;
+    g.multiplier = g.bid.score || 1;
+    g.letCount = 0;
     g.hands[g.landlord] = sortCards(g.hands[g.landlord].concat(g.bottom));
     g.phase = 'play';
     g.turn = g.landlord;
@@ -540,10 +642,12 @@
       if (i === g.landlord) continue;
       if (g.hands[i].length === 0) farmerDone = true;
     }
-    if (g.rule === 'let46') {
-      var farmer = 1 - g.landlord;
-      if (g.hands[g.landlord].length === 0) g.winner = g.landlord;
-      else if (g.hands[farmer].length <= g.letCount) g.winner = farmer;
+    if (g.rule === 'cut37') {
+      /* v46：农民剩 <=N 张「当场立刻」判农民胜，牌局立即结束；
+         地主只有赶在农民降到 N 张之前出完手牌才算赢。 */
+      var cFarmer = 1 - g.landlord;
+      if (g.hands[cFarmer].length <= g.cutTarget) g.winner = cFarmer;
+      else if (g.hands[g.landlord].length === 0) g.winner = g.landlord;
     } else {
       if (g.hands[g.landlord].length === 0) g.winner = g.landlord;
       else if (farmerDone) {
@@ -554,6 +658,10 @@
     if (g.winner >= 0) {
       g.phase = 'over';
       var isLandlordWin = g.winner === g.landlord;
+      /* v47：所有玩法统一结算春天/反春天/炸弹倍率。
+         减牌玩法只是「没有玩家主动加倍」这一步，基础倍数 1；
+         出牌过程中出现的春天/反春天、炸弹/王炸照样各 ×2。
+         农民剩 <=N 张当场赢也算反春天——牌局已结束，只看实际出牌情况。 */
       if (g.seats === 2) {
         if (isLandlordWin && g.playedCount[1 - g.landlord] === 0) { g.spring = true; g.multiplier *= 2; }
         if (!isLandlordWin && g.playedCount[g.landlord] <= 1) { g.antiSpring = true; g.multiplier *= 2; }
@@ -567,7 +675,8 @@
       g.result = {
         winner: g.winner, landlord: g.landlord, winnerSide: isLandlordWin ? 'landlord' : 'farmer',
         spring: g.spring, antiSpring: g.antiSpring, bombCount: g.bombCount,
-        multiplier: g.multiplier, letCount: g.letCount
+        multiplier: g.multiplier, letCount: g.letCount,
+        cutTarget: g.rule === 'cut37' ? g.cutTarget : null
       };
       return { ok: true, over: true, result: g.result };
     }
@@ -576,6 +685,8 @@
   }
 
   function farmerTarget(g) {
+    if (g.rule === 'cut37')
+      return g.landlord < 0 ? 0 : Math.max(0, g.hands[1 - g.landlord].length - g.cutTarget);
     if (g.rule !== 'let46' || g.landlord < 0) return 0;
     return Math.max(0, g.hands[1 - g.landlord].length - g.letCount);
   }
@@ -587,6 +698,7 @@
     moveCost: moveCost, speak: speak, rankName: rankName, hasMove: hasMove,
     newGame: newGame, applyBid: applyBid, applyPlay: applyPlay, finishBid: finishBid,
     applyDouble: applyDouble, doubleTurn: doubleTurn,
-    farmerTarget: farmerTarget, seatCount: seatCount
+    farmerTarget: farmerTarget, seatCount: seatCount,
+    cutOptions: cutOptions, finishCut: finishCut, isCut: isCut
   };
 });

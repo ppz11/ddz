@@ -140,7 +140,8 @@ window.Stickers = (function () {
   function cleanPack(pk) {
     if (!pk || !Array.isArray(pk.items)) return null;
     var items = pk.items.filter(function (it) { return it && validUrl(it.url); }).map(function (it) {
-      var o = { id: it.id, name: it.name, anim: !!it.anim, mime: it.mime };
+      var o = { id: it.id, name: it.name, anim: !!it.anim, mime: it.mime,
+                label: String(it.label || '') };
       o.url = imgUrl(it.url);
       return o;
     });
@@ -431,16 +432,21 @@ window.Stickers = (function () {
 
   /* v43：动图预览看不清 / 自带表情叠在一起 —— 真机上 aspect-ratio 不被支持，
      格子高度塌成 0，img 的 height:100% 撑不开，多张图就叠在一起。
-     这里改成固定高度 + 绝对定位图片 + 底部简短文字说明。 */
+     v44 起改成固定高度 + 图片在上、说明文字在下（不再绝对定位叠在图上）。 */
   function capOf(it, i) {
+    /* 房主在上传工具里写的说明优先；没有才退回落盘文件名，最后才是「动图 N」 */
     var n = String((it && (it.label || it.name)) || '')
       .replace(/\.[a-z0-9]+$/i, '').trim();
-    if (!n || /^[0-9a-f_\-]{12,}$/i.test(n) || n.length > 14) n = '动图 ' + (i + 1);
-    return n.length > 8 ? n.slice(0, 8) : n;
+    if (!n || /^[0-9a-f_\-]{12,}$/i.test(n)) n = '动图 ' + (i + 1);
+    return n.length > 12 ? n.slice(0, 12) : n;
   }
+  /* v44：优先显示动图预览。相对地址先补全；首次加载失败自动带缓存破坏参数重试一次，
+     仍失败才收起图片只留文字，不再出现「满格只有动图 1」的空格子。 */
   function cellImg(u, label) {
-    return '<img src="' + esc(u) + '" alt="" ' +
-      'onerror="this.style.display=\'none\';this.parentNode.classList.add(\'cellbad\')">' +
+    var src = imgUrl(u);
+    if (!src) return '<span class="sk-bad">?</span><span class="stk-cap">' + esc(label) + '</span>';
+    return '<img src="' + esc(src) + '" alt="" ' +
+      'onerror="if(!this.dataset.r&&this.src.indexOf(\'data:\')!==0){this.dataset.r=1;this.src+=(this.src.indexOf(\'?\')>=0?\'&\':\'?\')+\'r=1\'}else{this.style.display=\'none\';this.parentNode.classList.add(\'cellbad\')}">' +
       '<span class="stk-cap">' + esc(label) + '</span>';
   }
 

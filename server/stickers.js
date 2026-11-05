@@ -25,7 +25,7 @@ function save() {
 function list() { return load().slice(); }
 function get(id) { return load().filter(function (x) { return x.id === id; })[0]; }
 
-/* 新增或覆盖。items: [{id,name,url,anim}] —— url 是 /api/file/xxx 相对路径，
+/* 新增或覆盖。items: [{id,name,label,url,anim,mime}] —— label 是房主写的简短说明，url 是 /api/file/xxx 相对路径，
    客户端按自己连的服务器地址补全，换服务器不用重新传图。 */
 function upsert(p) {
   load();
@@ -37,7 +37,11 @@ function upsert(p) {
       return {
         id: String(it.id || ('s' + Math.random().toString(36).slice(2, 8))),
         name: String(it.name || '').slice(0, 60),
+        /* v44：房主在上传工具里给每张动图写的简短说明（如「走了 再也不理你了」），
+           随包存服务器，所有手机同步后显示在预览图下面。 */
+        label: String(it.label || '').slice(0, 24),
         url: String(it.url || ''),
+        mime: String(it.mime || ''),
         anim: !!it.anim
       };
     }).filter(function (it) { return it.url; }),
@@ -45,6 +49,8 @@ function upsert(p) {
   };
   const i = packs.findIndex(function (x) { return x.id === id; });
   if (i >= 0) packs[i] = rec; else packs.push(rec);
+  if (p.top && i >= 0) { const r = packs.splice(i, 1)[0]; packs.unshift(r); }
+  else if (p.top) { packs.unshift(packs.pop()); }
   save();
   return rec;
 }

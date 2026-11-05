@@ -223,6 +223,10 @@ window.Sfx = (function () {
     return { native: nat, why: why, webVoices: voices, webZh: zh, use: use };
   }
 
+  /* v44：播报排队必须是模块级变量。原来写在 announce 内部，每次调用重新
+     初始化，pass 分支的 clearTimeout 永远清不到上一条排队的牌型播报。 */
+  var pendingSay = null;
+  function clearPendingSay() { if (pendingSay) { clearTimeout(pendingSay); pendingSay = null; } }
   function speakText(txt) {
     /* 音效总开关只管非牌桌场景；牌桌语音归「出牌语音播报」单独管。 */
     if (!voiceOn || !txt) return;
@@ -259,7 +263,8 @@ window.Sfx = (function () {
   /* 统一语音出口：音效响完 200ms 再说话，避免人声被音效盖掉 */
   function say(txt) {
     if (!txt) return;
-    setTimeout(function () { speakText(txt); }, 200);
+    clearPendingSay();
+    pendingSay = setTimeout(function () { speakText(txt); pendingSay = null; }, 200);
   }
 
   function announce(info, cards) {
@@ -269,9 +274,10 @@ window.Sfx = (function () {
     var t = info && info.type;
     /* 音效与语音错开 200ms：同时响的话音效会把人声盖掉，听着就是「嗡一下」 */
     /* v40：新播报清掉还在排队的上一条，避免「点过」却念出上一家的牌型 */
-    var pendingSay = null;
+    /* 任何一次新播报，先清掉上一条还在排队的人声 */
+    clearPendingSay();
     var say = function (txt) {
-      if (pendingSay) { clearTimeout(pendingSay); pendingSay = null; }
+      clearPendingSay();
       pendingSay = setTimeout(function () { speakText(txt); pendingSay = null; }, 200);
     };
     /* 叫分 / 加倍：之前只有「嗡」一声，听不出叫了几分。
@@ -291,7 +297,7 @@ window.Sfx = (function () {
        机器人过牌时表现就是只有图标、听不到声音。统一走这里，音效与人声错开。 */
     if (t === 'pass') {
       /* 立刻打断：清排队 + 取消引擎正在念的话，然后马上说「过」 */
-      if (pendingSay) { clearTimeout(pendingSay); pendingSay = null; }
+      clearPendingSay();
       try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (x) { }
       speakText('过');
       return;
@@ -577,7 +583,8 @@ window.Sfx = (function () {
     announce: announce, speak: speakText, ttsInfo: ttsInfo, nativeTtsReady: nativeTtsReady,
     /* v43：播报「过」之前清掉排队中的上一手牌型，避免念出上上家的牌 */
     cancelSpeak: function () {
-      /* pendingSay 是 announce 内的闭包变量，这里只做引擎级打断；
+      clearPendingSay();
+      /* v44：排队与引擎一起打断，否则 200ms 后旧牌型又会念出来。
          announce({type:'pass'}) 自身已会清排队并立即念「过」。 */
       try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) { }
       try { if (window.DDZNative && DDZNative.ttsStop) DDZNative.ttsStop(); } catch (e) { }
@@ -612,6 +619,14 @@ window.Sfx = (function () {
       [0, 1].forEach(function (i) { tone(base + i * 130, 0.11, 'triangle', 0.16, null, i * 0.08); });
       if (n >= 3) tone(base + 300, 0.18, 'square', 0.1, null, 0.17);  // 3 分额外强调
       say(isGrab ? '抢地主' : ((n || 1) + '分'));
+    },
+    /* v46 减牌竞叫专用：只念「减 N 张」，不会像 bid() 那样念成「N 分」，
+       也不会和外层 speak 叠成两句。 */
+    cut: function (n) {
+      if (!n) { tone(260, 0.16, 'sine', 0.14, 190); say('不叫'); return; }
+      var base = 500 + n * 60;
+      [0, 1].forEach(function (i) { tone(base + i * 120, 0.11, 'triangle', 0.16, null, i * 0.08); });
+      say('减' + n + '张');
     },
     warn: function () { tone(240, 0.16, 'square', 0.1, 170); },
     bomb: bombSfx,

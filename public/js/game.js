@@ -251,6 +251,7 @@ window.Game = (function () {
      真人和机器人都覆盖。 */
   var bidLog = [], v37BidTurn = -1, v37BidScore = 0, prevBidSeq = 0;
   var lastActEvtKey = '', lastBidEvtKey = '', lastSpokenCards = '';
+  var spokenBidSeq = {};   /* v44：按服务端 seq 统一去重，bidEvt 与 bidActs 不会重复念 */
   function onGame(m) {
     var prevTurn = S ? S.turn : -1;
     var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',') +
@@ -279,17 +280,49 @@ window.Game = (function () {
         if (aEvt.by !== mySeat && m.last.info) Sfx.announce(m.last.info, m.last.cards);
       }
     }
+    /* v44：服务端下发权威叫分日志（每次动作一条，含「不叫」、含叫满 3 分
+       直接进 play 的最后一家）。用它刷新浮标，并按 seq 补播漏掉的语音。 */
+    if (Array.isArray(m.bidActs) && m.bidActs.length) {
+      bidLog = m.bidActs.slice(-12).map(function (r) {
+        return { i: r.by, score: r.score || 0, seq: r.seq, t: Date.now() };
+      });
+      var lastRec = bidLog[bidLog.length - 1];
+      bidFlash = { by: lastRec.i, score: lastRec.score, t: Date.now() };
+      m.bidActs.forEach(function (r) {
+        var k = (m.gid || '') + ':b' + r.seq;
+        if (spokenBidSeq[k]) return;
+        spokenBidSeq[k] = 1;
+        /* v45：以前这里的 600ms 抑制会把自己刚点完后到达的「别人叫分」也吞掉，
+           正是叫分偶尔没声音的原因。按 seq 去重已经够了，只跳过自己的动作。 */
+        if (r.by !== mySeat && App.settings().voice) {
+          if (S.cutMode) {
+            Sfx.cut(r.score || 0);
+          } else {
+            Sfx.bid(r.score || 0);
+            Sfx.speak(r.score ? ('叫' + r.score + '分') : '不叫');
+          }
+        }
+      });
+    }
     if (bEvt) {
       var bKey = (m.gid || '') + ':b' + bEvt.seq;
       if (bKey !== lastBidEvtKey) {
         lastBidEvtKey = bKey;
-        bidLog.push({ i: bEvt.by, score: bEvt.score || 0, seq: bEvt.seq, t: Date.now() });
-        if (bidLog.length > 12) bidLog.shift();
-        bidFlash = { by: bEvt.by, score: bEvt.score || 0, t: Date.now() };
-        if (bEvt.by !== mySeat && App.settings().voice) {
-          Sfx.bid(bEvt.score || 0);
-          Sfx.speak(bEvt.score ? ('叫' + bEvt.score + '分') : '不叫');
-        }
+        if (!Array.isArray(m.bidActs) || !m.bidActs.length) {
+          bidLog.push({ i: bEvt.by, score: bEvt.score || 0, seq: bEvt.seq, t: Date.now() });
+          if (bidLog.length > 12) bidLog.shift();
+          bidFlash = { by: bEvt.by, score: bEvt.score || 0, t: Date.now() };
+          if (!spokenBidSeq[bKey]) {
+            spokenBidSeq[bKey] = 1;
+            if (bEvt.by !== mySeat && App.settings().voice) {
+              if (S.cutMode) Sfx.cut(bEvt.score || 0);
+              else {
+                Sfx.bid(bEvt.score || 0);
+                Sfx.speak(bEvt.score ? ('叫' + bEvt.score + '分') : '不叫');
+              }
+            }
+          }
+        } else spokenBidSeq[bKey] = 1;
       }
     }
     /* 出牌 / 不出的提示音：对手的牌型还要语音播报 */
@@ -334,8 +367,11 @@ window.Game = (function () {
         /* 自己刚点过叫分时本地已念过，状态推断别再念第二遍；机器人/别人照常播 */
         var justMine = (rec.i === mySeat && Date.now() - lastLocalBid.t < 600);
         if (!justMine && App.settings().voice) {
-          Sfx.bid(rec.score || 0);
-          Sfx.speak(rec.score ? ('叫' + rec.score + '分') : '不叫');
+          if (S.cutMode) Sfx.cut(rec.score || 0);
+          else {
+            Sfx.bid(rec.score || 0);
+            Sfx.speak(rec.score ? ('叫' + rec.score + '分') : '不叫');
+          }
         }
       }
       v37BidTurn = m.bidTurn; v37BidScore = (m.bid && m.bid.score) || 0;
@@ -352,8 +388,11 @@ window.Game = (function () {
       bidFlash = { by: m.bid.by, score: m.bid.score, t: Date.now() };
       var byMe2 = m.bid.by === mySeat;
       if (!byMe2 && App.settings().voice) {
-        Sfx.bid(m.bid.score || 0);
-        Sfx.speak(m.bid.score ? ('叫' + m.bid.score + '分') : '不叫');
+        if (S.cutMode) Sfx.cut(m.bid.score || 0);
+        else {
+          Sfx.bid(m.bid.score || 0);
+          Sfx.speak(m.bid.score ? ('叫' + m.bid.score + '分') : '不叫');
+        }
       }
       prevBidKey = bidKey;
     }
@@ -375,9 +414,16 @@ window.Game = (function () {
     if (m.phase === 'over' && !over) { over = true; showResult(m); }
   }
   var lastResultMeta = { coinDelta: 0, coins: null };
+  var lastRest = null;
   function onResult(m, meta) {
     if (meta) lastResultMeta = meta;
-    if (!over) { over = true; showResult(S); }
+    /* v48：结算消息里的剩牌先存一份，防止 game 的 over 帧先到时还没数据 */
+    if (m && m.allHands && m.allHands.length) {
+      lastRest = { hands: m.allHands, seats: m.seats || [], landlord: m.landlord, n: m.n || 2 };
+    }
+    /* 优先用 result 消息本身（带权威 result / 昵称 / 剩牌），
+       否则回退到最后一帧状态——原实现固定用 S，结果先到时会算错输赢。 */
+    if (!over) { over = true; showResult((m && m.result) ? m : (S || m)); }
   }
 
   /* 玩法提示：进入房间时弹一次，点 ✕ 关掉后本局不再出现（不再每局常驻占位） */
@@ -389,9 +435,10 @@ window.Game = (function () {
     if (!g || tipShownFor === g) return;
     tipShownFor = g;
     var r = (m && m.rule) || rule;
-    var txt = r === 'trio54' ? '三人经典 · 54 张 · 叫分抢地主 · 农民一方出完即胜'
-      : r === 'let46' ? '双人让牌 · 46 张 · 抢地主让牌 · 农民打剩到让牌数即胜'
-        : '双人经典 · 37 张 · 叫分抢地主 · 先出完手牌者胜';
+    var txt = r === 'trio54' ? '三人经典 · 54 张 · 叫分 1~3 分 + 加倍 · 农民一方出完即胜'
+      : r === 'cut37' ? '双人减牌 · 37 张 · 竞叫减 N 张定地主 · 农民剩 ≤N 张即胜 · 无主动加倍，春天/炸弹照常翻倍'
+        : r === 'let46' ? '双人 46 张 · 叫分 1~3 分 + 加倍 · 先出完手牌者胜'
+          : '双人 37 张 · 叫分 1~3 分 + 加倍 · 先出完手牌者胜';
     /* 首次进入房间用弹窗（带关闭按钮），看得清也好关 */
     if (App.firstTipOf) {
       App.firstTipOf('本局玩法', txt, function () { });
@@ -456,14 +503,19 @@ window.Game = (function () {
     for (var ai = bidLog.length - 1; ai >= 0; ai--) { if (bidLog[ai].i === i) { lastAct = bidLog[ai]; break; } }
     var shown = lastAct || ((S.bid && S.bid.by === i) ? S.bid : (bf && bf.by === i ? bf : null));
     if (shown) {
-      out += '<span class="btagm">' + (shown.score ? ('叫 ' + shown.score + ' 分') : '不叫') + '</span>';
+      out += '<span class="btagm">' + (S.cutMode
+        ? (shown.score ? ('减 ' + shown.score + ' 张') : '不叫')
+        : (shown.score ? ('叫 ' + shown.score + ' 分') : '不叫')) + '</span>';
     } else if (S.phase === 'bid' && S.bidTurn === i) {
-      out += '<span class="btagm wait">叫分中…</span>';
+      out += '<span class="btagm wait">' + (S.cutMode ? '竞叫中…' : '叫分中…') + '</span>';
     }
     if (S.doubled && S.doubled.indexOf(i) >= 0) {
       out += '<span class="btagm dbl">加倍</span>';
     } else if (S.phase === 'double' && S.doubleTurn === i) {
       out += '<span class="btagm wait">加倍中…</span>';
+    } else if (S.phase === 'double' && (S.doubleExcluded || []).indexOf(i) >= 0) {
+      /* v45：叫过分的玩家明确标出来，不再让人以为自己也能点加倍。 */
+      out += '<span class="btagm wait">不可加倍</span>';
     }
     return out;
   }
@@ -494,8 +546,8 @@ window.Game = (function () {
       var u = S.seats[i];
       var cnt = S.counts[i];
       var needTxt = '剩 ' + cnt + ' 张';
-      if (S.rule === 'let46' && S.landlord >= 0 && S.phase === 'play') {
-        var need = Math.max(0, cnt - S.letCount);
+      if (S.cutMode && S.landlord >= 0 && S.phase === 'play' && i !== S.landlord) {
+        var need = Math.max(0, cnt - S.cutTarget);
         needTxt = '剩 ' + cnt + ' · 再出 ' + need + ' 张胜';
       }
       var act = (S.phase === 'play' && S.turn === i) ? ' act' : '';
@@ -576,10 +628,13 @@ window.Game = (function () {
     var bidTxt = '';
     if (S.landlord >= 0) {
       var score = (S.bid && S.bid.score) || 0;
-      if (S.rule === 'let46') bidTxt = '<span class="btag">让 ' + (S.letCount || 0) + ' 张</span>';
-      else if (score) bidTxt = '<span class="btag">叫 ' + score + ' 分</span>';
+      if (S.cutMode) {
+        bidTxt = '<span class="btag">减 ' + (S.cutTarget || 0) + ' 张 · 农民剩 ≤' + (S.cutTarget || 0) + ' 张即胜</span>';
+      } else if (score) bidTxt = '<span class="btag">叫 ' + score + ' 分</span>';
       else bidTxt = '<span class="btag">抢地主</span>';
-      if (S.doubled && S.doubled.length) bidTxt += '<span class="btag dbl">已加倍 ×' + S.multiplier + '</span>';
+      if (S.cutMode) bidTxt += '<span class="btag nod">减牌玩法 · 无主动加倍 · 当前 ×' + S.multiplier +
+        (S.bombCount ? ' · 炸弹 ' + S.bombCount + ' 个' : '') + '</span>';
+      else if (S.doubled && S.doubled.length) bidTxt += '<span class="btag dbl">已加倍 ×' + S.multiplier + '</span>';
       else if (S.phase === 'play' || S.phase === 'over') bidTxt += '<span class="btag nod">未加倍 ×' + S.multiplier + '</span>';
     }
     bb.innerHTML = (S.bottom && S.bottom.length
@@ -840,7 +895,7 @@ window.Game = (function () {
       if (i === mySeat) continue;
       var c = S.counts[i];
       if (c <= 2) return true;
-      if (S.rule === 'let46' && i !== S.landlord && c <= S.letCount + 1) return true;
+      if (S.cutMode && i !== S.landlord && c <= S.cutTarget + 1) return true;
     }
     return false;
   }
@@ -870,14 +925,26 @@ window.Game = (function () {
      已经叫过分的玩家没有加倍权（服务端引擎双重校验）。 */
   function doubleHTML() {
     var mine = (S.doubleTurn === mySeat);
+    var eligible = Array.isArray(S.doubleSeats) ? S.doubleSeats : [];
+    var excluded = Array.isArray(S.doubleExcluded) ? S.doubleExcluded : [];
+    var bidders = Array.isArray(S.doubleBidders) ? S.doubleBidders : [];
     var who = S.seats[S.doubleTurn];
     var bidScore = (S.bid && S.bid.score) || 1;
+    /* v45：叫过分的玩家连按钮都不给，直接说明为什么没有加倍权。 */
+    if (excluded.indexOf(mySeat) >= 0) {
+      return '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.7">' +
+        (bidders.indexOf(mySeat) >= 0 ? '你已经叫过分，本局不能加倍' : '你已经轮到叫分，本局不能加倍') +
+        '</div></div>';
+    }
+    if (eligible.indexOf(mySeat) < 0) {
+      return '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.7">只有没轮到叫分的玩家可以加倍</div></div>';
+    }
     if (!mine) {
       return '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.7">等待 ' +
-        esc(who ? who.nick : '对手') + ' 决定是否加倍…</div></div>';
+        esc(who ? who.nick : '对手') + ' 依次决定是否加倍…</div></div>';
     }
     return '<div class="bidwrap"><div style="font-size:11px;color:var(--sub);text-align:center;line-height:1.4">' +
-      '地主叫 ' + bidScore + ' 分定庄，你没轮到叫分<br>可以选择是否加倍（当前 ×' + S.multiplier + '）</div>' +
+      '地主叫 ' + bidScore + ' 分定庄，你没轮到叫分<br>只有没轮到叫分的人能加倍，叫过分的不能（当前 ×' + S.multiplier + '）</div>' +
       '<div class="row2">' +
       '<button class="btn ghost" id="btn-dno">不加倍</button>' +
       '<button class="btn jade" id="btn-dyes">加倍 ×2</button></div></div>';
@@ -897,32 +964,42 @@ window.Game = (function () {
 
   function bidHTML() {
     var b = '';
-    if (S.rule === 'let46') {
-      if (S.landlord < 0) {
-        if (S.bidTurn !== mySeat) return waitTxt('等待对方叫地主…');
-        b = '<button class="btn ghost" onclick="Game.bid({type:\'pass\'})">不叫</button>' +
-          '<button class="btn" onclick="Game.bid({type:\'bid\'})">叫地主</button>';
-      } else if (S.bidTurn === mySeat) {
-        b = '<button class="btn ghost" onclick="Game.bid({type:\'pass\'})">不抢</button>' +
-          '<button class="btn" onclick="Game.bid({type:\'grab\'})">抢地主</button>';
-      } else return waitTxt('等待对方抢地主…');
-    } else {
+    /* v46 减牌竞叫：首叫减1/减2，之后只能在上家基础上 +1 或 +2，随时可「不叫」。
+       一旦有人不叫，服务端立刻定庄并直接进入出牌，没有加倍阶段。 */
+    if (S.cutMode) {
+      if (S.bidTurn !== mySeat) return waitTxt('等待对方竞叫减牌…');
+      var copts = Array.isArray(S.cutOptions) && S.cutOptions.length ? S.cutOptions : [1, 2];
+      var cb = '';
+      copts.forEach(function (n, ci2) {
+        cb += '<button class="btn' + (ci2 === copts.length - 1 ? '' : ' ghost') +
+          '" onclick="Game.bid({type:\'cut\',count:' + n + '})">减 ' + n + ' 张</button>';
+      });
+      b = '<button class="btn ghost" onclick="Game.bid({type:\'pass\'})">不叫</button>' + cb;
+      var hi2 = S.cutHigh || 0;
+      var tip2 = '<div style="text-align:center;font-size:11px;color:var(--sub);margin-bottom:6px;width:100%">' +
+        (hi2 ? ('上家减 <b style="color:var(--gold)">' + hi2 + ' 张</b> · 你只能 +1 或 +2') : '首叫：减 1 张 或 减 2 张') +
+        '<br>数字是地主声称「能在农民剩 N 张之前出完」的门槛</div>';
+      return '<div class="bidwrap" style="flex-wrap:wrap">' + tip2 + b + '</div>';
+    }
+    /* v46：46 张 / 37 张 / 三人 54 张统一走叫分制，不再有「抢地主让牌」按钮。 */
+    {
       if (S.bidTurn !== mySeat) return waitTxt('等待其他玩家叫分…');
-      var cur = S.bid ? S.bid.score : 0;
+      /* v45：后叫的人只能比当前最高分更高，不能叫一样的分。
+         按钮直接禁用并写明原因，服务端引擎还会再裁决一次。 */
+      var cur = (S.bidHighest != null) ? S.bidHighest : (S.bid ? S.bid.score : 0);
       var opts = '';
       for (var s = 1; s <= 3; s++) {
-        opts += '<button class="btn' + (s === 3 ? '' : ' ghost') + '"' + (s <= cur ? ' disabled' : '') +
+        var ok = s > cur;
+        opts += '<button class="btn' + (s === 3 ? '' : ' ghost') + '"' + (ok ? '' : ' disabled title="必须高于当前最高分"') +
           ' onclick="Game.bid({type:\'bid\',score:' + s + '})">' + s + ' 分</button>';
       }
       b = '<button class="btn ghost" onclick="Game.bid({type:\'pass\'})">不叫</button>' + opts;
     }
     var tip = '';
-    if (S.rule === 'let46') {
-      tip = '<div style="text-align:center;font-size:11px;color:var(--sub);margin-bottom:6px;width:100%">当前让牌 <b style="color:var(--gold)">' +
-        S.letCount + '</b> 张' + (S.landlord === mySeat ? '（你要出完所有牌）' : (S.landlord >= 0 ? '（你打剩 ' + S.letCount + ' 张即胜）' : '')) + '</div>';
-    } else if (S.bid) {
+    {
+      var hi = (S.bidHighest != null) ? S.bidHighest : (S.bid ? S.bid.score : 0);
       tip = '<div style="text-align:center;font-size:11px;color:var(--sub);margin-bottom:6px;width:100%">当前最高 <b style="color:var(--gold)">' +
-        S.bid.score + ' 分</b></div>';
+        hi + ' 分</b> · 只能叫更高的分</div>';
     }
     return '<div class="bidwrap" style="flex-wrap:wrap">' + tip + b + '</div>';
   }
@@ -977,16 +1054,36 @@ window.Game = (function () {
   }
   var lastLocalBid = { t: 0, seat: -1 };
   function bid(act) {
-    lastLocalBid = { t: Date.now(), seat: mySeat };
-    /* act: 0=不叫 1/2/3=分数；也可能是 'grab'(抢) / 'nograb'(不抢) */
-    var n = (act === 'grab') ? 3 : (act === 'nograb' ? 0 : (Number(act) || 0));
-    Sfx.bid(n);
-    /* 叫分语音播报：以前只有音效没有语音，光听声音不知道叫了几分 */
-    if (App.settings().voice) {
-      var txt = (act === 'grab') ? '抢地主' : (act === 'nograb' ? '不抢' : (n ? ('叫' + n + '分') : '不叫'));
-      Sfx.speak(txt);
+    /* v45：界面传的是对象 {type:'bid',score:n} / {type:'pass'} / {type:'grab'}。
+       以前用 Number(act) 取分数，对象会变成 NaN → 本地一律念成「不叫」。 */
+    var a = (act && typeof act === 'object') ? act
+      : (act === 'grab' ? { type: 'grab' }
+        : (act === 'nograb' ? { type: 'pass' }
+          : (Number(act) > 0 ? { type: 'bid', score: Number(act) } : { type: 'pass' })));
+    /* v46：46 张也走叫分制，必须一起校验严格递增；减牌走自己的选项校验 */
+    if (a.type === 'bid' && S && !S.cutMode) {
+      var hi = (S.bidHighest != null) ? S.bidHighest : (S.bid ? S.bid.score : 0);
+      var sc = Number(a.score) || 0;
+      if (!(sc > hi && sc <= 3)) {
+        Sfx.warn();
+        toast('只能叫比当前最高 ' + hi + ' 分更高的分');
+        return;
+      }
     }
-    Net.send({ t: 'game:bid', act: act });
+    lastLocalBid = { t: Date.now(), seat: mySeat };
+    var n = (a.type === 'grab') ? 3 : (a.type === 'bid' ? (Number(a.score) || 0) : 0);
+    if (S && S.cutMode) {
+      /* 减牌：一次性完成音效 + 「减 N 张 / 不叫」语音，不再叠加第二句 */
+      Sfx.cut(a.type === 'cut' ? (Number(a.count) || 0) : 0);
+    } else {
+      Sfx.bid(n);
+      /* 叫分语音播报：以前只有音效没有语音，光听声音不知道叫了几分 */
+      if (App.settings().voice) {
+        var txt = (a.type === 'grab') ? '抢地主' : (a.type === 'nograb' ? '不抢' : (n ? ('叫' + n + '分') : '不叫'));
+        Sfx.speak(txt);
+      }
+    }
+    Net.send({ t: 'game:bid', act: a });
   }
   /* 认输：右上角常驻（竖屏按钮左边），只在牌局进行中显示，
      不再每轮出牌都弹一次占地方。 */
@@ -1099,9 +1196,8 @@ window.Game = (function () {
       if (leftBid > 0) return;
       clearInterval(timer);
       if (!S || S.phase !== 'bid' || S.bidTurn !== mySeat) return;
-      if (S.rule === 'let46') Net.send({ t: 'game:bid', act: S.landlord < 0 ? { type: 'bid' } : { type: 'pass' } });
-      else Net.send({ t: 'game:bid', act: { type: 'pass' } });
-      toast('超时未叫分，默认不叫');
+      Net.send({ t: 'game:bid', act: { type: 'pass' } });
+      toast(S.cutMode ? '超时未竞叫，默认不叫' : '超时未叫分，默认不叫');
     }, 1000);
   }
 
@@ -1399,7 +1495,7 @@ window.Game = (function () {
       grid.innerHTML = items.map(function (it, i) {
         return '<button class="sp-i" data-i="' + i + '" title="' + esc(it.name || '') + '">' +
           (window.Stickers && Stickers.cellImg
-             ? Stickers.cellImg(it.url, Stickers.capOf(it, i))
+             ? Stickers.cellImg(Stickers.imgUrl(it.url), Stickers.capOf(it, i))
              : '<img src="' + esc(it.url) + '" alt="">') + '</button>';
       }).join('') || '<div style="font-size:11px;color:var(--sub);padding:8px">这个包还是空的</div>';
       grid.querySelectorAll('.sp-i').forEach(function (b) {
@@ -1438,6 +1534,73 @@ window.Game = (function () {
     });
   }
 
+  /* ---------------- v48：一局结束后的「剩牌展示」 ----------------
+     先把各家最后剩的牌按打牌时的方位摆出来（左 / 右 / 我中下），
+     昵称和身份徽标紧挨着牌；玩家手动点「查看结算」才出原来的结算框。
+     服务端没更新（没有 allHands）时自动降级：直接弹结算框，不会卡住。 */
+  function pickRest(m) {
+    var src = null;
+    if (m && m.allHands && m.allHands.length) src = m;
+    else if (S && S.allHands && S.allHands.length) src = S;
+    else if (lastRest && lastRest.hands && lastRest.hands.length) src = lastRest;
+    if (!src) return null;
+    return {
+      hands: src.hands || src.allHands,
+      seats: src.seats || (S && S.seats) || [],
+      landlord: (src.landlord != null) ? src.landlord : (S ? S.landlord : -1),
+      n: src.n || (S && S.n) || 2
+    };
+  }
+  function restRole(i, lord) {
+    if (lord == null || lord < 0) return '';
+    return i === lord
+      ? '<span class="rl lord">👑 地主</span>'
+      : '<span class="rl farmer">🌾 农民</span>';
+  }
+  /* 牌逐张摊开、点数朝左上方露出；张数多时按 --rov 叠一点，仍可左右滑动看全 */
+  function restRow(cards) {
+    if (!cards || !cards.length) return '<div class="rv-empty">已出完 🎉</div>';
+    var n = cards.length;
+    var ovr = n <= 6 ? 0 : n <= 10 ? 0.28 : n <= 14 ? 0.40 : n <= 18 ? 0.50 : 0.58;
+    return '<div class="rv-cards" style="--rov:' + ovr + '">' +
+      cards.map(function (c) { return cardHTML(c, 'mini'); }).join('') + '</div>';
+  }
+  function restBlock(rest, i, side, mine) {
+    var u = (rest.seats || [])[i] || {};
+    var cards = rest.hands[i] || [];
+    return '<div class="rv-block ' + side + (mine ? ' mine' : '') + '">' +
+      '<div class="rv-head"><b>' + esc(shortName(u, '玩家')) + (mine ? '<i>（我）</i>' : '') + '</b>' +
+      restRole(i, rest.landlord) + '<span class="rv-cnt">剩 ' + cards.length + ' 张</span></div>' +
+      restRow(cards) + '</div>';
+  }
+  function showRest(rest, done) {
+    var old = document.getElementById('rest-view'); if (old) old.remove();
+    var me = mySeat, n = rest.n || 2, opps = [];
+    /* 与打牌时完全一致：三人局 (me+2) 在左、(me+1) 在右；两人局对手在左 */
+    if (n === 3) opps = [{ i: (me + 2) % 3 }, { i: (me + 1) % 3 }];
+    else opps = [{ i: me === 0 ? 1 : 0 }];
+    var left = opps[0] ? restBlock(rest, opps[0].i, 'left', false) : '';
+    var right = opps[1] ? restBlock(rest, opps[1].i, 'right', false)
+      : '<div class="rv-block right rv-ghost">双人局 · 仅一位对手</div>';
+    var box = document.createElement('div');
+    box.className = 'rest-view'; box.id = 'rest-view';
+    box.innerHTML =
+      '<div class="rv-top"><div class="rv-title">本局剩余手牌</div>' +
+      '<div class="rv-sub">昵称与身份就在牌旁边 · 剩余牌逐张摊开</div></div>' +
+      '<div class="rv-mid">' + left + right + '</div>' +
+      '<div class="rv-bot">' + restBlock(rest, me, 'mine', true) + '</div>' +
+      '<div class="rv-foot"><button class="btn jade" id="rv-close">查看结算 →</button></div>';
+    document.body.appendChild(box);
+    var fired = false;
+    function close() {
+      if (fired) return; fired = true;
+      box.remove();
+      try { done && done(); } catch (e) { }
+    }
+    box.querySelector('#rv-close').onclick = close;
+    return close;
+  }
+
   /* ---------------- 结算 ---------------- */
   function showResult(m) {
     clearInterval(timer);
@@ -1446,10 +1609,16 @@ window.Game = (function () {
     if (r.winnerSide) iWin = (r.winnerSide === 'landlord') ? (r.landlord === me) : (r.landlord !== me);
     else iWin = r.winner === me;
     Sfx[iWin ? 'win' : 'lose']();
+    /* v48：先展示剩牌，关掉才弹结算 */
+    var rest = pickRest(m);
+    if (rest) { showRest(rest, function () { showResultBox(m, me, r, iWin); }); return; }
+    showResultBox(m, me, r, iWin);
+  }
+  function showResultBox(m, me, r, iWin) {
     var txt = [];
     txt.push('你的身份：' + (r.landlord === me ? '地主' : '农民'));
     if ((m.n || 2) === 3) txt.push((r.winnerSide === 'landlord' ? '地主' : '农民') + '方获胜');
-    if (m.rule === 'let46') txt.push('让牌 ' + r.letCount + ' 张');
+    if (r.letCount) txt.push('让牌 ' + r.letCount + ' 张');
     txt.push('炸弹 ' + (r.bombCount || 0) + ' 个');
     if (r.spring) txt.push('春天 ×2');
     if (r.antiSpring) txt.push('反春天 ×2');
@@ -1489,6 +1658,8 @@ window.Game = (function () {
     relayout: function () { try { setScale(); if (S) { fitHand(S.hand.length); render(); } layoutRail(); } catch (e) { } },
     get state() { return S; }, get seat() { return mySeat; }, get gid() { return gid; }, get room() { return myRoom; },
     __set: function (st) { S = st; mySeat = st.mySeat | 0; try { render(); renderHand(); } catch (e) { } },
+    __showRest: function (rest, cb) { return showRest(rest, cb); },
+    __showResult: function (m) { return showResult(m); },
     __quick: function () { return QUICK; }, __stick: function () { return QSTICK; },
     __layoutRail: function () { layoutRail(); }, __railRect: function () { var r = document.getElementById('table-rail'); return r ? { top: Math.round(r.getBoundingClientRect().top), h: r.offsetHeight, cls: r.className, inline: r.style.top } : null; }
   };

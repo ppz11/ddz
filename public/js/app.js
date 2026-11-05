@@ -712,14 +712,12 @@ window.App = (function () {
       box.style.opacity = trio ? .45 : 1;
       box.style.pointerEvents = trio ? 'none' : 'auto';
       var note = document.getElementById('rule-note');
-      if (note) note.textContent = trio
-        ? '三人斗地主默认使用经典玩法：全副 54 张 · 叫分抢地主'
-        : '双人经典玩法：54 张中随机去掉 17 张，共 37 张，节奏更快';
       if (trio) createCfg.rule = 'trio54';
       else if (createCfg.rule === 'trio54') createCfg.rule = 'let46';
+      updateRuleNote();
       syncCreateUI();
     });
-    bind('sel-rule', 'rule');
+    bind('sel-rule', 'rule', updateRuleNote);
     document.getElementById('btn-do-create').onclick = function () {
       Sfx.click();
       var r = createCfg.mode === 'trio' ? 'trio54' : createCfg.rule;
@@ -730,6 +728,21 @@ window.App = (function () {
       toast('房间已建好：先邀请好友，人齐后点「开始游戏」');
     };
     document.getElementById('btn-back-home').onclick = function () { Sfx.click(); go('home'); };
+    updateRuleNote();
+  }
+  /* v46：建房页把当前选中的玩法讲清楚，三种互斥，不会同时出现两套定庄流程 */
+  function updateRuleNote() {
+    var note = document.getElementById('rule-note');
+    if (!note) return;
+    if (createCfg.mode === 'trio') {
+      note.textContent = '三人斗地主只有 54 张：叫分 1~3 分 + 加倍，无减牌玩法';
+      return;
+    }
+    note.textContent = createCfg.rule === 'cut37'
+      ? '37 张减牌竞叫：首叫减1/减2，之后只能 +1 或 +2；一旦有人不叫立刻定庄；不设主动加倍，春天/炸弹照常翻倍'
+      : createCfg.rule === 'duo37'
+        ? '37 张叫分加倍：叫分 1~3 分且必须比上家高，只有没轮到叫分的人能加倍'
+        : '46 张叫分加倍：叫分 1~3 分且必须比上家高，只有没轮到叫分的人能加倍';
   }
   function syncCreateUI() {
     ['mode', 'rule'].forEach(function (k) {
@@ -976,7 +989,8 @@ window.App = (function () {
   }
   var histOpen = false;   // 战绩是否展开（默认只显示第一条）
   function ruleName(r) {
-    return r === 'trio54' ? '三人经典' : (r === 'let46' ? '让牌玩法' : '经典玩法');
+    return r === 'trio54' ? '三人经典' : (r === 'cut37' ? '减牌竞叫'
+      : (r === 'let46' ? '46 张叫分' : '37 张叫分'));
   }
   function renderHistory() {
     var sv = JSON.parse(localStorage.getItem('ddz_auth') || '{}');

@@ -56,9 +56,7 @@
   /* ---------- 叫分 / 叫地主决策 ---------- */
   function bid(g, seat) {
     var h = g.hands[seat], s = strength(h);
-    if (g.rule === 'let46') {
-      return { type: 'bid' };
-    }
+    /* v46：46 张也走叫分制，不再走「抢地主让牌」 */
     // 叫分制：1~3
     var cur = g.bid ? g.bid.score : 0;
     var want = s >= 50 ? 3 : s >= 36 ? 2 : s >= 22 ? 1 : 0;
@@ -68,12 +66,28 @@
     var nobodyBid = g.bidSeq.every(function (b) { return b.act === 'pass'; });
     if (want === 0 && nobodyBid && g.bidSeq.length === g.seats - 1) want = 1;
     if (Math.random() < 0.12) want += (Math.random() < 0.5 ? 1 : -1);
-    if (want <= cur) return { type: 'pass' };
-    if (want <= 0) return { type: 'pass' };
-    return { type: 'bid', score: Math.min(3, want) };
+    /* v45：后叫的人只能叫得更高，不能和上一个一样。
+       引擎层会直接拒绝同分，这里先挡一道，避免机器人被拒后卡在叫分阶段。 */
+    var score = Math.min(3, want);
+    if (score <= cur || score <= 0) return { type: 'pass' };
+    return { type: 'bid', score: score };
   }
 
-  /* ---------- 抢地主（let46） ---------- */
+  /* v46 减牌竞叫决策：牌越强越敢叫大数字（意味着更有把握早出完）。
+     首叫只有 1/2 两个选项，之后只能在上家基础上 +1 或 +2。 */
+  function cut(g, seat) {
+    var s = strength(g.hands[seat]);
+    var opts = DDZ.cutOptions(g);
+    var want = s >= 52 ? 2 : s >= 30 ? 1 : 0;
+    if (want === 0 && !g.cutSeq.length && Math.random() < 0.5) want = 1;
+    if (want === 0) return { type: 'pass' };
+    var idx = Math.min(want - 1, opts.length - 1);
+    var n = opts[idx];
+    if (n > g.hands[seat].length) return { type: 'pass' };
+    return { type: 'cut', count: n };
+  }
+
+  /* ---------- 抢地主（旧让牌玩法，v46 起不再触发，保留兼容） ---------- */
   function grab(g, seat) {
     var s = strength(g.hands[seat]);
     // 牌力强就抢，最多抢到让牌 4 张
@@ -220,7 +234,7 @@
   }
 
   return {
-    strength: strength, bid: bid, grab: grab, play: play, thinkTime: thinkTime,
+    strength: strength, bid: bid, cut: cut, grab: grab, play: play, thinkTime: thinkTime,
     setLevel: setLevel, getLevel: getLevel, LEVELS: LEVELS
   };
 });

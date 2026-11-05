@@ -81,7 +81,7 @@
           <div class="m on" data-rule="let46">
             <div class="tag">推荐</div>
             <h4>让牌玩法</h4>
-            <p>46 张牌 · 抢地主让牌<br>农民打剩到让牌数即胜</p>
+            <p>46 张牌 · 叫分抢地主<br>没轮到叫分的可加倍</p>
           </div>
           <div class="m" data-rule="duo37">
             <h4>经典玩法</h4>
@@ -112,8 +112,8 @@
               <div class="etit">牌桌已就位，等你开局</div>
               <div class="esub">选一个玩法直接开局，或输入好友的房间号加入</div>
               <div class="emode" id="pe-mode">
-                <div class="em on" data-rule="let46"><b>让牌玩法</b><span>46 张 · 抢地主让牌</span></div>
-                <div class="em" data-rule="duo37"><b>经典玩法</b><span>37 张 · 叫分抢地主</span></div>
+                <div class="em on" data-rule="let46"><b>46 张</b><span>叫分抢地主 · 可加倍</span></div>
+                <div class="em" data-rule="duo37"><b>37 张</b><span>叫分抢地主 · 可加倍</span></div>
               </div>
               <div class="erow">
                 <button class="btn jade" id="pe-quick">⚡ 快速匹配</button>
@@ -189,15 +189,19 @@
           <div class="set-hd">玩法规则</div>
           <div class="rulesel" id="sel-rule">
             <div class="rs on" data-rule="let46">
-              <b>让牌玩法</b>
-              <span>去掉 3、4 共 46 张 · 抢地主让牌 · 农民打剩到让牌数即胜</span>
+              <b>46 张 · 叫分加倍</b>
+              <span>去掉 3、4 共 46 张 · 1~3 分叫地主 · 没轮到叫分的人可加倍 · 先出完手牌者胜</span>
             </div>
             <div class="rs" data-rule="duo37">
-              <b>经典玩法</b>
-              <span>54 张随机去掉 17 张 · 共 37 张 · 叫分抢地主 · 先出完手牌者胜</span>
+              <b>37 张 · 叫分加倍</b>
+              <span>54 张随机去掉 17 张 · 共 37 张 · 1~3 分叫地主 · 可加倍 · 先出完手牌者胜</span>
+            </div>
+            <div class="rs" data-rule="cut37">
+              <b>37 张 · 减牌竞叫</b>
+              <span>竞叫「减几张」定地主：农民剩 ≤N 张即胜 · 地主须赶在之前出完 · 本玩法不加倍</span>
             </div>
           </div>
-          <div class="tip-line" id="rule-note">三人斗地主默认使用经典玩法（54 张叫分）</div>
+          <div class="tip-line" id="rule-note">三人斗地主只有 54 张叫分加倍；二人 37 张可选叫分加倍或减牌竞叫</div>
         </div>
 
         <div class="setbox">

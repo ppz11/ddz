@@ -569,6 +569,7 @@ function seatCountOf(rule) { return DDZ.seatCount(rule === 'classic54' ? 'duo37'
 function newRoomId() { let s; do { s = String(Math.floor(100000 + Math.random() * 900000)); } while (rooms.has(s)); return s; }
 function makeRoom(rule) {
   if (rule === 'classic54') rule = 'duo37';
+  /* v46：减牌玩法只支持二人；DDZ.seatCount('cut37') 恒为 2，三人房强制 trio54 */
   const gid = newRoomId();
   const n = seatCountOf(rule);
   const room = { gid, rule, n, seats: new Array(n).fill(null), game: null, ts: Date.now(), botTimers: [] };
@@ -607,6 +608,9 @@ function gameView(g, seat, room) {
   const v = {
     rule: g.rule, n: g.seats, phase: g.phase, seat: seat,
     hand: g.hands[seat].map(cardDTO),
+    /* v48：牌局结束后公开所有人的剩余手牌，供「剩牌展示」逐张显示。
+       对局中仍只给自己的牌（allHands=null），不泄密。 */
+    allHands: isOver ? g.hands.map(h => h.map(cardDTO)) : null,
     counts: g.hands.map(h => h.length),
     landlord: g.landlord, turn: g.turn,
     bottom: g.phase === 'bid' ? null : g.bottom.map(cardDTO),
@@ -614,9 +618,15 @@ function gameView(g, seat, room) {
     dead: isOver ? g.dead.map(cardDTO) : null,
     openCard: cardDTO(g.openCard),
     bidTurn: g.bidTurn, firstBidder: g.firstBidder, bid: g.bid,
+    bidHighest: g.bid ? g.bid.score : 0,
+    /* v45：谁参与过叫分（含不叫）、谁叫过分，前端据此禁用同分按钮、
+       并给没有加倍权的人显示说明，不再只靠按钮 disabled 猜。 */
+    bidSeats: (g.bidSeq || []).map(b => b.seat).filter((v, i, a) => a.indexOf(v) === i),
     doubleTurn: (g.phase === 'double') ? DDZ.doubleTurn(g) : -1,
-    doubleSeats: g.doubleSeats || [], doubled: g.doubled || [],
+    doubleSeats: g.doubleSeats || [], doubleExcluded: g.doubleExcluded || [],
+    doubleBidders: g.doubleBidders || [], doubled: g.doubled || [],
     grabCount: g.grabCount, letCount: g.letCount, multiplier: g.multiplier,
+    bombCount: g.bombCount || 0, spring: !!g.spring, antiSpring: !!g.antiSpring,
     last: g.last ? { ids: g.last.ids, info: g.last.info, by: g.last.by, cards: g.last.cards.map(cardDTO) } : null,
     lastSeat: g.lastSeat.map(function (x) {
       if (!x) return null;
@@ -625,8 +635,14 @@ function gameView(g, seat, room) {
     }),
     seats: room.seats.map(pubOf),
     result: g.result,
-    farmerNeed: (g.rule === 'let46' && g.landlord >= 0 && g.phase === 'play')
-      ? Math.max(0, g.hands[1 - g.landlord].length - g.letCount) : null
+    /* v46：减牌竞叫状态完整下发，前端据此生成「减 N 张」按钮与浮标 */
+    cutMode: g.rule === 'cut37',
+    cutHigh: g.cutHigh || 0, cutTarget: g.cutTarget || 0,
+    cutOptions: g.rule === 'cut37' && g.phase === 'bid' ? DDZ.cutOptions(g) : [],
+    cutSeq: g.cutSeq || [],
+    farmerNeed: (g.rule === 'cut37' && g.landlord >= 0 && g.phase === 'play')
+      ? Math.max(0, g.hands[1 - g.landlord].length - g.cutTarget)
+      : null
   };
   return v;
 }
@@ -638,7 +654,8 @@ function pushGame(room) {
     /* v43：附带显式动作事件（带自增 seq）。客户端不再靠状态差推断，
        否则有人「过」时 m.last 仍是上上家的牌，会被误判成又出了一遍。 */
     send(w, { t: 'game', gid: room.gid, ...gameView(g, i, room),
-      actEvt: g.actEvt || null, bidEvt: g.bidEvt || null });
+      actEvt: g.actEvt || null, bidEvt: g.bidEvt || null,
+      bidActs: g.bidActs || [], actLog: g.actLog || [] });
   });
 }
 function pushResult(room) {
@@ -647,9 +664,29 @@ function pushResult(room) {
   room.seats.forEach((s, i) => {
     if (!s || s.bot) return;
     const w = online.get(s.uid); if (!w) return;
-    send(w, { t: 'result', gid: room.gid, seat: i, landlord: g.landlord, winner: g.winner, result: g.result,
+    /* v48：结算消息也带上全部剩余手牌 + 昵称 + 身份，先展示剩牌再弹结算框。 */
+    send(w, { t: 'result', gid: room.gid, seat: i, n: room.n || g.seats, rule: room.rule,
+      landlord: g.landlord, winner: g.winner, result: g.result,
+      allHands: g.hands.map(h => h.map(cardDTO)), seats: room.seats.map(pubOf),
       coinDelta: delta[s.uid] || 0, coins: s.coins | 0 });
   });
+}
+
+/* v45：叫分日志记「这个人实际叫了几分 / 不叫」，不再记全场最高分。
+   以前 pass 也会被记成当前最高分，三个人头上全显示「叫 1 分」。
+   引擎拒绝同分后机器人仍可能撞上旧决策，统一在这里降级为不叫，避免卡桌。 */
+function applyBidAndLog(g, seat, act, gid) {
+  const r = DDZ.applyBid(g, seat, act);
+  if (!r.err) {
+    /* v46：46 张也走叫分制（原来被 g.rule !== 'let46' 排除，日志分数恒为 0）；
+       减牌玩法的「分数」就是减牌张数，act 记成 cut 供前端念「减 N 张」。 */
+    const score = (act && act.type === 'bid') ? (Number(act.score) || 0)
+      : (act && act.type === 'cut') ? (Number(act.count) || 0) : 0;
+    g.evtSeq = (g.evtSeq || 0) + 1;
+    g.bidEvt = { by: seat, score: score, act: act ? act.type : 'pass', seq: g.evtSeq, gid: gid };
+    g.bidActs = (g.bidActs || []).concat([{ by: seat, score: score, act: g.bidEvt.act, seq: g.evtSeq }]).slice(-12);
+  }
+  return r;
 }
 
 /* 机器人驱动 */
@@ -680,12 +717,14 @@ function botAct(room, seat) {
     }
     if (g.phase === 'bid') {
       let act;
-      if (g.rule === 'let46') act = g.landlord < 0 ? AI.bid(g, seat) : AI.grab(g, seat);
+      if (g.rule === 'cut37') act = AI.cut(g, seat);
       else act = AI.bid(g, seat);
-      const r = DDZ.applyBid(g, seat, act);
-      if (!r.err) {
-        g.evtSeq = (g.evtSeq || 0) + 1;
-        g.bidEvt = { by: seat, score: (g.bid && g.bid.score) || 0, seq: g.evtSeq, gid: room.gid };
+      let r = applyBidAndLog(g, seat, act, room.gid);
+      if (r.err) {
+        console.error('[bot bid]', r.err, g.rule, JSON.stringify(act));
+        /* v45：引擎拒绝同分叫分后，立刻降级成「不叫」推进轮次，
+           否则 scheduleBots 会一直重新调度同一个机器人，整桌卡死。 */
+        if (g.phase === 'bid' && g.bidTurn === seat) r = applyBidAndLog(g, seat, { type: 'pass' }, room.gid);
       }
       if (r.redeal) {
         room.game = DDZ.newGame(room.rule);
@@ -693,7 +732,6 @@ function botAct(room, seat) {
         room.seats.forEach(s => { if (!s || !s.bot) return; const w = online.get(s.uid); if (w) send(w, { t: 'toast', msg: '无人叫地主，重新发牌' }); });
         pushGame(room); scheduleBots(room); return;
       }
-      if (r.err) { console.error('[bot bid]', r.err, g.rule, JSON.stringify(act)); }
       pushGame(room);
     } else if (g.phase === 'play') {
       const a = AI.play(g, seat);
@@ -703,10 +741,18 @@ function botAct(room, seat) {
 
               g.evtSeq = (g.evtSeq || 0) + 1;
 
-              g.actEvt = { by: seat, act: (Array.isArray(a.ids || []) && a.ids || [].length) ? 'play' : 'pass', seq: g.evtSeq, gid: room.gid };
+              g.actEvt = { by: seat, act: (Array.isArray(a.ids) && a.ids.length) ? 'play' : 'pass', seq: g.evtSeq, gid: room.gid };
+              /* v44：机器人每做一次出牌动作都记进权威日志，客户端据此渲染
+                 叫分/出牌浮标，不再靠「状态差推断」漏掉某一家。 */
+              g.actLog = (g.actLog || []).concat([{ by: seat, act: g.actEvt.act, seq: g.evtSeq }]).slice(-24);
 
             }
-      if (r.err) { console.error('[bot play]', r.err); DDZ.applyPlay(g, seat, []); }
+      if (r.err) {
+        console.error('[bot play]', r.err); DDZ.applyPlay(g, seat, []);
+        g.evtSeq = (g.evtSeq || 0) + 1;
+        g.actEvt = { by: seat, act: 'pass', seq: g.evtSeq, gid: room.gid };
+        g.actLog = (g.actLog || []).concat([{ by: seat, act: 'pass', seq: g.evtSeq }]).slice(-24);
+      }
       pushGame(room);
       if (g.phase === 'over') { saveGame(room); pushResult(room); return; }
     }
@@ -1497,11 +1543,9 @@ function handle(ws, st, m) {
     case 'game:bid': {
       const room = findRoom(u); if (!room || !room.game) return;
       const seat = seatOf(room, u);
-      const r = DDZ.applyBid(room.game, seat, m.act);
+      /* v45：严格递增由引擎裁决；客户端按钮也会禁用，但旧版/误点仍会被这里挡下。 */
+      const r = applyBidAndLog(room.game, seat, m.act, room.gid);
       if (r.err) return send(ws, { t: 'err', msg: r.err });
-      const bg = room.game;
-      bg.evtSeq = (bg.evtSeq || 0) + 1;
-      bg.bidEvt = { by: seat, score: (bg.bid && bg.bid.score) || 0, seq: bg.evtSeq, gid: room.gid };
       if (r.redeal) {
         room.game = DDZ.newGame(room.rule);
         room.game.bidTurn = room.game.firstBidder;
@@ -1518,6 +1562,11 @@ function handle(ws, st, m) {
     case 'game:double': {
       const room = findRoom(u); if (!room || !room.game) return;
       const seat = seatOf(room, u);
+      /* v45：加倍权只给「没轮到叫分」的人；叫过分的玩家连按钮都不该发出来。 */
+      const dg = room.game;
+      if (dg.phase === 'double' && (dg.doubleExcluded || []).indexOf(seat) >= 0)
+        return send(ws, { t: 'err', msg: (dg.doubleBidders || []).indexOf(seat) >= 0
+          ? '已经叫过分的玩家不能再加倍' : '你已经轮到叫分，不能加倍' });
       const r = DDZ.applyDouble(room.game, seat, !!m.yes);
       if (r.err) return send(ws, { t: 'err', msg: r.err });
       pushGame(room);
@@ -1533,6 +1582,7 @@ function handle(ws, st, m) {
       const pg = room.game, played = (m.ids || []).length > 0;
       pg.evtSeq = (pg.evtSeq || 0) + 1;
       pg.actEvt = { by: seat, act: played ? 'play' : 'pass', seq: pg.evtSeq, gid: room.gid };
+      pg.actLog = (pg.actLog || []).concat([{ by: seat, act: pg.actEvt.act, seq: pg.evtSeq }]).slice(-24);
       pushGame(room);
       if (room.game.phase === 'over') { saveGame(room); pushResult(room); return; }
       scheduleBots(room);
