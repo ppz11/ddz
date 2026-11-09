@@ -910,6 +910,9 @@ window.Chat = (function () {
     });
   }
   function closePanel() { if (panel) { panel.remove(); panel = null; } }
+  /* v52：面板被「点空白关闭」全局脚本移除后，同步清掉闭包引用，
+     否则再点表情按钮会先走 closePanel() 然后 return，要点两次才打得开。 */
+  document.addEventListener('ddz:panelclosed', function () { panel = null; });
 
   /* 选中一张自定义/服务器表情后的统一发送逻辑 */
   function sendImported(file, pk, it) {

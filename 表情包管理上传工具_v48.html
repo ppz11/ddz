@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>表情包管理上传工具 · v48 兼容版（最新版）</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f1a17;color:#e8f3ee;margin:0 auto;padding:18px;line-height:1.6;max-width:1000px}
+h1{font-size:20px;margin:0 0 4px;color:#4fd1a5}
+.sub{font-size:12px;color:#8aa79c;margin-bottom:14px}
+.box{background:#16241f;border:1px solid #244037;border-radius:12px;padding:14px;margin-bottom:14px}
+.box h2{font-size:14px;margin:0 0 10px;color:#cfeee1;font-weight:600}
+label{display:block;font-size:12px;color:#8aa79c;margin:8px 0 4px}
+input[type=text]{width:100%;padding:9px 10px;border-radius:8px;border:1px solid #2c4c40;background:#0e1815;color:#e8f3ee;font-size:13px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+button{padding:9px 14px;border-radius:8px;border:1px solid #2c4c40;background:#1c2f28;color:#e8f3ee;font-size:13px;cursor:pointer}
+button:hover{background:#254036}
+button.main{background:#2f9c72;border-color:#2f9c72;color:#fff;font-weight:600}
+button.main:hover{background:#37b483}
+button.gold{background:#3a3320;border-color:#6a5a2e;color:#f3d68b}
+button:disabled{opacity:.45;cursor:not-allowed}
+.hint{font-size:11px;color:#7d9990;margin-top:6px}
+.ok{color:#4fd1a5}.err{color:#e88}.warn{color:#e8c07a}
+#check{font-size:12px;margin-top:10px;background:#0e1815;border:1px solid #2c4c40;border-radius:8px;padding:10px;white-space:pre-wrap;display:none}
+.pk{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid #2c4c40;border-radius:9px;margin-top:7px;cursor:pointer;flex-wrap:wrap}
+.pk.on{border-color:#2f9c72;background:#16302a}
+.pk img{width:38px;height:38px;object-fit:contain;background:#0e1815;border-radius:6px}
+.pk .n{font-size:13px;min-width:130px;flex:1}
+.pk .meta{font-size:11px;color:#7d9990}
+.badge{font-size:10px;border-radius:5px;padding:1px 5px;background:#2f9c72;color:#fff;margin-left:5px}
+.badge.gray{background:#3a4a45;color:#a8bcb4}
+.pk .ops{margin-left:auto;display:flex;gap:4px;flex-wrap:wrap}
+.pk .ops button{padding:3px 9px;font-size:11px}
+/* 逐张卡片：预览在上，说明文字输入框在下 */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:9px;margin-top:12px}
+.cell{position:relative;background:#0e1815;border:1px solid #2c4c40;border-radius:9px;padding:5px;text-align:center}
+.cell img{width:100%;height:82px;object-fit:contain;display:block;background:#07120f;border-radius:6px}
+.cell input{width:100%;margin-top:5px;padding:5px 6px;border-radius:6px;border:1px solid #2c4c40;background:#101c18;color:#ffe6ae;font-size:12px;text-align:center}
+.cell .x{position:absolute;top:-6px;right:-6px;width:20px;height:20px;line-height:18px;border-radius:50%;background:#c0392b;color:#fff;font-size:12px;padding:0;border:none;cursor:pointer}
+.cell .t{font-size:10px;color:#7d9990;margin-top:2px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.tag{position:absolute;left:3px;top:3px;background:#2f9c72;color:#fff;font-size:9px;border-radius:4px;padding:0 4px}
+.tag.bad{background:#b34545}
+#mgr .grid{max-height:46vh;overflow-y:auto}
+#log{margin-top:12px;font-size:12px;background:#0e1815;border:1px solid #2c4c40;border-radius:8px;padding:10px;max-height:220px;overflow:auto;white-space:pre-wrap;color:#a8c9bd}
+#drop{border:1px dashed #3a5a4d;border-radius:9px;padding:14px;text-align:center;color:#7d9990;font-size:12px;margin-top:10px}
+#drop.over{border-color:#4fd1a5;color:#4fd1a5;background:#13251f}
+.note{font-size:11px;color:#8aa79c;background:#132019;border-left:3px solid #2f9c72;padding:8px 10px;border-radius:0 8px 8px 0;margin-top:10px}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<h1>表情包管理上传工具 <span style="font-size:12px;color:#e8c07a">v48 兼容版（最新版）</span></h1>
+<div class="sub">上传到服务器一次 → 所有玩家打开 App 自动同步。<b>每张表情都能单独填一句说明文字</b>，显示在预览图下面；手机里优先显示动图预览，不再是「动图 1」这种空格子。支持 GIF / 动态 WebP / 静态 WebP / APNG / PNG / JPG。<br><span style="color:#4fd1a5">服务端 v45~v48 没有改过表情包接口，本工具就是当前最新版；「保存说明文字 / 置顶为默认」需要服务端已更新到 v44 及以上，v48 已包含。已有的 30 张水豚和说明文字不用重传。</span></div>
+
+<div class="box">
+  <h2>① 连接</h2>
+  <label>服务器地址（不带结尾斜杠）</label>
+  <input type="text" id="srv" value="http://101.201.106.149:8080">
+  <label>管理口令（服务端 DDZ_STICKER_KEY，默认 6688）</label>
+  <input type="text" id="key" value="6688">
+  <div class="row"><button class="main" id="b-check">🔌 连接自检</button><button id="b-pull">📥 拉取现有表情包</button></div>
+  <pre id="check"></pre>
+  <div class="note">自检依次测 <b>/api/health</b>、<b>/api/stickers 是不是 JSON</b>、首页是不是新版、口令对不对。<br>如果 <b>/api/stickers 返回首页 HTML</b>，说明服务还在跑旧代码：在服务器上 <code>kill -9 $(pgrep -f "server/server.js")</code> 让守护用新代码拉起，再点自检。</div>
+</div>
+
+<div class="box">
+  <h2>② 现有表情包 · 逐张写说明文字</h2>
+  <div class="hint">点一个包展开 → 每张图下面有个输入框，写「走了 再也不理你了」这类短语 → 点「💾 保存说明文字」。<b>说明文字保存在服务器</b>，所有手机同步后显示；不改图片本身，不用重传。</div>
+  <div id="pklist"></div>
+  <div id="mgr" class="hidden">
+    <div class="row">
+      <span id="mgr-name" style="font-size:13px;color:#cfeee1"></span>
+      <button class="main" id="b-savelabels">💾 保存说明文字</button>
+      <button id="b-rename">✎ 改包名</button>
+      <button class="gold" id="b-top">⭐ 置顶为默认</button>
+      <button id="b-diag">🔎 诊断图片</button>
+      <button id="b-export">⬇ 导出 JSON 备份</button>
+      <button id="b-delpack" style="color:#ff9b9b">🗑 删除整包</button>
+    </div>
+    <div class="grid" id="mgr-grid"></div>
+  </div>
+</div>
+
+<div class="box">
+  <h2>③ 上传新表情（逐张填说明）</h2>
+  <label>包名</label>
+  <input type="text" id="pname" value="我的表情" placeholder="例如：水豚">
+  <div class="row">
+    <label style="margin:0;flex:1;min-width:220px">追加到现有包（不选 = 新建包）</label>
+    <select id="appendTo" style="flex:1;min-width:220px;padding:9px;border-radius:8px;border:1px solid #2c4c40;background:#0e1815;color:#e8f3ee;font-size:13px"><option value="">— 新建包 —</option></select>
+  </div>
+  <div id="drop">把图片拖到这里，或 <button id="b-pick" style="padding:5px 10px">选择图片（可多选）</button></div>
+  <input type="file" id="file" accept="image/*,.gif,.webp,.apng,.png,.jpg,.jpeg" multiple class="hidden">
+  <div class="hint" id="pending-tip">还没选图片。选好后每张下面填一句说明，再点上传。</div>
+  <div class="grid" id="new-grid"></div>
+  <div class="row"><button class="main" id="b-upload">⬆ 上传到服务器</button><button id="b-clear">清空待上传</button></div>
+  <div class="note">动图（GIF / 动态 WebP / APNG）按字节识别后<b>原样上传</b>，不会被压成静态图；服务器存的是 <code>/api/file/xxx</code> 相对地址，以后换服务器地址不用重传。<br>同 id 追加时自动合并，旧图不用重传。</div>
+</div>
+
+<div class="box"><h2>运行日志</h2><div id="log">准备就绪。</div></div>
+
+<script>
+var $=function(id){return document.getElementById(id)};
+var srv=$('srv'),key=$('key');
+var packs=[], curId='', pending=[];
+function api(p){return srv.value.replace(/\/$/,'')+p}
+function abs(u){return /^https?:\/\//.test(u)?u:srv.value.replace(/\/$/,'')+u}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function say(t,c){var e=$('log');e.innerHTML='<span class="'+(c||'')+'">'+esc(t)+'</span>\n'+e.innerHTML;e.style.color=''}
+function checkShow(t,c){var e=$('check');e.style.display='block';e.innerHTML+='<span class="'+(c||'')+'">'+esc(t)+'</span>\n'}
+function post(path,obj){return fetch(api(path),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)}).then(function(r){return r.text().then(function(t){var j={};try{j=JSON.parse(t)}catch(e){}return {status:r.status,json:j,text:t}})})}
+
+/* ---------- 自检 ---------- */
+$('b-check').onclick=function(){
+  $('check').innerHTML='';$('check').style.display='block';
+  var steps=[];
+  fetch(api('/api/health')).then(function(r){return r.text()}).then(function(t){
+    var j={};try{j=JSON.parse(t)}catch(e){}
+    if(!j.ok){checkShow('✘ /api/health 不是 JSON —— 端口指错了或服务没起','err');throw new Error('stop')}
+    checkShow('✔ /api/health：在线，用户数 '+(j.users!=null?j.users:'?'),'ok');
+    return fetch(api('/api/stickers')).then(function(r){return r.text()});
+  }).then(function(t){
+    var j={};try{j=JSON.parse(t)}catch(e){}
+    if(!j||!Array.isArray(j.packs)){checkShow('✘ /api/stickers 返回首页 HTML/空 → 服务还在跑旧代码，kill 一下让守护拉起','err');throw new Error('stop')}
+    checkShow('✔ /api/stickers：JSON 正常，现有 '+j.packs.length+' 个包','ok');
+    return fetch(api('/')).then(function(r){return r.text()});
+  }).then(function(t){
+    checkShow(t.indexOf('sl-rate')>=0?'✔ 首页是新版（含语速滑钮）':'⚠ 首页看起来是旧版，请确认服务端已更新','ok');
+    return post('/api/stickers/del',{admin:key.value,id:'__probe_no_such__'});
+  }).then(function(r){
+    if(r.status===403)checkShow('✘ 口令不对（403）','err');
+    else checkShow('✔ 管理口令可用','ok');
+    checkShow('—— 自检结束 ——','ok');
+  }).catch(function(e){if(e.message!=='stop')checkShow('✘ '+e.message,'err')});
+};
+
+/* ---------- 动图识别（读前 64KB） ---------- */
+function isAnim(file){
+  return new Promise(function(res){
+    var fr=new FileReader();
+    fr.onload=function(){
+      var b=new Uint8Array(fr.result), s='';
+      for(var i=0;i<Math.min(b.length,12);i++)s+=String.fromCharCode(b[i]);
+      if(/^GIF8[79]a/.test(s))return res(true);
+      if(s.slice(0,4)==='RIFF'&&s.slice(8,12)==='WEBP'){
+        /* VP8X flags bit1 = animation；或任意 ANMF/ANIM 块 */
+        for(var j=12;j+8<b.length&&j<65536;){
+          var tag=String.fromCharCode(b[j],b[j+1],b[j+2],b[j+3]);
+          var sz=b[j+4]|(b[j+5]<<8)|(b[j+6]<<16)|(b[j+7]<<24);
+          if(tag==='VP8X'&&j+8<b.length&&(b[j+8]&0x02))return res(true);
+          if(tag==='ANMF'||tag==='ANIM')return res(true);
+          if(sz<0||j+8+sz>b.length)break;
+          j+=8+sz+(sz%2);
+        }
+        return res(false);
+      }
+      /* APNG：acTL 块 */
+      for(var k=0;k+8<b.length&&k<65536;k++)if(b[k]===0x61&&b[k+1]===0x63&&b[k+2]===0x54&&b[k+3]===0x4c)return res(true);
+      res(false);
+    };
+    fr.onerror=function(){res(false)};
+    fr.readAsArrayBuffer(file.slice(0,65536));
+  });
+}
+function mimeOf(f){
+  var n=f.name.toLowerCase();
+  if(/\.gif$/.test(n))return 'image/gif';
+  if(/\.webp$/.test(n))return 'image/webp';
+  if(/\.apng$/.test(n))return 'image/apng';
+  if(/\.png$/.test(n))return 'image/png';
+  if(/\.jpe?g$/.test(n))return 'image/jpeg';
+  return f.type||'image/png';
+}
+function baseName(n){return String(n||'').replace(/\.[a-z0-9]+$/i,'').replace(/[_-]+/g,' ').trim().slice(0,12)||'表情'}
+
+/* ---------- 拉取 + 包列表 ---------- */
+function pull(cb){
+  fetch(api('/api/stickers')).then(function(r){return r.text()}).then(function(t){
+    var j={};try{j=JSON.parse(t)}catch(e){}
+    if(!j||!Array.isArray(j.packs)){say('✘ /api/stickers 不是 JSON，先点连接自检','err');return}
+    packs=j.packs;renderPacks();say('✔ 拉取成功：'+packs.length+' 个包');if(cb)cb();
+    var sel=$('appendTo'),old=sel.value;
+    sel.innerHTML='<option value="">— 新建包 —</option>'+packs.map(function(p){return '<option value="'+esc(p.id)+'">'+esc(p.name)+'（'+p.items.length+' 张）</option>'}).join('');
+    sel.value=old;
+  }).catch(function(e){say('✘ 拉取失败：'+e.message,'err')});
+}
+$('b-pull').onclick=function(){pull()};
+function renderPacks(){
+  $('pklist').innerHTML=packs.length?packs.map(function(p,i){
+    var u=p.items[0]&&p.items[0].url;
+    return '<div class="pk'+(p.id===curId?' on':'')+'" data-id="'+esc(p.id)+'">'+
+      (u?'<img src="'+esc(abs(u))+'" onerror="this.style.visibility=\'hidden\'">':'')+
+      '<div class="n">'+esc(p.name)+(i===0?'<span class="badge">默认</span>':'<span class="badge gray">第'+(i+1)+'</span>')+'</div>'+
+      '<div class="meta">'+p.items.length+' 张 · '+esc(p.id)+'</div>'+
+      '<div class="ops"><button data-a="open" data-id="'+esc(p.id)+'">管理</button>'+
+      '<button data-a="del" data-id="'+esc(p.id)+'">删包</button></div></div>';
+  }).join(''):'<div class="hint">服务器上还没有表情包，去第 ③ 步上传。</div>';
+  $('pklist').querySelectorAll('[data-a]').forEach(function(b){
+    b.onclick=function(e){e.stopPropagation();var id=b.dataset.id;
+      if(b.dataset.a==='open')openMgr(id);else delPack(id)};
+  });
+  $('pklist').querySelectorAll('.pk').forEach(function(el){el.onclick=function(){openMgr(el.dataset.id)}});
+}
+function packOf(id){return packs.filter(function(p){return p.id===id})[0]}
+function openMgr(id){
+  var p=packOf(id);if(!p)return;curId=id;
+  $('mgr').classList.remove('hidden');$('mgr-name').textContent='正在编辑：'+p.name;
+  $('mgr-grid').innerHTML=p.items.map(function(it,i){
+    return '<div class="cell" data-i="'+i+'">'+
+      '<img src="'+esc(abs(it.url))+'" onerror="this.style.visibility=\'hidden\'">'+
+      (it.anim?'<span class="tag">动图</span>':'')+
+      '<input type="text" data-cap="'+i+'" value="'+esc(it.label||'')+'" placeholder="'+esc(baseName(it.name))+'" maxlength="24">'+
+      '<div class="t">'+esc(it.name||'')+'</div>'+
+      '<button class="x" data-del="'+i+'" title="删除这张">×</button></div>';
+  }).join('')||'<div class="hint">这个包是空的</div>';
+  $('mgr-grid').querySelectorAll('[data-del]').forEach(function(b){b.onclick=function(){
+    var i=+b.dataset.del;p.items.splice(i,1);openMgr(id);renderPacks();say('已移除第 '+(i+1)+' 张，点「保存说明文字」生效');
+  }});
+  renderPacks();
+}
+$('b-savelabels').onclick=function(){
+  var p=packOf(curId);if(!p)return;
+  if(!p.items.length){say('✘ 包里没有表情，不能保存空包','err');return}
+  $('mgr-grid').querySelectorAll('[data-cap]').forEach(function(inp){
+    var i=+inp.dataset.cap;if(p.items[i])p.items[i].label=inp.value.trim().slice(0,24);
+  });
+  var items=p.items.map(function(it){return {id:it.id,name:it.name,label:it.label||'',url:it.url,anim:!!it.anim,mime:it.mime||''}});
+  post('/api/stickers/pack',{admin:key.value,id:p.id,name:p.name,items:items}).then(function(r){
+    if(r.status!==200){say('✘ 保存失败：'+r.status+' '+(r.json.err||''),'err');return}
+    say('✔ 说明文字已保存到服务器：'+p.name+'（'+items.length+' 张）','ok');pull(function(){openMgr(p.id)});
+  });
+};
+$('b-rename').onclick=function(){
+  var p=packOf(curId);if(!p)return;var n=prompt('新包名',p.name);if(!n)return;
+  var items=p.items.map(function(it){return {id:it.id,name:it.name,label:it.label||'',url:it.url,anim:!!it.anim,mime:it.mime||''}});
+  post('/api/stickers/pack',{admin:key.value,id:p.id,name:n.slice(0,30),items:items}).then(function(r){
+    say(r.status===200?'✔ 已改名：'+n:'✘ 改名失败 '+r.status,r.status===200?'ok':'err');pull();
+  });
+};
+$('b-top').onclick=function(){
+  var p=packOf(curId);if(!p)return;
+  var items=p.items.map(function(it){return {id:it.id,name:it.name,label:it.label||'',url:it.url,anim:!!it.anim,mime:it.mime||''}});
+  post('/api/stickers/pack',{admin:key.value,id:p.id,name:p.name,items:items,top:true}).then(function(r){
+    if(r.status!==200){say('✘ 置顶失败','err');return}
+    pull(function(){
+      var j=packs[0];
+      if(j&&j.id===p.id)say('✔ 已置顶为默认包（App 下次同步自动用它）','ok');
+      else say('⚠ 服务端未支持置顶，请确认服务端已更新到 v44','warn');
+    });
+  });
+};
+function delPack(id){
+  var p=packOf(id);if(!p||!confirm('确定删除整包「'+p.name+'」？所有手机同步后这个包会消失。'))return;
+  post('/api/stickers/del',{admin:key.value,id:id}).then(function(r){
+    say(r.status===200?'✔ 已删包：'+p.name:'✘ 删除失败 '+r.status,r.status===200?'ok':'err');
+    if(id===curId){curId='';$('mgr').classList.add('hidden')}pull();
+  });
+}
+$('b-delpack').onclick=function(){if(curId)delPack(curId)};
+$('b-diag').onclick=function(){
+  var p=packOf(curId);if(!p)return;say('开始诊断 '+p.name+'（'+p.items.length+' 张）…');
+  var bad=0;
+  p.items.forEach(function(it,i){
+    fetch(abs(it.url),{headers:{Range:'bytes=0-64'}}).then(function(r){
+      var ct=r.headers.get('content-type')||'';
+      var good=r.ok&&/^image\//.test(ct);
+      if(!good){bad++;say('  ✘ 第 '+(i+1)+' 张：HTTP '+r.status+' / '+ct+' / '+it.url,'err')}
+    }).catch(function(e){bad++;say('  ✘ 第 '+(i+1)+' 张：'+e.message,'err')});
+  });
+  setTimeout(function(){say(bad?('诊断完成：'+bad+' 张取不回来'):'✔ 诊断完成：全部可取回','ok')},1600);
+};
+$('b-export').onclick=function(){
+  var p=packOf(curId);if(!p)return;
+  var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(p,null,2)],{type:'application/json'}));
+  a.download=p.name+'.json';document.body.appendChild(a);a.click();a.remove();say('✔ 已导出 '+p.name+'.json');
+};
+
+/* ---------- 待上传清单（逐张说明） ---------- */
+function addFiles(files){
+  Array.prototype.forEach.call(files,function(f){
+    if(!/^image\//.test(f.type)&&!/\.(gif|webp|apng|png|jpe?g)$/i.test(f.name))return;
+    var o={file:f,name:f.name,label:baseName(f.name),url:'',anim:false,mime:mimeOf(f),dataUrl:''};
+    pending.push(o);
+    isAnim(f).then(function(a){o.anim=a;renderPending()});
+    var fr=new FileReader();fr.onload=function(){o.dataUrl=fr.result;renderPending()};fr.readAsDataURL(f);
+  });
+  renderPending();
+}
+function renderPending(){
+  $('pending-tip').textContent=pending.length?('待上传 '+pending.length+' 张 · 每张下面填一句说明（留空用文件名）'):'还没选图片。选好后每张下面填一句说明，再点上传。';
+  $('new-grid').innerHTML=pending.map(function(o,i){
+    return '<div class="cell"><img src="'+(o.dataUrl?esc(o.dataUrl):'')+'" alt="">'+
+      (o.anim?'<span class="tag">动图</span>':'')+
+      '<input type="text" data-label="'+i+'" value="'+esc(o.label)+'" maxlength="24" placeholder="这句表情的意思">'+
+      '<div class="t">'+esc(o.name)+'</div><button class="x" data-rm="'+i+'">×</button></div>';
+  }).join('');
+  $('new-grid').querySelectorAll('[data-rm]').forEach(function(b){b.onclick=function(){pending.splice(+b.dataset.rm,1);renderPending()}});
+}
+$('b-pick').onclick=function(){$('file').click()};
+$('file').onchange=function(){addFiles(this.files);this.value=''};
+var drop=$('drop');
+drop.ondragover=function(e){e.preventDefault();drop.classList.add('over')};
+drop.ondragleave=function(){drop.classList.remove('over')};
+drop.ondrop=function(e){e.preventDefault();drop.classList.remove('over');addFiles(e.dataTransfer.files)};
+$('b-clear').onclick=function(){pending=[];renderPending()};
+
+/* ---------- 上传 ---------- */
+function uploadOne(o){
+  var b64=String(o.dataUrl).split(',')[1]||'';
+  return fetch(api('/api/upload'),{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({data:b64,name:o.name,mime:o.mime})}).then(function(r){return r.json()}).then(function(j){
+      if(!j.url)throw new Error('上传失败：'+(j.err||'无返回'));
+      o.url=j.url;return j.url;
+    });
+}
+$('b-upload').onclick=function(){
+  if(!pending.length){say('✘ 先选图片','err');return}
+  $('new-grid').querySelectorAll('[data-label]').forEach(function(inp){
+    var i=+inp.dataset.label;if(pending[i])pending[i].label=inp.value.trim().slice(0,24)||baseName(pending[i].name);
+  });
+  var target=$('appendTo').value, pname=$('pname').value.trim()||'我的表情';
+  var btn=$('b-upload');btn.disabled=true;btn.textContent='上传中…';
+  var chain=Promise.resolve();
+  pending.forEach(function(o,i){chain=chain.then(function(){say('  ↑ 第 '+(i+1)+'/'+pending.length+' 张：'+o.name);return uploadOne(o)})});
+  chain.then(function(){
+    var fresh=pending.map(function(o){return {name:o.name,label:o.label,url:o.url,anim:o.anim,mime:o.mime}});
+    var items=fresh;
+    if(target){var p=packOf(target);if(!p)throw new Error('要追加的包不存在，先点「拉取现有表情包」');
+      items=p.items.map(function(it){return {id:it.id,name:it.name,label:it.label||'',url:it.url,anim:!!it.anim,mime:it.mime||''}}).concat(fresh);
+      return post('/api/stickers/pack',{admin:key.value,id:target,name:p.name,items:items});
+    }
+    return post('/api/stickers/pack',{admin:key.value,name:pname,items:items});
+  }).then(function(r){
+    btn.disabled=false;btn.textContent='⬆ 上传到服务器';
+    if(r.status!==200||!r.json.pack){say('✘ 建包失败：'+r.status+' '+(r.json.err||r.text.slice(0,120)),'err');return}
+    say('✔ 完成：'+(r.json.pack.name)+'，共 '+r.json.pack.items.length+' 张，说明文字已一起存到服务器','ok');
+    pending=[];renderPending();pull();
+  }).catch(function(e){btn.disabled=false;btn.textContent='⬆ 上传到服务器';say('✘ '+e.message,'err')});
+};
+
+/* 首屏自动拉一次，方便直接编辑说明文字 */
+pull();
+</script>
+</body>
+</html>

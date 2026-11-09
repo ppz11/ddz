@@ -227,9 +227,12 @@
      3 秒上下浮动 0.6 秒（2.7~3.3s），既有「在想」的停顿，又不会拖到烦。
      叫分/加倍是快节奏环节，1.2~1.8 秒足够，太长会让开局显得磨蹭。 */
   function thinkTime(g, seat) {
+    /* v52：机器人叫分约 3 秒一个动作（原来 1.2~1.8 秒太快，前端浮标/语音
+       还没播完就被下一步覆盖，表现为「叫分没提示，直接出结果」）。
+       加倍约 2 秒，仍在 4 秒限时内；出牌保持原来的 ~3 秒。 */
     var base = 2700 + Math.random() * 600;
-    if (g.phase === 'bid') base = 1200 + Math.random() * 600;
-    else if (g.phase === 'double') base = 1000 + Math.random() * 500;
+    if (g.phase === 'bid') base = 2700 + Math.random() * 600;
+    else if (g.phase === 'double') base = 1800 + Math.random() * 500;
     return Math.round(base);
   }
 

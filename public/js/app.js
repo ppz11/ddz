@@ -945,6 +945,8 @@ window.App = (function () {
   }
   function go(p) {
     page = p;
+    /* v51：底牌条只在牌桌页显示（它已移到 #main 层） */
+    try { document.body.classList.toggle('in-play', p === 'play'); } catch (e) { }
     // 切换底部标签时，先把打开的会话页 / 浮层收掉，否则会盖住标签栏点不动
     try { if (window.Chat && Chat.cur) Chat.close(); } catch (e) { }
     try { Nav.drop('thread'); } catch (e) { }

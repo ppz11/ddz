@@ -90,7 +90,8 @@ window.Game = (function () {
     var wrap = document.querySelector('.handwrap');
     var cw = wrap ? wrap.clientWidth : 0;
     // 首帧容器可能还没布局（宽度 0）→ 回退到窗口宽度，否则手牌会缩成最小尺寸
-    var avail = (cw > 40) ? (cw - 8) : ((window.innerWidth || 640) - 60);
+    /* v56：手牌往中间收，不再占满横向屏幕；牌面与间距仍按 OV=0.50 适度叠放 */
+    var avail = ((cw > 40) ? (cw - 8) : (VPW() - 60)) * 0.82;
     /* 手牌间距：叠 62% 时牌面只露出 38%，点数花色被下一张压住看不清。
        改成叠 50%（露出一半），宽度公式的系数同步从 0.38 提到 0.50。 */
     var OV = 0.50;
@@ -120,6 +121,10 @@ window.Game = (function () {
       h.style.setProperty('--card-w', Math.round(w0) + 'px');
       h.style.setProperty('--card-h', Math.round(w0 * 1.42) + 'px');
       h.style.setProperty('--ov', '-' + Math.round(w0 * OV) + 'px');
+      /* v51：布局里用固定的 var(--card-h)（默认 82px）算按钮 / 昵称位置，
+         但大屏上 fitHand 会把牌放大到 119px —— 按钮就压到手牌上了。
+         把「真实手牌区高度」写进 --hand-h，所有定位跟着实际尺寸走。 */
+      try { document.documentElement.style.setProperty('--hand-h', Math.round(w0 * 1.42 + 16) + 'px'); } catch (e) { }
     }
     apply(w);
     /* 渲染后再量一次：上面是估算，遇到窄屏 / 牌特别多时会偏大。
@@ -132,6 +137,11 @@ window.Game = (function () {
       if (have > 20 && need > have + 2) {
         apply(Math.max(34, Math.floor(w * have / need) - 1));
       }
+      /* 用渲染后的真实高度再校准一次，避免不同 @media 下 padding 变化造成偏差 */
+      try {
+        var wr = document.querySelector('.handwrap');
+        if (wr) document.documentElement.style.setProperty('--hand-h', Math.round(wr.getBoundingClientRect().height) + 'px');
+      } catch (e) { }
     });
   }
 
@@ -252,6 +262,39 @@ window.Game = (function () {
   var bidLog = [], v37BidTurn = -1, v37BidScore = 0, prevBidSeq = 0;
   var lastActEvtKey = '', lastBidEvtKey = '', lastSpokenCards = '';
   var spokenBidSeq = {};   /* v44：按服务端 seq 统一去重，bidEvt 与 bidActs 不会重复念 */
+  /* v52：叫分 / 加倍播报队列。
+     正常情况机器人约 3 秒一个动作，队列最多 1 条；但重连 / 丢帧时客户端可能
+     一次收到多条 bidActs，旧版同步 forEach 会让几条语音互相 cancel、大字标
+     只闪最后一条 —— 正是「偶发叫分不显示、没语音、直接出结果」的根因。
+     现在按 seq 逐条间隔 1.4 秒播，每条都单独闪一次带方位的大字标。 */
+  var bidQueue = [], bidQueueTimer = null, bidQueueGid = '';
+  function enqueueBid(rec, mode) {
+    if (!rec) return;
+    var gg = (S && S.gid) || '';
+    if (gg !== bidQueueGid) {              /* 跨局清空上一局残留 */
+      bidQueue.length = 0;
+      clearTimeout(bidQueueTimer); bidQueueTimer = null; bidQueueGid = gg;
+    }
+    bidQueue.push({ i: rec.i, score: rec.score || 0, seq: rec.seq || 0, mode: mode || 'bid' });
+    bidQueue.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+    if (!bidQueueTimer) pumpBid();
+  }
+  function pumpBid() {
+    var it = bidQueue.shift();
+    if (!it) { bidQueueTimer = null; return; }
+    try {
+      var cut = it.mode === 'cut' || (S && S.cutMode);
+      var txt = cut ? (it.score ? ('减 ' + it.score + ' 张') : '不叫')
+                    : (it.score ? ('叫 ' + it.score + ' 分') : '不叫');
+      flashBigAct(txt, '', it.i);
+      if (it.i !== mySeat && App.settings().voice) {
+        if (cut) Sfx.cut(it.score || 0);
+        else { Sfx.bid(it.score || 0); Sfx.speak(it.score ? ('叫' + it.score + '分') : '不叫'); }
+      }
+    } catch (e) { }
+    bidQueueTimer = setTimeout(function () { bidQueueTimer = null; pumpBid(); }, 1400);
+  }
+
   function onGame(m) {
     var prevTurn = S ? S.turn : -1;
     var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',') +
@@ -288,20 +331,14 @@ window.Game = (function () {
       });
       var lastRec = bidLog[bidLog.length - 1];
       bidFlash = { by: lastRec.i, score: lastRec.score, t: Date.now() };
+      /* v52：不再只闪日志最后一条，也不再同步一次念完。
+         每条新动作按 seq 入队，逐条「闪方位大字标 + 播报」，积压也不丢。 */
       m.bidActs.forEach(function (r) {
         var k = (m.gid || '') + ':b' + r.seq;
         if (spokenBidSeq[k]) return;
         spokenBidSeq[k] = 1;
-        /* v45：以前这里的 600ms 抑制会把自己刚点完后到达的「别人叫分」也吞掉，
-           正是叫分偶尔没声音的原因。按 seq 去重已经够了，只跳过自己的动作。 */
-        if (r.by !== mySeat && App.settings().voice) {
-          if (S.cutMode) {
-            Sfx.cut(r.score || 0);
-          } else {
-            Sfx.bid(r.score || 0);
-            Sfx.speak(r.score ? ('叫' + r.score + '分') : '不叫');
-          }
-        }
+        enqueueBid({ i: r.by, score: r.score || 0, seq: r.seq },
+                   (m.cutMode || (S && S.cutMode)) ? 'cut' : 'bid');
       });
     }
     if (bEvt) {
@@ -314,13 +351,8 @@ window.Game = (function () {
           bidFlash = { by: bEvt.by, score: bEvt.score || 0, t: Date.now() };
           if (!spokenBidSeq[bKey]) {
             spokenBidSeq[bKey] = 1;
-            if (bEvt.by !== mySeat && App.settings().voice) {
-              if (S.cutMode) Sfx.cut(bEvt.score || 0);
-              else {
-                Sfx.bid(bEvt.score || 0);
-                Sfx.speak(bEvt.score ? ('叫' + bEvt.score + '分') : '不叫');
-              }
-            }
+            enqueueBid({ i: bEvt.by, score: bEvt.score || 0, seq: bEvt.seq },
+                       S.cutMode ? 'cut' : 'bid');
           }
         } else spokenBidSeq[bKey] = 1;
       }
@@ -364,15 +396,9 @@ window.Game = (function () {
         bidLog.push(rec);
         if (bidLog.length > 12) bidLog.shift();
         bidFlash = { by: rec.i, score: rec.score, t: Date.now() };
-        /* 自己刚点过叫分时本地已念过，状态推断别再念第二遍；机器人/别人照常播 */
+        /* v52：推断出来的机器人叫分同样入队，按方位闪标 + 逐条播报 */
         var justMine = (rec.i === mySeat && Date.now() - lastLocalBid.t < 600);
-        if (!justMine && App.settings().voice) {
-          if (S.cutMode) Sfx.cut(rec.score || 0);
-          else {
-            Sfx.bid(rec.score || 0);
-            Sfx.speak(rec.score ? ('叫' + rec.score + '分') : '不叫');
-          }
-        }
+        if (!justMine) enqueueBid(rec, S.cutMode ? 'cut' : 'bid');
       }
       v37BidTurn = m.bidTurn; v37BidScore = (m.bid && m.bid.score) || 0;
       if (m.phase !== 'bid') { v37BidTurn = -1; v37BidScore = 0; }
@@ -386,14 +412,9 @@ window.Game = (function () {
     /* 推断日志为空时才走旧逻辑兜底，避免同一条叫分念两遍 */
     if (!bEvt && !bidLog.length && bidKey && bidKey !== prevBidKey) {
       bidFlash = { by: m.bid.by, score: m.bid.score, t: Date.now() };
-      var byMe2 = m.bid.by === mySeat;
-      if (!byMe2 && App.settings().voice) {
-        if (S.cutMode) Sfx.cut(m.bid.score || 0);
-        else {
-          Sfx.bid(m.bid.score || 0);
-          Sfx.speak(m.bid.score ? ('叫' + m.bid.score + '分') : '不叫');
-        }
-      }
+      /* v52：兜底路径同样按方位入队 */
+      if (m.bid.by !== mySeat) enqueueBid({ i: m.bid.by, score: m.bid.score || 0, seq: 0 },
+                                          S.cutMode ? 'cut' : 'bid');
       prevBidKey = bidKey;
     }
     /* 别人（含机器人）加倍/不加倍也要播报：以前只在自己点的时候有，
@@ -458,11 +479,17 @@ window.Game = (function () {
    * 高分屏 k 变大、低分屏 k 变小，这样同一张牌在不同手机上
    * 占屏幕的比例基本一致，不会「分辨率高的显得小、低的显得大」。 */
   var BASE_H = 390, BASE_W = 844;
+  /* v55：2K/高 DPR 屏用 visualViewport 读 CSS 视口；
+     DPR 只影响清晰度，不参与布局换算。 */
+  function VPW(){ try{ var v=window.visualViewport; if(v&&v.width) return v.width; }catch(e){}
+    return window.innerWidth || document.documentElement.clientWidth || 844; }
+  function VPH(){ try{ var v=window.visualViewport; if(v&&v.height) return v.height; }catch(e){}
+    return window.innerHeight || document.documentElement.clientHeight || 390; }
   function setScale() {
     var vh = 390, vw = 844;
     try {
-      vh = window.innerHeight || document.documentElement.clientHeight || 390;
-      vw = window.innerWidth || document.documentElement.clientWidth || 844;
+      vh = VPH();
+      vw = VPW();
     } catch (e) { }
     var k;
     if (vh > vw) {
@@ -497,6 +524,9 @@ window.Game = (function () {
      现在在对应玩家的头像旁边挂一块浮标，作用就跟出牌时那个「过」字一样，一眼能看到。 */
   function bidTag(i) {
     if (!S) return '';
+    /* v51：叫分 / 加倍「过程中」只显示跟「过」一样的大字标，
+       等本局结果定了，才把最终分数和是否加倍显示在昵称、身份标识旁边。 */
+    if (S.phase === 'bid' || S.phase === 'double' || S.phase === 'wait') return '';
     var out = '';
     var bf = (bidFlash && Date.now() - bidFlash.t < 4000) ? bidFlash : null;
     var lastAct = null;
@@ -506,23 +536,27 @@ window.Game = (function () {
       out += '<span class="btagm">' + (S.cutMode
         ? (shown.score ? ('减 ' + shown.score + ' 张') : '不叫')
         : (shown.score ? ('叫 ' + shown.score + ' 分') : '不叫')) + '</span>';
-    } else if (S.phase === 'bid' && S.bidTurn === i) {
-      out += '<span class="btagm wait">' + (S.cutMode ? '竞叫中…' : '叫分中…') + '</span>';
     }
     if (S.doubled && S.doubled.indexOf(i) >= 0) {
       out += '<span class="btagm dbl">加倍</span>';
-    } else if (S.phase === 'double' && S.doubleTurn === i) {
-      out += '<span class="btagm wait">加倍中…</span>';
-    } else if (S.phase === 'double' && (S.doubleExcluded || []).indexOf(i) >= 0) {
-      /* v45：叫过分的玩家明确标出来，不再让人以为自己也能点加倍。 */
-      out += '<span class="btagm wait">不可加倍</span>';
     }
     return out;
   }
+  var lastDoubleN = 0;
   function render() {
     if (!S) return;
     document.body.classList.remove('waitroom');
     setScale();
+    /* v51：加倍也是一次明确动作，同样给一个大字标 */
+    try {
+      var dn = (S.doubled || []).length;
+      if (dn > lastDoubleN) {
+        /* 谁加的倍就显示在谁那一侧，不再统一堆中间 */
+        var who = (S.doubled && S.doubled.length) ? S.doubled[S.doubled.length - 1] : null;
+        flashBigAct('加倍', 'dbl', who);
+      }
+      lastDoubleN = dn;
+    } catch (e) { }
     var me = mySeat, n = S.n || 2;
     var meU = S.seats[me];
     var ls = S.lastSeat || [];
@@ -551,10 +585,14 @@ window.Game = (function () {
         needTxt = '剩 ' + cnt + ' · 再出 ' + need + ' 张胜';
       }
       var act = (S.phase === 'play' && S.turn === i) ? ' act' : '';
+      /* v51：昵称 + 身份上下一列；叫分加倍结果 + 剩张数上下另一列。
+         左侧玩家副列在右，右侧玩家副列在左（CSS 用 row-reverse 翻过来）。 */
       return '<div class="ts' + act + (cls ? ' ' + cls : '') + '">' +
         '<div class="av">' + (u ? Avatar.svg(u.avatar, 26) : '') + '</div>' +
-        '<div class="ts-i"><div class="nm">' + (u ? esc(shortName(u, '空位')) : '空位') + '</div>' + roleTag(i) +
-        '<div class="cnt">' + needTxt + '</div>' + bidTag(i) + '</div>' +
+        '<div class="ts-i">' +
+          '<div class="ts-main"><div class="nm">' + (u ? esc(shortName(u, '空位')) : '空位') + '</div>' + roleTag(i) + '</div>' +
+          '<div class="ts-side">' + bidTag(i) + '<div class="cnt">' + needTxt + '</div></div>' +
+        '</div>' +
         (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
         '</div>';
     }
@@ -564,8 +602,10 @@ window.Game = (function () {
       var act = (S.phase === 'play' && S.turn === me) ? ' act' : '';
       return '<div class="ts me' + act + '">' +
         '<div class="av">' + Avatar.svg(meU && meU.avatar, 26) + '</div>' +
-        '<div class="ts-i"><div class="nm">' + esc(shortName(meU, '我')) + '</div>' + roleTag(me) +
-        '<div class="cnt">剩 ' + cnt + ' 张</div>' + bidTag(me) + '</div>' +
+        '<div class="ts-i">' +
+          '<div class="ts-main"><div class="nm">' + esc(shortName(meU, '我')) + '</div>' + roleTag(me) + '</div>' +
+          '<div class="ts-side">' + bidTag(me) + '<div class="cnt">剩 ' + cnt + ' 张</div></div>' +
+        '</div>' +
         (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
         '</div>';
     }
@@ -602,8 +642,10 @@ window.Game = (function () {
       elMyP.classList.remove('hidden2');
       elMy.innerHTML =
         '<div class="av">' + Avatar.svg(meU && meU.avatar, 28) + '</div>' +
-        '<div><div class="nm">' + esc(shortName(meU, '我')) + '</div>' + roleTag(me) +
-        '<div class="cnt">剩 ' + S.counts[me] + ' 张</div>' + bidTag(me) + '</div><div class="sp"></div>' +
+        '<div class="ts-i">' +
+          '<div class="ts-main"><div class="nm">' + esc(shortName(meU, '我')) + '</div>' + roleTag(me) + '</div>' +
+          '<div class="ts-side">' + bidTag(me) + '<div class="cnt">剩 ' + S.counts[me] + ' 张</div></div>' +
+        '</div><div class="sp"></div>' +
         '<div class="mult">×' + S.multiplier + (S.letCount ? ' · 让' + S.letCount : '') + '</div>';
       var myRow3 = myPlayedHTML();
       elMyP.innerHTML = '<div class="pcards center">' + (myRow3 || '<span class="pass">—</span>') + '</div>';
@@ -665,11 +707,51 @@ window.Game = (function () {
      现在改成：先量出「右侧玩家信息块下沿」和「手牌顶部」，
      把整条栏放进这两者之间的缝里；缝不够就自动降级排布
      （竖排 → 2×2 → 横排）并缩小按钮，保证既不压对手也不压手牌。 */
+  /* v53：左右座位从屏幕纵向中部移到「底牌条下沿再低一点」。
+     底牌条已在 #main 层贴屏幕顶，座位却还在 .field 里被 flex 垂直居中，
+     大屏上正好落在屏幕中间；而右侧四按钮按「右座位下沿」定位，
+     低分辨率下就被一路带到手牌上。这里用与 layoutRail 相同的
+     「置 0 量一次 → 反推 css top」换算，兼容牌桌整体缩放。 */
+  function layoutSeats() {
+    var bar = document.getElementById('bottom-bar');
+    var L = document.querySelector('#page-play .seatleft') || document.querySelector('.seatcol.left');
+    var R = document.querySelector('#page-play .seatright') || document.querySelector('.seatcol.right');
+    if (!L || !R) return;
+    var barB = bar ? bar.getBoundingClientRect().bottom : 46;
+    /* v56：昵称被裁的真凶 —— 座位负 top 会跑进 #page-play(overflow:hidden) 上方。
+       目标顶边必须同时 >= 底牌下沿+10 和牌桌可见顶边+8。 */
+    var pageEl = document.getElementById('page-play');
+    var pageTop = pageEl ? pageEl.getBoundingClientRect().top : 0;
+    var target = Math.max(barB + 10, pageTop + 8);
+    [L, R].forEach(function (el) {
+      el.style.setProperty('position', 'absolute', 'important');
+      el.style.setProperty('top', '0px', 'important');
+      var r0 = el.getBoundingClientRect();
+      var scale = el.offsetHeight > 0 ? (r0.height / el.offsetHeight) : 1;
+      if (!(scale > 0.01) || !isFinite(scale)) scale = 1;
+      var cssTop = (target - r0.top) / scale;
+      if (!isFinite(cssTop)) cssTop = 0;
+      el.style.setProperty('top', Math.round(cssTop) + 'px', 'important');
+      var r1 = el.getBoundingClientRect();
+      var diff = target - r1.top;
+      if (Math.abs(diff) > 2) {
+        el.style.setProperty('top', Math.round(cssTop + diff / scale) + 'px', 'important');
+      }
+      /* v56：最终兜底 —— 量一次视口坐标，仍在牌桌可见区上方就按差值二次上推 */
+      var r2 = el.getBoundingClientRect();
+      if (r2.top < pageTop + 4) {
+        var cur = parseFloat(el.style.getPropertyValue('top')) || 0;
+        el.style.setProperty('top', Math.round(cur + (pageTop + 6 - r2.top) / scale) + 'px', 'important');
+      }
+    });
+  }
+
   function layoutRail() {
+    try { layoutSeats(); } catch (e) { }
     var rail = document.getElementById('table-rail');
     if (!rail) return;
-    var vh = window.innerHeight || document.documentElement.clientHeight;
-    var vw = window.innerWidth || document.documentElement.clientWidth;
+    var vh = VPH();
+    var vw = VPW();
     var seat = document.querySelector('.seatcol.right .ts') ||
                document.querySelector('.seatright .ts') ||
                document.querySelector('.seatright') ||
@@ -679,14 +761,22 @@ window.Game = (function () {
     if (hw) { var hr = hw.getBoundingClientRect(); if (hr.height > 0) handTop = hr.top; }
     var seatBottom = 0;
     if (seat) { var sr = seat.getBoundingClientRect(); if (sr.height > 0) seatBottom = sr.bottom; }
-    var top = Math.max(seatBottom + 8, 62);   /* 不低于顶部安全区，最上面那颗按钮不会被裁 */
-    var avail = Math.max(24, handTop - top - 6);
+    /* v54：四按钮与右座位解耦。座位贴顶后不再跟着跑到屏幕上方，
+       起点改为「屏幕纵向中部」，再用手牌顶做硬上限；空间不够就整体
+       上移到刚好不压手牌，但绝不回到顶部。 */
+    /* v55：两遍法 —— 按「座位下沿~手牌顶」总空间选最大档，
+       再以手牌上沿为定位基准；大屏/2K 不再被迫缩成 mini。 */
+    var minTop = Math.max(58, seatBottom + 8);
+    var totalAvail = Math.max(24, handTop - minTop - 6);
+    var midTop = Math.max(62, Math.round(vh * 0.44));
+    var top = Math.max(midTop, minTop);
+    var avail = totalAvail;
 
     /* v40：一律优先 2×2（横着四个挡打牌），竖排只在 2×2 也塞不下时兜底 */
     /* v43：真机上仍退化成横排四个挡住手牌 —— 去掉竖排/横排回退，
        只保留 2×2（按 --rb 三档缩放），再靠 CSS !important 硬锁。 */
     var MODES = [
-      ['grid2'], ['grid2', 'compact'], ['grid2', 'tiny']
+      ['grid2'], ['grid2', 'compact'], ['grid2', 'tiny'], ['grid2', 'tiny', 'mini']
     ];
     var pick = null, pickH = 0;
     for (var i = 0; i < MODES.length; i++) {
@@ -698,8 +788,10 @@ window.Game = (function () {
     if (!pick) pick = ['grid2', 'tiny'];
     rail.className = 'tablerail' + (pick.length ? ' ' + pick.join(' ') : '');
     var hh = rail.offsetHeight || 120;
-    if (top + hh > handTop - 6) top = Math.max(seatBottom + 2, handTop - hh - 6);
+    var maxTop = handTop - hh - 6;
+    if (top > maxTop) top = maxTop;            /* 硬约束：不压我的手牌 */
     if (top + hh > vh - 4) top = Math.max(0, vh - hh - 4);
+    if (top < minTop) top = minTop;   /* 别贴屏幕顶 */
     if (top < 0) top = 0;
 
     /* 坐标换算：牌桌可能被整体缩放（transform: scale），而且 rail 的
@@ -758,7 +850,7 @@ window.Game = (function () {
           if (w > 30 && (!avail || w < avail)) avail = w;
           el = el.parentNode;
         }
-        if (!avail) avail = window.innerWidth || 640;
+        if (!avail) avail = VPW();
         var pcs = row.querySelectorAll('.pc');
         if (!pcs.length) continue;
         var cw = pcs[0].getBoundingClientRect().width || 32;
@@ -908,8 +1000,9 @@ window.Game = (function () {
     if (S.phase === 'double') { z.innerHTML = doubleHTML(); bindDouble(); return; }
     if (S.phase === 'over') { z.innerHTML = ''; return; }
     if (S.turn !== mySeat) {
-      /* 认输已移到右上角常驻按钮，不再每轮都占一次操作区的位置 */
-      z.innerHTML = '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.6">等待' +
+      /* v52：等待提示跟「不出 / 提示 / 出牌」同一个纵向位置（同一条 .acts 行内），
+         不再用屏幕居中的提示条压住我出的牌。 */
+      z.innerHTML = '<div class="acts waitrow"><div class="btn ghost waitline">等待' +
         (S.seats[S.turn] ? esc(S.seats[S.turn].nick) : '对手') + '出牌…</div></div>';
       return;
     }
@@ -1004,7 +1097,7 @@ window.Game = (function () {
     return '<div class="bidwrap" style="flex-wrap:wrap">' + tip + b + '</div>';
   }
   function waitTxt(t) {
-    return '<div class="bidwrap"><div class="btn ghost" style="opacity:.65;text-align:center">' + t + '</div></div>';
+    return '<div class="acts waitrow"><div class="btn ghost waitline">' + t + '</div></div>';
   }
 
   /* ---------------- 操作 ---------------- */
@@ -1083,6 +1176,9 @@ window.Game = (function () {
         Sfx.speak(txt);
       }
     }
+    flashBigAct((S && S.cutMode)
+      ? (n ? ('减 ' + n + ' 张') : '不叫')
+      : ((a.type === 'grab') ? '抢地主' : (n ? ('叫 ' + n + ' 分') : '不叫')), '', mySeat);
     Net.send({ t: 'game:bid', act: a });
   }
   /* 认输：右上角常驻（竖屏按钮左边），只在牌局进行中显示，
@@ -1378,10 +1474,138 @@ window.Game = (function () {
     /* v40：自己发的在发送入口已本地飘一次，服务端回显只入聊天框，不再重复飘屏。
        以前快捷语/表情/文字都显示两条，根因就是本地 + 回显各一次。 */
     if (!isMine) {
-      if (mm.kind === 'sticker') floatSay(mm.nick || '对手', mm.emoji || '🙂', 'sticker');
+      if (mm.kind === 'sticker') {
+        /* v51 真凶：发送方发的是 url，这里以前只读 mm.emoji，
+           拿不到就兜底成 🙂 —— 于是动态表情永远显示一个默认图。 */
+        var su = String(mm.url || '');
+        if (/^(\/|https?:|data:|blob:)/i.test(su)) showBigSticker(su, mm.nick || '对手');
+        else floatSay(mm.nick || '对手', mm.emoji || mm.text || '🙂', 'sticker');
+      }
       else if (mm.quick) floatSay(mm.nick || '对手', mm.text, 'quick', mm.voice);
       else floatSay(mm.nick || '对手', mm.text || '', 'text');
     }
+  }
+
+  /* ---------- v52：叫分 / 加倍大字标（按玩家方位） ----------
+     v51 把它固定在屏幕正中，三个人叫分全叠一处，分不清是谁叫的。
+     现在按座位换算成 左 / 右 / 我 三个区，位置跟各家「出的牌 / 过」一致，
+     上面再挂一行昵称，谁叫的分一眼就清楚。 */
+  var bigActTimer = null, lastBigSig = '', lastBigT = 0;
+  function seatZone(i) {
+    if (i == null || !S || !S.seats) return '';
+    var n = S.seats.length;
+    if (i === mySeat) return 'at-me';
+    if (n === 2) return 'at-left';                 /* 两人局：对手在左、我在右 */
+    var lI = (mySeat + 2) % 3, rI = (mySeat + 1) % 3;
+    if (i === lI) return 'at-left';
+    if (i === rI) return 'at-right';
+    return 'at-me';
+  }
+  function seatNick(i) {
+    try {
+      var u = S && S.seats && S.seats[i];
+      return u ? (u.nick || u.name || '') : '';
+    } catch (e) { return ''; }
+  }
+  /* v54：叫分 / 加倍标必须落在该玩家「出牌区」里，跟「过」字同一位置，
+     不再用固定百分比在屏幕正中另造一个位置。 */
+  function actHost(zone, seatIdx) {
+    var n = S && S.seats ? S.seats.length : 3;
+    var sel;
+    if (zone === 'at-left') sel = '#seat-left .pcards';
+    else if (zone === 'at-right') sel = '#seat-right .pcards';
+    else if (n === 2) sel = '#seat-right .pcards';   /* 两人局我的出牌区在右侧 */
+    else sel = '#my-played .pcards';
+    var el = document.querySelector(sel);
+    if (!el) el = document.querySelector(sel.replace(' .pcards', ''));
+    return el;
+  }
+  /* 三点线性反推：#app 可能被整体缩放/旋转（原生锁方向失败时），
+     不能用简单 scale 换算。分别把 left/top 置 0 / +100 量三次，
+     解出局部 (left,top) → 屏幕坐标的 2×2 变换，再把大字标中心
+     精确对到出牌区中心。transform 里的 translate(-50%,-50%) 保证
+     盒中心正好落在 (left,top) 点上。 */
+  function placeBigAt(el, host) {
+    if (!el || !host) return false;
+    try {
+      var hr = host.getBoundingClientRect();
+      var cx = hr.left + hr.width / 2, cy = hr.top + hr.height / 2;
+      el.style.setProperty('left', '0px', 'important');
+      el.style.setProperty('top', '0px', 'important');
+      var a0 = el.getBoundingClientRect();
+      el.style.setProperty('left', '100px', 'important');
+      var b0 = el.getBoundingClientRect();
+      el.style.setProperty('left', '0px', 'important');
+      el.style.setProperty('top', '100px', 'important');
+      var c0 = el.getBoundingClientRect();
+      var ax = (b0.left - a0.left) / 100, ay = (b0.top - a0.top) / 100;
+      var bx = (c0.left - a0.left) / 100, by = (c0.top - a0.top) / 100;
+      var det = ax * by - ay * bx;
+      if (!isFinite(det) || Math.abs(det) < 0.000001) {
+        el.style.removeProperty('left'); el.style.removeProperty('top');
+        return false;
+      }
+      var ox = a0.left + a0.width / 2, oy = a0.top + a0.height / 2;
+      var L = ((cx - ox) * by - (cy - oy) * bx) / det;
+      var T = ((cy - oy) * ax - (cx - ox) * ay) / det;
+      if (!isFinite(L) || !isFinite(T)) return false;
+      el.style.setProperty('left', Math.round(L) + 'px', 'important');
+      el.style.setProperty('top', Math.round(T) + 'px', 'important');
+      return true;
+    } catch (e) { return false; }
+  }
+  function flashBigAct(text, kind, seatIdx) {
+    try {
+      var el = document.getElementById('big-act');
+      if (!el) return;
+      var zone = seatZone(seatIdx);
+      /* 服务端 bidActs 与本地推断可能同时命中同一次动作，400ms 内同人同词只闪一次 */
+      var sig = (text || '') + '|' + zone;
+      if (sig === lastBigSig && Date.now() - lastBigT < 400) return;
+      lastBigSig = sig; lastBigT = Date.now();
+      el.className = 'big-act' + (kind ? ' ' + kind : '') + (zone ? ' ' + zone : '');
+      /* v55：不再另造昵称胶囊，叫分阶段直接复用座位上的 .nm */
+      el.innerHTML = '<span class="ba-txt">' + esc(text || '') + '</span>';
+      var host = actHost(zone, seatIdx);
+      placeBigAt(el, host);
+      void el.offsetWidth;
+      el.classList.add('on');
+      /* 座位/出牌区可能在本次渲染中刚被重建，下一帧按最终布局复测一次 */
+      try {
+        requestAnimationFrame(function () { placeBigAt(el, actHost(zone, seatIdx)); });
+      } catch (e) { }
+      clearTimeout(bigActTimer);
+      bigActTimer = setTimeout(function () { el.classList.remove('on'); }, 1300);
+    } catch (e) { }
+  }
+  /* ---------- v51：动态表情大图 ----------
+     以前走 floatSay：3200ms 淡出、3900ms 移除，且地址没补全 →
+     显示的是默认图、几秒就消失、只有 30px 看不清细节。 */
+  var bigStkTimer = null, bigStkOutTimer = null;
+  function showBigSticker(url, nick) {
+    try {
+      var box = document.getElementById('big-sticker');
+      if (!box) return;
+      var u = (window.Stickers && Stickers.imgUrl) ? Stickers.imgUrl(url || '') : (url || '');
+      if (!u) return;
+      box.innerHTML = '<div class="bs-card"><span class="bs-nick">' + esc(nick || '表情') + '</span>' +
+        '<img src="' + esc(u) + '" alt="动态表情">' +
+        '<span class="bs-tip">3 秒后自动消失 · 点一下立即关闭</span></div>';
+      box.classList.remove('hidden');
+      box.classList.remove('out');
+      clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
+      /* v56：3 秒显示 → 0.3 秒渐变透明缩小 → 隐藏 */
+      bigStkTimer = setTimeout(function () {
+        box.classList.add('out');
+        bigStkOutTimer = setTimeout(function () {
+          box.classList.add('hidden'); box.classList.remove('out');
+        }, 300);
+      }, 3000);
+      box.onclick = function () {
+        clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
+        box.classList.add('hidden'); box.classList.remove('out');
+      };
+    } catch (e) { }
   }
 
   /* ---------- 飘屏：对方发的文字/表情/快捷语直接在右半边显示 ---------- */
@@ -1509,7 +1733,8 @@ window.Game = (function () {
     function sendSticker(it) {
       tcSend({ kind: 'sticker', url: it.url, name: it.name || '', anim: !!it.anim, quick: true });
       Sfx.send();
-      floatSay('我', '<img src="' + esc(it.url) + '" class="fl-img">', 'sticker');
+      /* v51：动图用大图卡展示（地址统一补全），不再飘一个 30px 的小图几秒就没 */
+      showBigSticker(it.url, '我');
       p.remove();
     }
     p.querySelectorAll('.sp-tab').forEach(function (t) {
@@ -1661,6 +1886,7 @@ window.Game = (function () {
     __showRest: function (rest, cb) { return showRest(rest, cb); },
     __showResult: function (m) { return showResult(m); },
     __quick: function () { return QUICK; }, __stick: function () { return QSTICK; },
+    __layoutSeats: function () { layoutSeats(); },
     __layoutRail: function () { layoutRail(); }, __railRect: function () { var r = document.getElementById('table-rail'); return r ? { top: Math.round(r.getBoundingClientRect().top), h: r.offsetHeight, cls: r.className, inline: r.style.top } : null; }
   };
 })();

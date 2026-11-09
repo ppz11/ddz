@@ -2048,3 +2048,537 @@ input, textarea, [contenteditable="true"]{
 /* ⑤ 矮屏上左侧座位与我的信息仍有交叠：左列整体上移，顶部仍留出底牌条高度 */
 #page-play .seatcol.left,
 #page-play .seatleft{transform:translateY(calc(-10px * var(--k,1)))!important}
+
+/* ============================================================
+   v51 覆盖层（真机截图 125/126/127）
+   ① 底牌条贴「屏幕」最上：它原本是 #page-play 的子元素，而 #page-play
+      在 #pages 里、#pages 又在 #topbar 下方，所以旧版 top:0 其实是
+      「金币那一行下面」，屏幕上沿永远空一大片。v51 把它移到 #main 层。
+   ② 座位信息改成「昵称+身份」与「叫分加倍结果+剩张数」两列纵向排布。
+   ③ 我出的牌上移，与提示/出牌按钮彻底错开。
+   ④ 叫分/加倍动作显示大字标（跟「过」一样），最终结果才落到昵称旁。
+   ⑤ 动态表情改成可点开看的大图，不再几秒就消失。
+   ============================================================ */
+
+/* ---------- ① 底牌 / 叫分 / 加倍：屏幕正中、贴最上 ---------- */
+#main > #bottom-bar{
+  position:absolute!important;
+  top:calc(var(--safe-t,0px) + 0px)!important;
+  left:50%!important;right:auto!important;
+  transform:translateX(-50%)!important;
+  width:max-content!important;max-width:76%!important;margin:0!important;
+  padding:2px 12px 4px!important;
+  z-index:36!important;pointer-events:none!important;
+  display:flex!important;align-items:center!important;justify-content:center!important;
+  flex-wrap:nowrap!important;gap:calc(5px * var(--k,1))!important;
+  background:rgba(4,26,20,.74)!important;border-radius:0 0 12px 12px!important;
+  box-shadow:0 2px 10px rgba(0,0,0,.30)!important;
+}
+body:not(.in-play) #main > #bottom-bar{display:none!important}
+#main > #bottom-bar .bcards{display:flex!important;gap:2px!important;flex:0 0 auto!important}
+#main > #bottom-bar .lbl{flex:0 0 auto!important}
+#main > #bottom-bar .btag{flex:0 0 auto!important;white-space:nowrap!important}
+#page-play .table{padding-top:calc(30px * var(--k,1))!important;overflow:visible!important}
+#page-play .topseats{padding-top:0!important}
+
+/* ---------- ② 座位信息：两列纵向布局 ---------- */
+#page-play .seatcol .ts,
+#page-play .myinfo{
+  display:flex!important;align-items:center!important;
+  gap:calc(6px * var(--k,1))!important;min-width:0;
+}
+#page-play .ts-i{
+  display:flex!important;flex-direction:row!important;
+  align-items:center!important;gap:calc(7px * var(--k,1))!important;min-width:0;
+}
+#page-play .ts-main,
+#page-play .ts-side{
+  display:flex!important;flex-direction:column!important;
+  align-items:flex-start!important;gap:2px!important;min-width:0;
+}
+#page-play .ts-main .nm{
+  font-size:calc(11px * var(--k,1))!important;
+  max-width:calc(96px * var(--k,1))!important;
+  overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;
+}
+#page-play .ts-main .rl{
+  margin-left:0!important;align-self:flex-start!important;
+  font-size:calc(11px * var(--k,1))!important;
+  padding:2px 7px!important;white-space:nowrap!important;
+}
+/* 右侧玩家：昵称身份在右，叫分结果与剩张数在左 */
+#page-play .seatcol.right .ts-i{flex-direction:row-reverse!important}
+#page-play .seatcol.right .ts-main,
+#page-play .seatcol.right .ts-side{align-items:flex-end!important}
+#page-play .seatcol.right .ts-main .rl{align-self:flex-end!important}
+/* 叫分加倍结果在上、剩余张数在下，纵向排列 */
+#page-play .ts-side .btagm{
+  display:block!important;margin:0!important;
+  font-size:calc(10px * var(--k,1))!important;
+  padding:2px 6px!important;white-space:nowrap!important;
+}
+#page-play .ts-side .cnt{
+  display:block!important;font-size:calc(11px * var(--k,1))!important;
+  font-weight:700!important;color:#ffe08a!important;
+  white-space:nowrap!important;margin:0!important;
+}
+/* 三人局的「×N」倍数不再挤进信息块 */
+#page-play .myinfo .mult{
+  position:absolute!important;right:calc(2% + 2px)!important;
+  bottom:calc(var(--hand-h,116px) + 14px + var(--safe-b,0px))!important;
+  font-size:calc(10px * var(--k,1))!important;z-index:27!important;
+}
+/* 隐藏头像：只显示昵称 + 身份 */
+#page-play .tseat .av,#page-play .myinfo > .av,
+#page-play .seatcol .ts > .av{display:none!important}
+
+/* ---------- ③ 我的信息：下移、收窄，不再与左上玩家重叠 ---------- */
+#page-play .myinfo{
+  position:absolute!important;top:auto!important;
+  bottom:calc(var(--hand-h,116px) + 14px + var(--safe-b,0px))!important;
+  left:calc(1% + 2px)!important;
+  max-width:min(200px,23vw)!important;
+  padding:4px 7px!important;z-index:26!important;
+  background:rgba(4,26,20,.58)!important;border-radius:10px;
+  transform:none!important;justify-content:flex-start!important;
+}
+#page-play .myinfo .sp{display:none!important}
+/* 左列整体上移，给下方我的信息腾出空间 */
+#page-play .seatcol.left,
+#page-play .seatleft{transform:translateY(calc(-18px * var(--k,1)))!important}
+
+/* ---------- ③ 我出的牌：抬到按钮上方，绝不重叠 ---------- */
+#page-play .myplayed{
+  position:absolute!important;left:0!important;right:0!important;
+  bottom:calc(var(--hand-h,116px) + 72px + var(--safe-b,0px))!important;
+  margin:0!important;min-height:0!important;height:auto!important;
+  z-index:31!important;pointer-events:none!important;
+}
+#page-play .myplayed .pcards{
+  justify-content:center!important;flex-wrap:nowrap!important;
+  overflow-x:auto!important;overflow-y:hidden!important;
+}
+/* 出的牌保持 v50 的统一尺寸，不再叠放 */
+#page-play .played .pc,
+#page-play .pcards .pc,
+#page-play .myplayed .pc{
+  --card-w:calc(44px * var(--k,1))!important;
+  --card-h:calc(62px * var(--k,1))!important;
+  width:calc(44px * var(--k,1))!important;
+  height:calc(62px * var(--k,1))!important;
+  transform:none!important;flex:0 0 auto!important;
+}
+#page-play .prow.stack .pc{margin-left:0!important}
+#page-play .prow.stack{flex-wrap:nowrap!important;gap:calc(3px * var(--k,1))!important}
+/* 按钮区：按「实测手牌区高度」贴在其上方，大屏上手牌被放大也不会压住 */
+#page-play #action-zone{
+  position:absolute!important;left:0!important;right:0!important;top:auto!important;
+  bottom:calc(var(--hand-h,116px) + 8px + var(--safe-b,0px))!important;
+  margin:0!important;z-index:74!important}
+#page-play #action-zone .bidwrap,
+#page-play #action-zone .acts{z-index:75!important}
+
+/* ---------- ④ 叫分 / 加倍大字标：跟「过」一样 ---------- */
+#app > #big-act{
+  position:absolute!important;left:50%!important;top:36%!important;
+  transform:translate(-50%,-50%) scale(.82)!important;
+  z-index:90!important;pointer-events:none!important;
+  font-family:"KaiTi","STKaiti","WenQuanYi Micro Hei",serif!important;
+  font-size:clamp(46px,12vh,104px)!important;font-weight:900!important;
+  color:#ffe9a8!important;letter-spacing:4px!important;white-space:nowrap!important;
+  text-shadow:0 0 18px rgba(243,201,107,.85),0 5px 16px rgba(0,0,0,.65)!important;
+  opacity:0!important;transition:opacity .16s ease,transform .16s ease!important;
+}
+#app > #big-act.on{opacity:1!important;transform:translate(-50%,-50%) scale(1)!important}
+#app > #big-act.dbl{color:#ff9d8b!important;text-shadow:0 0 18px rgba(231,76,60,.8),0 5px 16px rgba(0,0,0,.65)!important}
+#app > #big-act.pass{color:#eaf5f0!important;text-shadow:0 0 18px rgba(255,255,255,.55),0 5px 16px rgba(0,0,0,.65)!important}
+
+/* ---------- ⑤ 动态表情大图：看清细节，点一下才关 ---------- */
+#app > #big-sticker{
+  position:absolute!important;inset:0!important;z-index:96!important;
+  display:flex!important;align-items:center!important;justify-content:center!important;
+  background:rgba(2,14,10,.42)!important;backdrop-filter:blur(2px)!important;
+}
+#app > #big-sticker.hidden{display:none!important}
+#app > #big-sticker .bs-card{
+  display:flex!important;flex-direction:column!important;align-items:center!important;
+  gap:8px!important;padding:12px 16px!important;
+  background:rgba(4,26,20,.86)!important;border:1px solid rgba(243,201,107,.35)!important;
+  border-radius:18px!important;box-shadow:0 18px 46px rgba(0,0,0,.55)!important;
+  max-width:92%!important;
+}
+#app > #big-sticker .bs-nick{font-size:12px!important;color:#8fd8b4!important}
+#app > #big-sticker img{
+  width:min(52vh,340px)!important;height:min(52vh,340px)!important;
+  object-fit:contain!important;display:block!important;
+  image-rendering:auto!important;
+}
+#app > #big-sticker .bs-tip{font-size:11px!important;color:var(--sub)!important}
+/* 旧飘屏里残留的小表情图也放大一点，避免只剩 30px 看不清 */
+.float-say .fl-img{height:64px!important;width:auto!important;vertical-align:middle!important}
+
+/* 底牌条移到 #main 后，原来挂在 #page-play .dibar 下的内部样式不再命中，补齐 */
+#main > #bottom-bar .lbl{font-size:calc(10px * var(--k,1))!important;color:var(--sub)!important;
+  margin-right:calc(4px * var(--k,1))!important}
+#main > #bottom-bar .bcards{gap:calc(2px * var(--k,1))!important}
+#main > #bottom-bar .btag{font-size:calc(10px * var(--k,1))!important;
+  padding:1px 6px!important;line-height:1.4!important}
+
+/* ============================================================
+   v52 覆盖层（真机截图 128）
+   ① 左右玩家昵称/身份水平平齐
+   ② 右侧四按钮落在右侧玩家下方
+   ③ 叫分/加倍大字标按座位方位显示，跟各家「出的牌 / 过」位置一致
+   ④ 动态表情大图占屏更大（4 秒自动消失由 game.js 控制）
+   ⑤ 表情面板点空白关闭由 index.html 全局脚本控制
+   ============================================================ */
+
+/* ---------- ① 左右座位水平平齐 ----------
+   v42 给左列 +12px、v51 又给 -18px，右列从头到尾没动过，
+   所以昵称/身份一块高一块低。两边统一归零，top 相同自然平齐。 */
+#page-play .seatleft,#page-play .seatright,
+#page-play .seatcol.left,#page-play .seatcol.right{
+  transform:none!important;
+}
+
+/* ---------- ② 四个按钮在右侧玩家下方 ----------
+   真机 layoutRail() 会用 inline style.top 精确量出「右玩家下沿 ~ 手牌顶」的缝，
+   inline 优先级高于这条普通声明，所以这里只当「无 JS / 测试台」的兜底。
+   切勿加 !important，否则会把真机的动态定位压死。 */
+body.land #page-play .tablerail{
+  top:calc(var(--safe-t,0px) + 44px + 118px);
+  bottom:auto;
+}
+
+/* ---------- ③ 叫分 / 加倍大字标：按玩家方位 ----------
+   v51 固定在 left:50% top:36%，三个人叫分全叠在屏幕正中，
+   看不出是谁叫的。现在左家 / 右家 / 我各占一块，
+   纵向位置贴着各家「出的牌 / 过」那一行。 */
+#app > #big-act{
+  display:flex!important;flex-direction:column!important;align-items:center!important;
+  gap:2px!important;max-width:48%!important;
+  font-size:clamp(24px,6.2vh,54px)!important;letter-spacing:2px!important;
+}
+#app > #big-act .ba-nick{
+  font-size:calc(11px * var(--k,1))!important;font-weight:700!important;
+  letter-spacing:0!important;color:#bfe8d2!important;white-space:nowrap!important;
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif!important;
+  text-shadow:0 2px 6px rgba(0,0,0,.85)!important;
+}
+#app > #big-act .ba-txt{white-space:nowrap!important}
+#app > #big-act.at-left {left:17%!important;top:30%!important}
+#app > #big-act.at-right{left:83%!important;top:30%!important}
+#app > #big-act.at-me   {left:50%!important;top:58%!important}
+
+/* ---------- ④ 动态表情大图：看清细节 ---------- */
+#app > #big-sticker .bs-card{max-width:94%!important}
+#app > #big-sticker img{
+  width:min(60vh,380px)!important;height:min(60vh,380px)!important;
+  object-fit:contain!important;
+}
+
+/* ============================================================
+   v52 补充覆盖层（真机截图 128 / 127）
+   ⑦ 等待提示与按钮同行、不压牌；大字标贴各家出牌行
+   ============================================================ */
+
+/* 等待出牌：跟「不出 / 提示 / 出牌」同一个 .acts 行，同高同纵向位置。
+   旧版它是一个居中的宽黑条，压住屏幕中间我出的牌。 */
+#page-play #action-zone .acts.waitrow{
+  gap:0!important;
+  padding:6px 12px calc(8px + var(--safe-b,0px))!important;
+  z-index:74!important;
+}
+#page-play #action-zone .acts .waitline{
+  flex:0 0 auto!important;
+  min-width:calc(230px * var(--k,1))!important;max-width:70%!important;
+  height:calc(38px * var(--k,1))!important;line-height:1.25!important;
+  display:flex!important;align-items:center!important;justify-content:center!important;
+  font-size:calc(13px * var(--k,1))!important;opacity:.72!important;
+  background:rgba(4,26,20,.55)!important;
+  border:1px solid rgba(255,255,255,.14)!important;
+  box-shadow:none!important;pointer-events:none!important;
+  text-align:center!important;
+}
+/* 屏幕中间那条提示彻底不再作为「等待」使用；follow 的小字仍留在顶部不压牌 */
+#page-play .mid .notice{
+  top:2px!important;transform:translateX(-50%)!important;
+  pointer-events:none!important;max-width:64%!important;
+}
+/* 叫分 / 加倍大字标：贴各家出牌行，跟「过」字同一区域，不堆屏幕正中央 */
+#app > #big-act.at-left {left:22%!important;top:36%!important}
+#app > #big-act.at-right{left:78%!important;top:36%!important}
+#app > #big-act.at-me   {left:50%!important;top:60%!important}
+
+/* v52：左家出牌逐张摊开后座位盒会高 ~18px，844×390 follow 状态下正好压到
+   我的昵称 9px。按用户「我的昵称身份再往下一点、靠近手牌」的要求下移 12px，
+   不撑高布局盒、不影响按钮与手牌。 */
+#page-play .myinfo{transform:translateY(calc(12px * var(--k,1)))!important}
+
+
+/* ============================================================
+   v53 覆盖层（真机截图 129）
+   ① 左右座位整体上移：由 .field 的垂直居中（大屏正好落在屏幕纵向中部）
+      改为贴「底牌条下沿再低一点」的左上方 / 右上方。
+      底牌条在 #main 层贴屏幕顶（bottom ≈ 51px），座位目标 top = 下沿 + 10px。
+      真机由 game.js 的 layoutSeats() 用屏幕坐标反推 css top 精确写入，
+      CSS 这里只给无 JS 时的兜底，故 top 用 !important 但 JS 用内联 !important 覆盖。
+   ② 右侧四按钮由 layoutRail() 按「右座位 .ts 下沿」自动重算，
+      座位上移后按钮跟着上移，低分辨率下不再压住我的手牌。
+   ============================================================ */
+#page-play .field{position:relative!important}
+#page-play .seatleft,
+#page-play .seatright,
+body.land #page-play .seatleft,
+body.land #page-play .seatright{
+  position:absolute!important;
+  top:calc(var(--safe-t,0px) + 10px)!important;
+  width:max-content!important;max-width:46%!important;min-width:0!important;
+  flex:none!important;z-index:38!important;
+  transform:none!important;
+}
+#page-play .seatleft,
+body.land #page-play .seatleft{left:calc(1% + 4px)!important;right:auto!important}
+#page-play .seatright,
+body.land #page-play .seatright{right:calc(1% + 4px)!important;left:auto!important}
+/* 无 JS 兜底：贴着上移后的右座位，不再用 v52 的 +44px+118px */
+body.land #page-play .tablerail{
+  top:calc(var(--safe-t,0px) + 118px);
+  bottom:auto;
+}
+
+
+/* ============================================================
+   v54 覆盖层（真机截图 130 / 131）
+   ① 右侧四按钮不再跟着右座位跑到屏幕上方：座位贴顶后，按钮改落在
+      「屏幕纵向中部 ~ 手牌上方」这一段。真机由 layoutRail() 实测定位，
+      这里只做无 JS 兜底。
+   ② 叫分 / 加倍大字标不再用固定百分比另造位置：flashBigAct() 实测
+      该玩家出牌区 .pcards 的中心，inline 写 left/top 贴过去；
+      昵称放大成金色胶囊，谁叫的分一眼可辨。
+   ============================================================ */
+body.land #page-play .tablerail{
+  top:46%;bottom:auto;
+}
+#app > #big-act .ba-nick{
+  font-size:clamp(13px,2.8vh,20px)!important;
+  padding:2px 10px!important;border-radius:999px!important;
+  background:rgba(4,26,20,.82)!important;
+  border:1px solid rgba(243,201,107,.5)!important;
+  color:#ffe9a8!important;
+}
+#app > #big-act .ba-txt{
+  text-shadow:0 0 14px rgba(0,0,0,.9),0 3px 8px rgba(0,0,0,.8)!important;
+}
+/* 无 JS 时的方位兜底：仍分左/右/我，不再堆屏幕正中 */
+#app > #big-act.at-left {left:18%!important;top:40%!important}
+#app > #big-act.at-right{left:82%!important;top:40%!important}
+#app > #big-act.at-me   {left:50%!important;top:62%!important}
+/* 740×330 这类最矮屏：中部到手牌顶只剩 50 多 px，
+   再给一档更小的 2×2，按钮才既能落在中部又不压手牌 */
+.tablerail.mini{--rb:26px;--rg:3px}
+
+/* ================= v55 · 2026-11-06 ================= */
+/* ① 打牌昵称：放大成半透明金边胶囊，叫分阶段也常显 */
+#page-play .seatcol .ts .nm,
+#page-play .tseat .nm,
+#page-play .myinfo .nm,
+#page-play .ts .nm,
+#page-play .topseats .ts .nm{
+  display:inline-block!important;visibility:visible!important;opacity:1!important;
+  font-size:14px!important;font-weight:600!important;line-height:1.3!important;
+  letter-spacing:.2px!important;color:#f4fff9!important;
+  padding:3px 9px!important;border-radius:11px!important;
+  background:rgba(4,20,15,.62)!important;
+  border:1px solid rgba(243,201,107,.34)!important;
+  box-shadow:0 2px 8px rgba(0,0,0,.35)!important;
+  max-width:none!important;white-space:nowrap!important;
+  overflow:visible!important;text-overflow:clip!important;
+}
+/* ② 叫分大字标不再另造一个昵称 —— 复用打牌时那个 .nm */
+#app > #big-act .ba-nick{display:none!important}
+/* ③ 右侧四按钮：基准放大，优先照顾大屏 / 2K；降级档下限也抬高 */
+.tablerail{--rb:56px;--rg:9px}
+.tablerail.compact{--rb:52px;--rg:8px}
+.tablerail.tiny{--rb:48px;--rg:7px}
+.tablerail.mini{--rb:44px;--rg:6px}
+.tablerail .railbtn{font-size:30px!important}
+@media (min-width:1000px){
+  .tablerail{--rb:clamp(56px,5.4vh,74px);--rg:10px}
+  .tablerail .railbtn{font-size:clamp(30px,3.2vh,42px)!important}
+}
+/* ================= end v55 ================= */
+
+/* ================= v56 · 2026-11-06 =================
+   ① 叫分时左右昵称被裁：座位被 layoutSeats 写成负 top，跑进
+      #app #page-play{overflow:hidden} 的上方裁剪区。真机 JS 已加「可见顶边」
+      约束，这里再解除祖先裁剪与 ellipsis。
+   ② 身份标识与昵称同字号同高度。
+   ③ 叫分结果与剩张数同字号同款胶囊。
+   ④ 出的牌恢复叠放，露出左上角点数花色。
+   ⑤ 手牌往中间收（fitHand 用 0.82 系数）。
+   ⑥ 动态表情：右半部中间，3 秒后 0.3 秒渐隐缩小。
+   ==================================================== */
+
+/* ① 昵称完整显示 */
+#app #page-play .seatleft, #app #page-play .seatright,
+#app #page-play .seatcol .ts, #app #page-play .ts-i,
+#app #page-play .ts-main, #app #page-play .ts-side{
+  overflow:visible!important;max-width:none!important;
+}
+#app #page-play .seatleft,
+#app #page-play .seatright{max-width:48%!important}
+#app #page-play .seatcol .ts .nm,
+#app #page-play .ts-main .nm,
+#app #page-play .myinfo .nm,
+#app #page-play .tseat .nm,
+#app #page-play .topseats .ts .nm{
+  display:inline-flex!important;align-items:center!important;
+  height:auto!important;min-height:26px!important;
+  font-size:14px!important;line-height:1.3!important;font-weight:600!important;
+  overflow:visible!important;text-overflow:clip!important;
+  white-space:nowrap!important;max-width:none!important;
+  padding:3px 9px!important;border-radius:11px!important;
+  visibility:visible!important;opacity:1!important;
+}
+
+/* ② 农民 / 地主：横向大小跟昵称一致 */
+#app #page-play .ts-main .rl,
+#app #page-play .myinfo .rl,
+#app #page-play .seatcol .rl{
+  display:inline-flex!important;align-items:center!important;justify-content:center!important;
+  font-size:14px!important;line-height:1.3!important;font-weight:600!important;
+  min-height:26px!important;padding:3px 9px!important;border-radius:11px!important;
+  border:1px solid rgba(243,201,107,.40)!important;
+  background:rgba(4,20,15,.62)!important;color:#f4fff9!important;
+  white-space:nowrap!important;letter-spacing:.2px!important;
+}
+#app #page-play .ts-main .rl.lord,
+#app #page-play .myinfo .rl.lord{
+  background:rgba(212,175,55,.26)!important;border-color:rgba(243,201,107,.66)!important;
+}
+#app #page-play .ts-main .rl.farmer,
+#app #page-play .myinfo .rl.farmer{
+  background:rgba(49,216,166,.16)!important;border-color:rgba(49,216,166,.46)!important;
+}
+
+/* ③ 叫分加倍结果 / 剩几张：一样大、一样好看，上下排列 */
+#app #page-play .ts-side .btagm,
+#app #page-play .ts-side .cnt,
+#app #page-play .myinfo .ts-side .btagm,
+#app #page-play .myinfo .ts-side .cnt{
+  display:block!important;
+  font-size:13px!important;line-height:1.25!important;font-weight:700!important;
+  padding:3px 9px!important;border-radius:10px!important;
+  border:1px solid rgba(243,201,107,.32)!important;
+  background:rgba(4,20,15,.55)!important;color:#ffe08a!important;
+  white-space:nowrap!important;margin:0!important;
+}
+#app #page-play .ts-side .btagm{color:#f3c96b!important}
+
+/* ④ 出的牌：叠着放，露出左上角数字与花色，间距适度 */
+#app #page-play .prow.stack{gap:0!important}
+#app #page-play .prow.stack .pc{
+  margin-left:calc(var(--card-w,44px) * var(--k,1) * var(--ovr,-0.5))!important;
+  box-shadow:-3px 0 7px rgba(0,0,0,.42)!important;
+}
+#app #page-play .prow.stack .pc:first-child{margin-left:0!important}
+#app #page-play .pcards,#app #page-play .played{overflow-x:auto!important;overflow-y:hidden!important}
+
+/* ⑤ 手牌居中收窄：fitHand() 已按 0.82 系数算好牌宽，
+   旧规则 #page-play .pc{width:calc(var(--card-w)*var(--k))} 会在大屏再乘 1.22，
+   把手牌重新撑满屏幕 —— 这里让手牌宽度严格跟随 JS 计算的 --card-w/--card-h。 */
+#app #page-play .hand .pc{
+  width:var(--card-w)!important;height:var(--card-h)!important;
+}
+/* ⑤ 手牌居中收窄 */
+#app #page-play .hand{justify-content:center!important}
+#app #page-play .handwrap{overflow-x:clip!important}
+
+/* ⑥ 动态表情：右半部中间 + 3 秒后 0.3 秒渐隐缩小 */
+#app > #big-sticker{
+  inset:auto!important;
+  left:50%!important;right:0!important;top:0!important;bottom:0!important;
+  width:auto!important;height:auto!important;
+  justify-content:center!important;align-items:center!important;
+  background:none!important;backdrop-filter:none!important;
+  pointer-events:none!important;
+}
+#app > #big-sticker .bs-card{pointer-events:auto!important;max-width:92%!important}
+#app > #big-sticker img{
+  width:min(52vh,38vw,340px)!important;height:auto!important;
+  max-height:70vh!important;object-fit:contain!important;
+}
+@keyframes ddzBsOut{
+  from{opacity:1;transform:scale(1)}
+  to{opacity:0;transform:scale(.72)}
+}
+#app > #big-sticker.out .bs-card{
+  animation:ddzBsOut .3s ease-in forwards!important;
+}
+#app > #big-sticker.hidden{display:none!important}
+/* ================= end v56 ================= */
+
+/* ================= v57 · 2026-11-06 =================
+   截图 136：身份标识比昵称窄、「叫 1 分」框比「剩 17 张」窄。
+   v56 只统一了字号，宽度仍由各自文字长度撑开，所以看着还是参差。
+   做法：.ts-i 上定义统一最小宽度 --infow，.ts-main / .ts-side 两列
+   都取这个宽度并 stretch；列内四个胶囊一律 width:100%、居中、同高。
+   于是 昵称≡身份、叫分结果≡剩张数，框子严格等宽（长昵称仍可撑开）。
+   ==================================================== */
+#app #page-play .ts-i,
+#page-play .ts-i{--infow:calc(104px * var(--k,1))}
+#app #page-play .ts-main,
+#app #page-play .ts-side,
+#page-play .ts-main,
+#page-play .ts-side{
+  display:flex!important;flex-direction:column!important;
+  align-items:stretch!important;
+  width:max-content!important;min-width:var(--infow,104px)!important;
+  max-width:none!important;flex:0 0 auto!important;gap:3px!important;
+}
+#app #page-play .seatcol.right .ts-main,
+#app #page-play .seatcol.right .ts-side,
+#page-play .seatcol.right .ts-main,
+#page-play .seatcol.right .ts-side{align-items:stretch!important}
+/* 四个胶囊：同列同宽、文字居中、一样高 */
+#app #page-play .ts-main .nm,
+#app #page-play .ts-main .rl,
+#app #page-play .ts-side .btagm,
+#app #page-play .ts-side .cnt,
+#page-play .ts-main .nm,
+#page-play .ts-main .rl,
+#page-play .ts-side .btagm,
+#page-play .ts-side .cnt{
+  display:flex!important;align-items:center!important;justify-content:center!important;
+  width:100%!important;box-sizing:border-box!important;
+  align-self:stretch!important;flex:none!important;
+  text-align:center!important;margin:0!important;
+  min-height:26px!important;
+}
+#app #page-play .ts-main .rl,
+#page-play .ts-main .rl{margin-left:0!important}
+/* ================= end v57 ================= */
+
+
+/* ============================================================
+   v78 布局意图落地层（2026-11-09）
+   来源：打牌布局编辑器 v78 用户最终确认的两条调整方向。
+   重要：本工程牌桌是 flex 流式布局（.table > field / topseats /
+   myplayed / #action-zone / .myinfo / .handwrap），不是编辑器里那套
+   「每个控件一个 --xxx-x/y/w/h 百分比」的绝对定位坐标系。
+   编辑器导出的 30+ 个百分比变量在本工程里从未被引用，二者不通用，
+   因此这里只把用户要的「视觉结果」锁进真实布局，不改 DOM、不改 JS，
+   选牌 / 出牌 / 动画 / 点击等交互全部原样保留：
+     ① 提示·出牌·不出（#action-zone）始终排在我方手牌（.handwrap）
+        之前，与「等待上家/下家」共用同一条 .acts 行，互不遮挡；
+     ② 我方昵称·身份·叫分·剩牌（.myinfo）始终在手牌之前并留白，
+        不会压到牌面；
+     ③ 牌面点数 .rk / 花色 .su 永远在最上层，任何浮层不盖数字。
+   验证：curl -s http://127.0.0.1:8080/css/app.css | grep "v78 布局意图落地层"
+   ============================================================ */
+#page-play .table > #action-zone{flex:0 0 auto;flex-shrink:0}
+#page-play .table > .myinfo{flex:0 0 auto;flex-shrink:0;margin-bottom:2px}
+#page-play .table > .handwrap{flex:0 0 auto;flex-shrink:0}
+#page-play .pc .rk,#page-play .pc .su{z-index:3}
+#page-play .pc .ctr{z-index:2}

@@ -657,6 +657,8 @@ function pushGame(room) {
       actEvt: g.actEvt || null, bidEvt: g.bidEvt || null,
       bidActs: g.bidActs || [], actLog: g.actLog || [] });
   });
+  /* v52：每次状态推送都重设「当前行动玩家」的限时，掉线 / 切后台不会卡桌。 */
+  armDoubleTimeout(room);
 }
 function pushResult(room) {
   const g = room.game; if (!g) return;
@@ -759,31 +761,46 @@ function botAct(room, seat) {
   } catch (e) { console.error('[bot]', e.message); }
   scheduleBots(room);
 }
-/* 加倍阶段真人超时兜底：4 秒不做决定视为「不加倍」。
-   没有这个兜底，一旦有人掉线/切后台，整桌都会卡在加倍界面。 */
-const doubleTimers = new Map();
-function clearDoubleTimer(gid) {
-  const t = doubleTimers.get(gid);
-  if (t) { clearTimeout(t); doubleTimers.delete(gid); }
+/* v52：阶段限时兜底 —— 每位玩家叫分 8 秒、加倍 4 秒。
+   超时后真人自动「不叫 / 不加倍」并推进轮次；机器人由 scheduleBots 驱动，
+   不受这里影响。统一由 pushGame() 重设计时器，任何推进状态的位置都不会漏设。
+   函数名保留 armDoubleTimeout 以兼容原有三处调用。 */
+const phaseTimers = new Map();
+function clearPhaseTimer(gid) {
+  const x = phaseTimers.get(gid);
+  if (x && x.t) { clearTimeout(x.t); phaseTimers.delete(gid); }
 }
 function armDoubleTimeout(room) {
-  clearDoubleTimer(room.gid);
+  clearPhaseTimer(room.gid);
   const g = room.game;
-  if (!g || g.phase !== 'double') return;
-  const seat = DDZ.doubleTurn(g);
-  if (seat < 0) return;
+  if (!g || (g.phase !== 'bid' && g.phase !== 'double')) return;
+  const isBid = g.phase === 'bid';
+  const seat = isBid ? g.bidTurn : DDZ.doubleTurn(g);
+  if (seat == null || seat < 0) return;
   const who = room.seats[seat];
   if (!who || who.bot) return;                 // 机器人由 scheduleBots 驱动
+  const limit = isBid ? 8000 : 4000;
   const t = setTimeout(() => {
-    doubleTimers.delete(room.gid);
-    if (!room.game || room.game.phase !== 'double') return;
-    if (DDZ.doubleTurn(room.game) !== seat) return;
-    DDZ.applyDouble(room.game, seat, false);
+    phaseTimers.delete(room.gid);
+    const gg = room.game;
+    if (!gg || gg.phase !== (isBid ? 'bid' : 'double')) return;
+    if ((isBid ? gg.bidTurn : DDZ.doubleTurn(gg)) !== seat) return;
+    if (isBid) {
+      /* 超时按「不叫」处理，必须走 applyBidAndLog 写权威日志，
+         前端才有浮标和语音，不会「直接出结果」。 */
+      const r = applyBidAndLog(gg, seat, { type: 'pass' }, room.gid);
+      if (r && r.redeal) {
+        room.game = DDZ.newGame(room.rule);
+        room.game.bidTurn = room.game.firstBidder;
+        pushGame(room); scheduleBots(room); return;
+      }
+    } else {
+      DDZ.applyDouble(gg, seat, false);
+    }
     pushGame(room);
-    if (room.game.phase === 'double') { scheduleBots(room); armDoubleTimeout(room); }
-    else scheduleBots(room);
-  }, 4000);
-  doubleTimers.set(room.gid, t);
+    scheduleBots(room);
+  }, limit);
+  phaseTimers.set(room.gid, { t: t, phase: isBid ? 'bid' : 'double', seat: seat });
 }
 
 function tryStart(room) {
