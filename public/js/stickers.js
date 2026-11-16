@@ -144,6 +144,12 @@ window.Stickers = (function () {
     try { if (window.Net && Net.abs) a = Net.abs(u) || u; } catch (e) { }
     /* 最后一道：仍是根相对地址就拼死兜底，绝不让 <img> 去请求 localhost */
     if (/^\/(?!\/)/.test(a)) a = (window.APP_SERVER || 'http://101.201.106.149:8080').replace(/\/$/, '') + a;
+    /* v59：Net.abs 在 WebView 里可能补成 localhost 绝对地址，图片必然 404。
+       统一替换成真实服务器，牌桌动态表情 / 表情格子都能正常显示。 */
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(a)) {
+      var b = (window.APP_SERVER || 'http://101.201.106.149:8080').replace(/\/$/, '');
+      a = b + a.replace(/^https?:\/\/[^/]+/i, '');
+    }
     return a;
   }
   /* 清洗一个包：丢掉打不开的条目；全部失效的包返回 null */

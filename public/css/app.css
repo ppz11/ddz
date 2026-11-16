@@ -2582,3 +2582,62 @@ body.land #page-play .tablerail{
 #page-play .table > .handwrap{flex:0 0 auto;flex-shrink:0}
 #page-play .pc .rk,#page-play .pc .su{z-index:3}
 #page-play .pc .ctr{z-index:2}
+
+
+/* ============================================================
+   v59 真机反馈修正层（2026-11-16）
+   按用户 3 张真机截图逐条落地；全部放最后并用 #app 前缀提权。
+   验证：curl -s http://127.0.0.1:8080/css/app.css | grep "v59 真机反馈修正层"
+   ============================================================ */
+/* ① 左右座位信息贴屏幕边：左上贴左边、右上贴右边 */
+#app #page-play .seatleft, #app #page-play .seatcol.left{left:0!important;margin-left:0!important;padding-left:0!important}
+#app #page-play .seatright, #app #page-play .seatcol.right{right:0!important;margin-right:0!important;padding-right:0!important}
+#app #page-play .field{padding-left:0!important;padding-right:0!important}
+#app #page-play .seatcol.left .ts-i{align-items:flex-start!important;text-align:left!important}
+#app #page-play .seatcol.right .ts-i{align-items:flex-end!important;text-align:right!important}
+
+/* ② 手牌层叠：角标不吃点击，10 紧凑，选中牌永远在最上 */
+#app #page-play .hand .pc .rk,
+#app #page-play .hand .pc .su,
+#app #page-play .hand .pc .big,
+#app #page-play .hand .pc .ctr{pointer-events:none!important}
+#app #page-play .hand .pc .rk{white-space:nowrap!important;max-width:calc(var(--card-w,48px) - 4px)!important;overflow:visible!important}
+#app #page-play .pc .rk.rk10{
+  font-size:calc(var(--card-h,82px) * .20)!important;
+  letter-spacing:-1.8px!important;
+  transform:scaleX(.80)!important;transform-origin:left top!important;
+  width:calc(var(--card-w,48px) * .92)!important;
+}
+#app #page-play .hand .pc.sel{z-index:9999!important}
+#app #page-play .hand .pc{isolation:isolate}
+
+/* ③ 我方信息那块黑底去掉（只留文字胶囊） */
+#app #page-play .myinfo{background:transparent!important;border:0!important;
+  box-shadow:none!important;backdrop-filter:none!important;padding-left:0!important}
+#app #page-play .myinfo .sp{display:none!important}
+
+/* ④ 牌桌表情面板：5 列紧凑，不再是 3 列大间距 */
+#app #page-play #stick-panel{width:min(72vw,430px)!important;max-height:66vh!important;z-index:120!important}
+#app #page-play #stick-panel .sp-grid{
+  grid-template-columns:repeat(5,minmax(0,1fr))!important;
+  gap:4px!important;align-content:start!important}
+#app #page-play #stick-panel .sp-i,
+#app #page-play #stick-panel .sp-e{height:70px!important;min-height:70px!important;padding:2px!important}
+#app #page-play #stick-panel .sp-grid.big{--stk-cell:70px!important}
+#app #page-play #stick-panel .sp-i img{max-height:52px!important}
+#app #page-play #stick-panel .stk-cap{height:15px!important;line-height:15px!important;font-size:10px!important}
+
+/* ⑤ 动态表情大图：提到最上层、不被任何牌桌浮层盖住 */
+#app > #big-sticker{z-index:160!important;display:flex!important;
+  pointer-events:none!important;background:rgba(2,14,10,.30)!important}
+#app > #big-sticker .bs-card{pointer-events:auto!important;
+  background:rgba(4,26,20,.94)!important;z-index:161!important}
+#app > #big-sticker img{max-width:88vw!important;max-height:64vh!important}
+#app > #big-sticker.hidden{display:none!important}
+
+/* ⑥ 叫分「不叫」的过字与出牌过字同款 */
+#app #page-play .pcards.passed .pass-word{font-size:calc(22px * var(--k,1))!important}
+/* ================= end v59 ================= */
+
+/* v59 追加：.table 自身 4px 内边距会让座位离屏幕边 4px，彻底清零 */
+#app #page-play .table{padding-left:0!important;padding-right:0!important}

@@ -156,9 +156,28 @@
       ? Math.min.apply(null, g.hands.map(function (h, i) { return i === seat ? 99 : h.length; }))
       : g.hands[1 - seat].length;
 
-    // 队友出的牌：一般不压，偶尔手滑误压（拟人）
+    /* v59 农民配合：以前「队友出的牌」92% 直接放过，叠加跟牌保守策略后，
+       经常表现成「一家一直出、另一家一整局都不出」，看着像挂机。
+       现在：队友快赢(≤2 张) 一定让路；自己能一手走完就接管收尾；
+       其余按连续让路次数轮换 —— 每让 2 次，第 3 次允许接管一次。 */
     if (teammate) {
-      if (Math.random() < 0.08) { /* 失误，继续走压制逻辑 */ } else return { ids: [] };
+      var mateLeft = (g.hands[lastBy] || []).length;
+      var all0 = DDZ.allMoves(hand);
+      var finish0 = all0.filter(function (m) {
+        if (m.length !== hand.length) return false;
+        var inf = DDZ.parse(DDZ.byId(hand, m));
+        return inf && DDZ.beats(inf, needBeat);
+      });
+      if (finish0.length) return { ids: finish0[0] };       // 自己能走完 → 接管
+      g._farmerYield = g._farmerYield || {};
+      var y = (g._farmerYield[seat] || 0) + 1;
+      g._farmerYield[seat] = y;
+      var takeOver = (y % 3 === 0) || (mateLeft > 6 && hand.length <= 4 && Math.random() < 0.35);
+      if (mateLeft <= 2) return { ids: [] };                // 队友快赢，让路
+      if (!takeOver) {
+        if (Math.random() < 0.08) { /* 偶尔手滑，继续走压制逻辑 */ }
+        else return { ids: [] };
+      }
     }
 
     var all = DDZ.allMoves(hand);
@@ -173,8 +192,18 @@
     // 对方剩牌很少 → 必须压制
     var urgent = oppLast <= 2;
     // 对方剩牌 <= 让牌数（let46）→ 必须压制
-    if (g.rule === 'let46' && !isLandlord && g.hands[1 - g.landlord].length <= g.letCount + 1) urgent = true;
-    if (g.rule === 'let46' && isLandlord && g.hands[1 - g.landlord].length <= g.letCount) urgent = true;
+    /* v59：3 人场不能再用 1-landlord 当索引（landlord=2 时是 -1），
+       旧写法会读到 undefined.length，紧急判断直接失效。 */
+    if (g.rule === 'let46') {
+      var oppLens = [];
+      g.hands.forEach(function (h, idx) {
+        if (idx === seat) return;
+        if (isLandlord || idx === g.landlord) oppLens.push(h.length);
+      });
+      var few = oppLens.length ? Math.min.apply(null, oppLens) : 99;
+      if (!isLandlord && few <= (g.letCount || 0) + 1) urgent = true;
+      if (isLandlord && few <= (g.letCount || 0)) urgent = true;
+    }
 
     // 一手走完
     var finish = can.filter(function (x) { return x.ids.length === hand.length; });
@@ -207,6 +236,7 @@
       var tooBig = best.info.main >= 15 || best.info.type === 'bomb' || best.info.type === 'rocket';
       var gap = best.info.main - needBeat.main;
       var holdBack = 0.72 - L.greed * 0.45;          // 高手更舍得出大牌
+      if (!isLandlord) holdBack *= 0.6;                 // v59：农民别过度忍让
       if (tooBig && needBeat.main <= 12 && Math.random() < holdBack) return { ids: [] };
       // 高手会「藏牌」：上家出小牌时故意不压，留着关键牌收尾
       if (L.trap > 0 && needBeat.main <= 8 && Math.random() < L.trap * 0.5) return { ids: [] };

@@ -60,7 +60,7 @@ window.Game = (function () {
       return '<div class="pc joker ' + col + ' ' + (cls || '') + '" data-id="' + c.id + '">' + jokerInner(c, small) + '</div>';
     }
     return '<div class="pc ' + col + ' ' + (cls || '') + '" data-id="' + c.id + '">' +
-      '<div class="rk">' + c.r + '</div><div class="su">' + SUIT[c.s] + '</div>' +
+      '<div class="rk' + (String(c.r) === '10' ? ' rk10' : '') + '">' + c.r + '</div><div class="su">' + SUIT[c.s] + '</div>' +
       '<div class="big">' + SUIT[c.s] + '</div><div class="ctr" style="opacity:0"></div></div>';
   }
   /* 打出的牌像真牌一样叠着放：牌越多叠得越紧，绝不撑破屏幕。
@@ -95,7 +95,9 @@ window.Game = (function () {
     /* 手牌间距：叠 62% 时牌面只露出 38%，点数花色被下一张压住看不清。
        改成叠 50%（露出一半），宽度公式的系数同步从 0.38 提到 0.50。 */
     var OV = 0.50;
-    var wByW = (avail - 4) / (OV * n + (1 - OV));
+    /* v59：牌宽固定按 17 张计算，20 张不再变小；多出的张数改用「叠得更紧」消化 */
+    var REF = 17;
+    var wByW = (avail - 4) / (OV * REF + (1 - OV));
     var vh = 0;
     try { vh = window.innerHeight || 0; } catch (e) { }
     if (!vh) vh = (document.documentElement && document.documentElement.clientHeight) || 640;
@@ -120,7 +122,11 @@ window.Game = (function () {
       if (!h) return;
       h.style.setProperty('--card-w', Math.round(w0) + 'px');
       h.style.setProperty('--card-h', Math.round(w0 * 1.42) + 'px');
-      h.style.setProperty('--ov', '-' + Math.round(w0 * OV) + 'px');
+      /* v59：按实际张数反算叠放间距；牌宽 w0 恒定，牌越多叠得越紧 */
+      var nEff = Math.max(1, n);
+      var needOv = nEff > 1 ? ((avail - w0) / (nEff - 1) - w0) : (-w0 * OV);
+      var ovPx = Math.min(-w0 * OV, needOv);
+      h.style.setProperty('--ov', Math.round(ovPx) + 'px');
       /* v51：布局里用固定的 var(--card-h)（默认 82px）算按钮 / 昵称位置，
          但大屏上 fitHand 会把牌放大到 119px —— 按钮就压到手牌上了。
          把「真实手牌区高度」写进 --hand-h，所有定位跟着实际尺寸走。 */
@@ -135,7 +141,11 @@ window.Game = (function () {
       if (!hd) return;
       var need = hd.scrollWidth, have = hd.clientWidth;
       if (have > 20 && need > have + 2) {
-        apply(Math.max(34, Math.floor(w * have / need) - 1));
+        /* v59：不再缩小牌宽（20 张要跟 17 张一样大），只继续收紧叠放间距 */
+        var wNow = parseFloat(getComputedStyle(hd).getPropertyValue('--card-w')) || w;
+        var nNow = Math.max(1, n);
+        var ovNow = nNow > 1 ? ((have - wNow) / (nNow - 1) - wNow) : (-wNow * OV);
+        hd.style.setProperty('--ov', Math.round(Math.min(ovNow, -8)) + 'px');
       }
       /* 用渲染后的真实高度再校准一次，避免不同 @media 下 padding 变化造成偏差 */
       try {
@@ -217,11 +227,27 @@ window.Game = (function () {
   /* ---------- 连选手牌：按下后横向滑动可一次选多张 ---------- */
   function bindHand() {
     var wrap = document.getElementById('hand');
-    var dragging = false, mode = 1, touched = {};
+    var dragging = false, mode = 1, touched = {}, moved = false, startX = 0, startY = 0;
 
+    /* v59：按「可见条带」几何命中，不再用 elementFromPoint。
+       手牌是负 margin 叠放的，后一张 DOM 盖在前一张上；点前一张的右半部
+       用 elementFromPoint 会命中后一张 —— 这就是「点一张却提起下面那张」的根因。 */
     function cardAt(x, y) {
-      var el = document.elementFromPoint(x, y);
-      return el && el.closest ? el.closest('.pc') : null;
+      var els = wrap.querySelectorAll('.pc');
+      if (!els.length) return null;
+      var yOk = false;
+      for (var j = 0; j < els.length; j++) {
+        var r0 = els[j].getBoundingClientRect();
+        if (y >= r0.top - 22 && y <= r0.bottom + 4) { yOk = true; break; }
+      }
+      if (!yOk) return null;
+      for (var i = 0; i < els.length; i++) {
+        var r = els[i].getBoundingClientRect();
+        var next = els[i + 1] ? els[i + 1].getBoundingClientRect().left : r.right;
+        if (x >= r.left && x < next) return els[i];
+        if (i === els.length - 1 && x >= r.left && x <= r.right) return els[i];
+      }
+      return null;
     }
     function apply(el) {
       if (!el || touched[el.dataset.id]) return;
@@ -229,23 +255,58 @@ window.Game = (function () {
       if (mode) sel[el.dataset.id] = 1; else delete sel[el.dataset.id];
       Sfx.tap(); renderHand(); updateActions();
     }
+    /* v59：智能成套化简 —— 拖动划过长顺时，中间有对子/三张也只提顺子需要的那一张 */
+    function smartNormalize() {
+      if (!S || !S.hand) return;
+      var ids = Object.keys(sel);
+      if (ids.length < 4) return;
+      var cards = S.hand.filter(function (c) { return sel[c.id]; });
+      if (DDZ.parse(cards)) return;               // 本来就是合法牌型，不干预
+      var byVal = {};
+      cards.forEach(function (c) { (byVal[c.v] = byVal[c.v] || []).push(c); });
+      var vals = Object.keys(byVal).map(Number).sort(function (a, b) { return a - b; });
+      var need = (S.last && S.last.by !== mySeat) ? S.last.info : null;
+      for (var k = 1; k <= 3; k++) {             // 1=顺子 2=连对 3=飞机
+        var picked = [], ok = true;
+        for (var i = 0; i < vals.length; i++) {
+          var g = byVal[vals[i]];
+          if (g.length < k) { ok = false; break; }
+          for (var j = 0; j < k; j++) picked.push(g[j]);
+        }
+        if (!ok || picked.length < 5) continue;
+        var info = DDZ.parse(picked);
+        if (!info || (need && !DDZ.beats(info, need))) continue;
+        if (info.type === 'straight' || info.type === 'dstraight' ||
+            info.type === 'plane' || info.type === 'plane1' || info.type === 'plane2') {
+          sel = {}; picked.forEach(function (c) { sel[c.id] = 1; });
+          renderHand(); updateActions();
+          toast('已按' + info.name + '只提起需要的牌');
+          return;
+        }
+      }
+    }
     wrap.addEventListener('pointerdown', function (e) {
       if (!S || S.phase !== 'play' || S.turn !== mySeat) return;
-      var el = e.target.closest ? e.target.closest('.pc') : null;
+      var el = cardAt(e.clientX, e.clientY);
       if (!el) return;
       e.preventDefault();
-      dragging = true; touched = {};
-      mode = sel[el.dataset.id] ? 0 : 1;      // 起点已选中 → 本次拖动为取消
+      dragging = true; moved = false; touched = {};
+      startX = e.clientX; startY = e.clientY;
+      mode = sel[el.dataset.id] ? 0 : 1;
       apply(el);
       try { wrap.setPointerCapture(e.pointerId); } catch (x) {}
     });
     wrap.addEventListener('pointermove', function (e) {
       if (!dragging) return;
+      if (Math.abs(e.clientX - startX) > 6 || Math.abs(e.clientY - startY) > 6) moved = true;
       var el = cardAt(e.clientX, e.clientY);
       if (el && wrap.contains(el)) apply(el);
     });
     ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (ev) {
-      wrap.addEventListener(ev, function () { dragging = false; });
+      wrap.addEventListener(ev, function () {
+        if (dragging && moved) smartNormalize();
+        dragging = false;
+      });
     });
   }
 
@@ -354,7 +415,13 @@ window.Game = (function () {
             enqueueBid({ i: bEvt.by, score: bEvt.score || 0, seq: bEvt.seq },
                        S.cutMode ? 'cut' : 'bid');
           }
-        } else spokenBidSeq[bKey] = 1;
+        } else if (!spokenBidSeq[bKey]) {
+          /* v59：bidActs 没收录这条（前两家机器人连续「不叫」）→ 补一次播报，
+             否则「不叫」既没大字标也没声音。旧代码在这里盲标记已播，正是漏播根因。 */
+          spokenBidSeq[bKey] = 1;
+          enqueueBid({ i: bEvt.by, score: bEvt.score || 0, seq: bEvt.seq },
+                     (m.cutMode || (S && S.cutMode)) ? 'cut' : 'bid');
+        }
       }
     }
     /* 出牌 / 不出的提示音：对手的牌型还要语音播报 */
@@ -563,6 +630,13 @@ window.Game = (function () {
 
     /* 某人打出的牌 */
     function playedOf(i) {
+      /* v59：叫分阶段「不叫」也挂一个「过」字，跟出牌阶段一致 */
+      if (S.phase === 'bid' || S.phase === 'double') {
+        var lastB = null;
+        for (var bi = bidLog.length - 1; bi >= 0; bi--) { if (bidLog[bi].i === i) { lastB = bidLog[bi]; break; } }
+        if (lastB && !lastB.score && Date.now() - (lastB.t || 0) < 5000)
+          return '<div class="pmine"><div class="pcards passed"><span class="pass-word">过</span></div></div>';
+      }
       var x = ls[i];
       if (x && x.cards && x.cards.length) {
         return '<div class="pmine"><div class="pcards">' + rowHTML(x.cards) + '</div></div>';
@@ -880,6 +954,12 @@ window.Game = (function () {
       return cardHTML(c, (sel[c.id] ? 'sel' : '') + (animate ? ' deal' : ''));
     }).join('');
     if (animate) wrap.querySelectorAll('.pc.deal').forEach(function (el, i) { el.style.animationDelay = (i * 22) + 'ms'; });
+    /* v59：显式层叠顺序（右侧压左侧），选中的牌永远在最上；
+       角标元素不再参与命中判定（CSS pointer-events:none），点牌不再串位。 */
+    wrap.querySelectorAll('.pc').forEach(function (el, i) {
+      el.style.zIndex = String(i + 1);
+      if (el.classList.contains('sel')) el.style.zIndex = '9999';
+    });
     /* 首帧 handwrap 可能还没布局完（宽度 0），下一帧按真实尺寸再校准一次，
        否则手牌会一直保持最小尺寸，看起来又小又挤。 */
     try {
@@ -1587,9 +1667,14 @@ window.Game = (function () {
       var box = document.getElementById('big-sticker');
       if (!box) return;
       var u = (window.Stickers && Stickers.imgUrl) ? Stickers.imgUrl(url || '') : (url || '');
+      if (!u) u = String(url || '');
+      /* v59：WebView 里 Net.abs 可能补成 localhost → 图片必然破。统一换成真实服务器地址 */
+      var srvBase = (window.APP_SERVER || '').replace(/\/$/, '');
+      if (srvBase && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(u))
+        u = srvBase + u.replace(/^https?:\/\/[^/]+/i, '');
       if (!u) return;
       box.innerHTML = '<div class="bs-card"><span class="bs-nick">' + esc(nick || '表情') + '</span>' +
-        '<img src="' + esc(u) + '" alt="动态表情">' +
+        '<img src="' + esc(u) + '" alt="" onerror="this.style.display=\'none\';this.parentNode.insertAdjacentHTML(\'beforeend\',\'<span class=bs-tip>表情加载失败，请检查服务器表情包</span>\')">' +
         '<span class="bs-tip">3 秒后自动消失 · 点一下立即关闭</span></div>';
       box.classList.remove('hidden');
       box.classList.remove('out');
