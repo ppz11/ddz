@@ -2608,7 +2608,8 @@ body.land #page-play .tablerail{
   transform:scaleX(.80)!important;transform-origin:left top!important;
   width:calc(var(--card-w,48px) * .92)!important;
 }
-#app #page-play .hand .pc.sel{z-index:9999!important}
+/* v61：此处原有 .pc.sel{z-index:9999}，会把整张选中牌压到右邻上，
+   导致「提起来 7 把下面的 6 挡住」。已移除，恢复右侧压左侧的正常层叠。 */
 #app #page-play .hand .pc{isolation:isolate}
 
 /* ③ 我方信息那块黑底去掉（只留文字胶囊） */
@@ -2641,3 +2642,54 @@ body.land #page-play .tablerail{
 
 /* v59 追加：.table 自身 4px 内边距会让座位离屏幕边 4px，彻底清零 */
 #app #page-play .table{padding-left:0!important;padding-right:0!important}
+
+
+/* ============================================================
+   v61 真机反馈修正层（2026-11-16）
+   验证：curl -s http://127.0.0.1:8080/css/app.css | grep "v61 真机反馈修正层"
+   ① 提牌不再压住相邻牌：v59 把 .pc.sel 提到 z-index:9999，选中的
+      牌会整张盖住右邻（只剩角标）。现在取消置顶与左右位移，
+      恢复「右侧压左侧」的自然层叠；抬起只靠上移 + 内描边表示。
+   ② 动态表情：v56 把大图层限死在右半屏且 pointer-events:none，
+      点卡片外 / 点屏幕左侧都关不掉，看起来像「点一下消失没了」。
+      现在整屏可点，点任意处（含 × 按钮）立即关闭，触屏
+      touchstart 即关，不用等 3 秒动画，也不会穿透到牌桌。
+   ============================================================ */
+/* ① 选中牌：取消左右位移；层叠交给 JS 的 i+1，不再置顶 */
+#app #page-play .hand .pc.sel{
+  margin-left:var(--ov)!important;
+  margin-right:0!important;
+  outline:2px solid var(--gold)!important;outline-offset:-2px!important;
+  box-shadow:0 5px 12px rgba(0,0,0,.38)!important;
+}
+
+/* ② 动态表情大图：整屏遮罩 + 整层可点 */
+#app > #big-sticker{
+  inset:0!important;left:0!important;right:0!important;top:0!important;bottom:0!important;
+  width:100%!important;height:100%!important;
+  z-index:180!important;display:flex!important;
+  align-items:center!important;justify-content:center!important;
+  pointer-events:auto!important;
+  background:rgba(2,14,10,.46)!important;
+  -webkit-tap-highlight-color:transparent!important;
+}
+#app > #big-sticker .bs-card{
+  pointer-events:auto!important;position:relative!important;
+  background:rgba(4,26,20,.96)!important;
+  border:1px solid rgba(243,201,107,.45)!important;
+  border-radius:18px!important;padding:14px 18px 12px!important;
+  box-shadow:0 18px 46px rgba(0,0,0,.6)!important;
+  cursor:pointer!important;
+}
+#app > #big-sticker .bs-close{
+  position:absolute!important;top:-12px!important;right:-12px!important;
+  width:30px!important;height:30px!important;line-height:26px!important;
+  border-radius:50%!important;text-align:center!important;
+  background:#e94560!important;color:#fff!important;
+  font-size:18px!important;font-weight:700!important;
+  border:2px solid rgba(255,255,255,.78)!important;
+  pointer-events:auto!important;cursor:pointer!important;
+}
+#app > #big-sticker .bs-tip{font-size:11px!important;color:#cfe8dc!important}
+#app > #big-sticker.hidden{display:none!important}
+/* ================= end v61 ================= */

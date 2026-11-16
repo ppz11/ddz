@@ -954,11 +954,11 @@ window.Game = (function () {
       return cardHTML(c, (sel[c.id] ? 'sel' : '') + (animate ? ' deal' : ''));
     }).join('');
     if (animate) wrap.querySelectorAll('.pc.deal').forEach(function (el, i) { el.style.animationDelay = (i * 22) + 'ms'; });
-    /* v59：显式层叠顺序（右侧压左侧），选中的牌永远在最上；
-       角标元素不再参与命中判定（CSS pointer-events:none），点牌不再串位。 */
+    /* 层叠顺序（右侧压左侧）。v61：选中的牌不再提到 9999，
+       否则整张牌会压住右邻那张，看起来像「提牌把下面的牌挡住了」。
+       角标元素不参与命中判定（CSS pointer-events:none），点牌不串位。 */
     wrap.querySelectorAll('.pc').forEach(function (el, i) {
       el.style.zIndex = String(i + 1);
-      if (el.classList.contains('sel')) el.style.zIndex = '9999';
     });
     /* 首帧 handwrap 可能还没布局完（宽度 0），下一帧按真实尺寸再校准一次，
        否则手牌会一直保持最小尺寸，看起来又小又挤。 */
@@ -1662,6 +1662,16 @@ window.Game = (function () {
      以前走 floatSay：3200ms 淡出、3900ms 移除，且地址没补全 →
      显示的是默认图、几秒就消失、只有 30px 看不清细节。 */
   var bigStkTimer = null, bigStkOutTimer = null;
+  /* v61：关掉大表情必须能随时手动触发，且不能让触摸穿透到牌桌误选牌 */
+  function hideBigSticker() {
+    clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
+    var b = document.getElementById('big-sticker');
+    if (b) { b.classList.add('hidden'); b.classList.remove('out'); }
+  }
+  function quickHideBig(e) {
+    if (e && e.preventDefault) e.preventDefault();   /* 不让这次触摸穿透到牌桌 */
+    hideBigSticker();
+  }
   function showBigSticker(url, nick) {
     try {
       var box = document.getElementById('big-sticker');
@@ -1673,23 +1683,30 @@ window.Game = (function () {
       if (srvBase && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(u))
         u = srvBase + u.replace(/^https?:\/\/[^/]+/i, '');
       if (!u) return;
-      box.innerHTML = '<div class="bs-card"><span class="bs-nick">' + esc(nick || '表情') + '</span>' +
+      box.innerHTML = '<div class="bs-card">' +
+        '<span class="bs-close" aria-label="关闭">×</span>' +
+        '<span class="bs-nick">' + esc(nick || '表情') + '</span>' +
         '<img src="' + esc(u) + '" alt="" onerror="this.style.display=\'none\';this.parentNode.insertAdjacentHTML(\'beforeend\',\'<span class=bs-tip>表情加载失败，请检查服务器表情包</span>\')">' +
-        '<span class="bs-tip">3 秒后自动消失 · 点一下立即关闭</span></div>';
+        '<span class="bs-tip">点任意处立即关闭 · 3 秒后自动消失</span></div>';
       box.classList.remove('hidden');
       box.classList.remove('out');
       clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
-      /* v56：3 秒显示 → 0.3 秒渐变透明缩小 → 隐藏 */
+      /* 3 秒显示 → 0.3 秒渐变透明缩小 → 隐藏 */
       bigStkTimer = setTimeout(function () {
         box.classList.add('out');
-        bigStkOutTimer = setTimeout(function () {
-          box.classList.add('hidden'); box.classList.remove('out');
-        }, 300);
+        bigStkOutTimer = setTimeout(hideBigSticker, 300);
       }, 3000);
-      box.onclick = function () {
-        clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
-        box.classList.add('hidden'); box.classList.remove('out');
-      };
+      /* v61：整屏可点（CSS v61 层把遮罩铺满且 pointer-events:auto）。
+         touchstart / pointerdown 立即关并 preventDefault → 不等动画、
+         也不会把触摸透传给下面的手牌；click 兜底。用 on* 属性赋值，
+         每次显示都覆盖，不会累积监听器。 */
+      box.onclick = hideBigSticker;
+      if (!box.__v61Bound) {
+        box.__v61Bound = 1;   /* 只绑一次，反复发表情不会累积监听器 */
+        ['pointerdown', 'touchstart', 'mousedown'].forEach(function (t) {
+          box.addEventListener(t, quickHideBig, { passive: false });
+        });
+      }
     } catch (e) { }
   }
 
@@ -1968,6 +1985,7 @@ window.Game = (function () {
     relayout: function () { try { setScale(); if (S) { fitHand(S.hand.length); render(); } layoutRail(); } catch (e) { } },
     get state() { return S; }, get seat() { return mySeat; }, get gid() { return gid; }, get room() { return myRoom; },
     __set: function (st) { S = st; mySeat = st.mySeat | 0; try { render(); renderHand(); } catch (e) { } },
+    __showBig: function (u, n) { return showBigSticker(u, n); },  /* v61 自检钩子，不改原有行为 */
     __showRest: function (rest, cb) { return showRest(rest, cb); },
     __showResult: function (m) { return showResult(m); },
     __quick: function () { return QUICK; }, __stick: function () { return QSTICK; },

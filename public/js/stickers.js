@@ -140,6 +140,9 @@ window.Stickers = (function () {
      缓存里的旧包也走这里，避免「上次存的是相对路径、这次 WebView 是 localhost → 全破图」。 */
   function imgUrl(u) {
     if (!validUrl(u)) return '';
+    /* v61：data:/blob: 本身就是完整地址。Net.abs 一律把 origin 拼在前面，
+       会把本地导入 / 预览的动图拼成无效 URL，<img> 必然破图。 */
+    if (/^(data:|blob:)/i.test(u)) return u;
     var a = u;
     try { if (window.Net && Net.abs) a = Net.abs(u) || u; } catch (e) { }
     /* 最后一道：仍是根相对地址就拼死兜底，绝不让 <img> 去请求 localhost */

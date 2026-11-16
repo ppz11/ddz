@@ -183,6 +183,12 @@ window.Net = (function () {
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
       if (!r.ok) {
+        /* v60: 401 = 登录态过期，是业务错误不是网络故障。
+           服务端已返回 JSON {err:...}，交回上层用 r.err 判断并重新注册；
+           旧版直接 throw，导致 login() 里的兜底永远执行不到，卡在「连接服务器失败」。 */
+        if (r.status === 401) {
+          return r.json().catch(function () { return { err: '登录已失效，请重新进入' }; });
+        }
         var e = new Error('HTTP ' + r.status + ' @ ' + url);
         e.httpStatus = r.status; e.url = url; throw e;
       }

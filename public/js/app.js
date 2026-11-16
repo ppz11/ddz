@@ -546,6 +546,14 @@ window.App = (function () {
       if (r.err || !r.token) return Net.api('/api/register', { device: dev }).then(after);
       return after(r);
     }).catch(function (e) {
+      /* v60: 旧 token 在服务器上失效时，别再拿同一个 token 重试 4 次，
+         直接清掉本地登录态、按设备号重新注册，用户无感恢复。 */
+      if (e && (e.httpStatus === 401 || /HTTP 401/.test(String(e.message || '')))) {
+        try { localStorage.removeItem('ddz_auth'); } catch (x) {}
+        return Net.api('/api/register', { device: dev }).then(after).catch(function (e2) {
+          showConnError(e2); toast('连接服务器失败');
+        });
+      }
       showConnError(e);
       toast('连接服务器失败');
       if (connTries < 4) setTimeout(login, 2000);
