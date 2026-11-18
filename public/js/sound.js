@@ -9,6 +9,11 @@ window.Sfx = (function () {
   var bgmSrc = null, bgmGain = null, bgmBuf = null, bgmCtx = null;
   /* 后台状态：切后台 → 停 BGM + 挂起 AudioContext；回前台 → 恢复 */
   var hidden = false, wasPlaying = false;
+  /* v63：从后台回到前台后，先保持静音，直到用户下一次真实触摸才恢复。
+     原来 toForeground 会无条件 startBgm + resume speechSynthesis，
+     WebView 在后台暂停的播报队列/排队定时器会在回来那一刻集中放出来，
+     表现就是「结算页切后台再回来，突然冒出一串打牌声音」。 */
+  var resumeQuiet = false;
 
   /* 总线：所有音源先汇总到 busIn，经过「削高频 + 限幅」再输出。
      以前各音源直连 destination，多个音同时响会叠加削波 → 刺耳的杂音/爆音。 */
@@ -42,17 +47,25 @@ window.Sfx = (function () {
   function toBackground() {
     if (hidden) return;
     hidden = true;
+    resumeQuiet = true;
     wasPlaying = !!(bgmSrc && bgmOn && on);
     stopBgm();
-    try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) { }
+    /* 把排队中的牌型播报一并清掉，别让它在后台/回前台后补播 */
+    try { clearPendingSay(); } catch (e) { }
+    try {
+      if (window.speechSynthesis) {
+        if (speechSynthesis.pause) speechSynthesis.pause();
+        speechSynthesis.cancel();
+      }
+    } catch (e) { }
+    try { if (window.DDZNative && DDZNative.ttsStop) DDZNative.ttsStop(); } catch (e) { }
     if (ctx && ctx.suspend) { try { ctx.suspend(); } catch (e) { } }
   }
   function toForeground() {
     if (!hidden) return;
     hidden = false;
+    /* 只解锁音频上下文，不自动恢复 BGM、不自动续播语音 */
     if (ctx && ctx.resume) { try { ctx.resume(); } catch (e) { } }
-    if (wasPlaying && bgmOn && on) startBgm();
-    wasPlaying = false;
   }
   function watchVisibility() {
     var fire = function () {
@@ -71,7 +84,7 @@ window.Sfx = (function () {
   }
   if (document.addEventListener) watchVisibility();
   function tone(freq, dur, type, vol, slideTo, delay) {
-    if (!on) return;
+    if (!on || hidden || resumeQuiet) return;
     var c = ac(); if (!c) return;
     var t0 = c.currentTime + (delay || 0);
     var o = c.createOscillator(), g = c.createGain();
@@ -158,6 +171,7 @@ window.Sfx = (function () {
   }
 
   function doSpeak(u) {
+    if (hidden || resumeQuiet) return;   /* waitVoices 的延迟回调可能晚于切后台 */
     try {
       var sy = window.speechSynthesis;
       if (sy.resume) { try { sy.resume(); } catch (e) { } }
@@ -229,7 +243,7 @@ window.Sfx = (function () {
   function clearPendingSay() { if (pendingSay) { clearTimeout(pendingSay); pendingSay = null; } }
   function speakText(txt) {
     /* 音效总开关只管非牌桌场景；牌桌语音归「出牌语音播报」单独管。 */
-    if (!voiceOn || !txt) return;
+    if (!voiceOn || !txt || hidden || resumeQuiet) return;
     /* 原生优先：成功就直接返回，不再走 Web 语音（避免两条路同时出声变成重音） */
     if (nativeTtsReady()) {
       try {
@@ -487,6 +501,7 @@ window.Sfx = (function () {
      避免用户等半天都没声音（手机上很容易踩到）。 */
   var renderPending = {};
   function startBgm() {
+    if (hidden || resumeQuiet) return;
     if (!bgmOn || hidden) return;
     var c = ac(); if (!c) return;
     if (bgmSrc || liveTimer) return;
@@ -656,9 +671,15 @@ window.Sfx = (function () {
   var unlocked = false;
   function tryUnlock() {
     try {
+      if (resumeQuiet) {
+        /* 用户真的摸了一下屏幕，才解除回前台静音并恢复原本在放的 BGM */
+        resumeQuiet = false;
+        if (wasPlaying && bgmOn && on && !hidden) startBgm();
+        wasPlaying = false;
+      }
       var c = ac();
       if (c && c.state === 'suspended' && !hidden) c.resume();
-      if (!unlocked) { unlocked = true; if (bgmOn && on) startBgm(); }
+      if (!unlocked) { unlocked = true; if (bgmOn && on && !hidden) startBgm(); }
     } catch (e) { }
   }
   try {

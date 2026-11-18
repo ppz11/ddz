@@ -1081,9 +1081,9 @@ window.Game = (function () {
     if (S.phase === 'over') { z.innerHTML = ''; return; }
     if (S.turn !== mySeat) {
       /* v52：等待提示跟「不出 / 提示 / 出牌」同一个纵向位置（同一条 .acts 行内），
-         不再用屏幕居中的提示条压住我出的牌。 */
-      z.innerHTML = '<div class="acts waitrow"><div class="btn ghost waitline">等待' +
-        (S.seats[S.turn] ? esc(S.seats[S.turn].nick) : '对手') + '出牌…</div></div>';
+         不再用屏幕居中的提示条压住我出的牌。
+         v64：不再带昵称，统一写成「等待上家/下家出牌」，简单固定。 */
+      z.innerHTML = '<div class="acts waitrow"><div class="btn ghost waitline">' + waitLabel() + '</div></div>';
       return;
     }
     var need = (S.last && S.last.by !== mySeat) ? S.last.info : null;
@@ -1092,6 +1092,14 @@ window.Game = (function () {
       '<button class="btn ghost" id="btn-hint" onclick="Game.hint()">提示</button>' +
       '<button class="btn" id="btn-play" onclick="Game.play()">出牌</button></div>';
     updateActions();
+  }
+
+  /* v64：按轮到谁相对我的座位方向，给出上家/下家的固定短文案（不带昵称） */
+  function waitLabel() {
+    var n = (S && S.n) || (S && S.seats && S.seats.length) || 2;
+    var d = (((S.turn | 0) - mySeat) % n + n) % n;
+    if (n >= 3 && d === 2) return '等待上家出牌…';
+    return '等待下家出牌…';
   }
 
   /* 加倍阶段：只有「没轮到叫分」的人会看到这个界面。
@@ -1113,8 +1121,8 @@ window.Game = (function () {
       return '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.7">只有没轮到叫分的玩家可以加倍</div></div>';
     }
     if (!mine) {
-      return '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.7">等待 ' +
-        esc(who ? who.nick : '对手') + ' 依次决定是否加倍…</div></div>';
+      /* v64：同样去掉昵称，固定短文案 */
+      return '<div class="bidwrap"><div class="btn ghost" style="text-align:center;opacity:.7">等待其他玩家决定是否加倍…</div></div>';
     }
     return '<div class="bidwrap"><div style="font-size:11px;color:var(--sub);text-align:center;line-height:1.4">' +
       '地主叫 ' + bidScore + ' 分定庄，你没轮到叫分<br>只有没轮到叫分的人能加倍，叫过分的不能（当前 ×' + S.multiplier + '）</div>' +
@@ -1190,7 +1198,7 @@ window.Game = (function () {
     Sfx.cardDrop(!!(info && (info.type === 'bomb' || info.type === 'rocket')));
     if (info) Sfx.announce(info, cs);
     if (info && (info.type === 'bomb' || info.type === 'rocket')) shake();
-    App.vibeDo(18);   // 出牌震动：走原生 Vibrator，不再依赖常被禁用的 navigator.vibrate
+    App.vibeDo();     // v64：强度取设置页滑动条（默认 60ms），走原生 Vibrator
     sel = {};
     Net.send({ t: 'game:play', ids: cs.map(function (c) { return c.id; }) });
   }
@@ -1672,6 +1680,24 @@ window.Game = (function () {
     if (e && e.preventDefault) e.preventDefault();   /* 不让这次触摸穿透到牌桌 */
     hideBigSticker();
   }
+  /* v62：按文件头嗅探真实图片类型。服务端表情上传时 mime 常为空、
+     文件名又没后缀（如 1badb5a8...），/api/file 只能回 application/octet-stream，
+     部分 WebView 会直接拒绝渲染 <img> —— 这正是「表情加载失败」的高发原因。 */
+  function sniffMime(buf) {
+    try {
+      var b = new Uint8Array(buf), h = '';
+      for (var i = 0; i < Math.min(12, b.length); i++) {
+        var s = b[i].toString(16); h += (s.length < 2 ? '0' : '') + s;
+      }
+      if (/^474946383(961|761)/.test(h)) return 'image/gif';
+      if (/^89504e470d0a1a0a/.test(h)) return 'image/png';
+      if (/^ffd8ff/.test(h)) return 'image/jpeg';
+      if (/^52494646/.test(h) && h.slice(16, 24) === '57454250') return 'image/webp';
+      if (/^424d/.test(h)) return 'image/bmp';
+      if (/^3c737667/i.test(h) || /^3c3f786d/i.test(h)) return 'image/svg+xml';
+    } catch (e) { }
+    return '';
+  }
   function showBigSticker(url, nick) {
     try {
       var box = document.getElementById('big-sticker');
@@ -1682,12 +1708,53 @@ window.Game = (function () {
       var srvBase = (window.APP_SERVER || '').replace(/\/$/, '');
       if (srvBase && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(u))
         u = srvBase + u.replace(/^https?:\/\/[^/]+/i, '');
+      /* v62：同 origin 的 /api/file/... 改走相对路径，避开 WebView 里
+         APP_SERVER 注入成旧地址 / 代理解析差异导致的 404。不同源时保持绝对地址。 */
+      try {
+        var au = new URL(u, location.href);
+        if (au.origin === location.origin && /^\/api\/file\//.test(au.pathname))
+          u = au.pathname + au.search;
+      } catch (e) { }
       if (!u) return;
       box.innerHTML = '<div class="bs-card">' +
         '<span class="bs-close" aria-label="关闭">×</span>' +
         '<span class="bs-nick">' + esc(nick || '表情') + '</span>' +
-        '<img src="' + esc(u) + '" alt="" onerror="this.style.display=\'none\';this.parentNode.insertAdjacentHTML(\'beforeend\',\'<span class=bs-tip>表情加载失败，请检查服务器表情包</span>\')">' +
+        '<img alt="">' +
         '<span class="bs-tip">点任意处立即关闭 · 3 秒后自动消失</span></div>';
+      var img = box.querySelector('img');
+      var failed = false;
+      function fail(msg) {
+        if (failed || !img || !img.parentNode) return;
+        failed = true;
+        img.style.display = 'none';
+        var t = document.createElement('span');
+        t.className = 'bs-tip';
+        t.textContent = '表情加载失败：' + msg;
+        img.parentNode.insertBefore(t, img.nextSibling);
+      }
+      /* v62：先 fetch 原始字节 → 按魔数重建带正确 type 的 Blob → objectURL。
+         这样 GIF/APNG/WebP 动图能播，且完全不依赖服务端 Content-Type。
+         fetch 不可用（老 WebView 的 data:/blob:）时回退到直连 <img src>。 */
+      function direct(reason) {
+        img.onerror = function () { fail(reason || '图片地址打不开'); };
+        img.src = u;
+      }
+      try {
+        fetch(u, { credentials: 'same-origin', cache: 'no-store' })
+          .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status + ' · ' + u);
+            return r.arrayBuffer();
+          })
+          .then(function (buf) {
+            if (!buf || !buf.byteLength) throw new Error('空文件 · ' + u);
+            var mime = sniffMime(buf) || 'image/png';
+            var obj = URL.createObjectURL(new Blob([buf], { type: mime }));
+            img.onerror = function () { try { URL.revokeObjectURL(obj); } catch (e) { } fail('图片解码失败'); };
+            img.src = obj;
+            setTimeout(function () { try { URL.revokeObjectURL(obj); } catch (e) { } }, 30000);
+          })
+          .catch(function (e) { direct(String(e && e.message || e)); });
+      } catch (e) { direct('此环境不支持 fetch'); }
       box.classList.remove('hidden');
       box.classList.remove('out');
       clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
@@ -1696,13 +1763,11 @@ window.Game = (function () {
         box.classList.add('out');
         bigStkOutTimer = setTimeout(hideBigSticker, 300);
       }, 3000);
-      /* v61：整屏可点（CSS v61 层把遮罩铺满且 pointer-events:auto）。
-         touchstart / pointerdown 立即关并 preventDefault → 不等动画、
-         也不会把触摸透传给下面的手牌；click 兜底。用 on* 属性赋值，
-         每次显示都覆盖，不会累积监听器。 */
+      /* v61：整屏可点，touchstart / pointerdown 立即关并 preventDefault，
+         不等动画、不穿透到牌桌；click 兜底。每次显示覆盖 on*，不累积监听器。 */
       box.onclick = hideBigSticker;
       if (!box.__v61Bound) {
-        box.__v61Bound = 1;   /* 只绑一次，反复发表情不会累积监听器 */
+        box.__v61Bound = 1;
         ['pointerdown', 'touchstart', 'mousedown'].forEach(function (t) {
           box.addEventListener(t, quickHideBig, { passive: false });
         });
@@ -1950,9 +2015,9 @@ window.Game = (function () {
     if (r.spring) txt.push('春天 ×2');
     if (r.antiSpring) txt.push('反春天 ×2');
     txt.push('总倍数 ×' + r.multiplier);
-    // 金币：底分 100 × 倍数；地主在三人场输赢翻倍
+    // v64 金币：底分 10 × 倍数（不加倍每局 ±10）；地主在三人场输赢翻倍
     var d = lastResultMeta.coinDelta;
-    var base = 100 * (r.multiplier || 1);
+    var base = 10 * (r.multiplier || 1);
     if (!d) d = (iWin ? 1 : -1) * base * ((m.n || 2) === 3 && r.landlord === me ? 2 : 1);
     var coinLine = '<div class="coinline">' +
       '<span>金币</span>' +

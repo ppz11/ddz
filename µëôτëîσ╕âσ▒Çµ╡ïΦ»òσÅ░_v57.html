@@ -42,6 +42,33 @@
   @media(max-width:600px){.stage{min-height:0;padding:8px;align-items:flex-start}
     .wrap{padding:8px;gap:8px}.bar{padding:5px 8px;flex-wrap:wrap}
     header{padding:10px 12px}.hint{font-size:11px}}
+
+/* v63 同步层 */
+/* ============================================================
+ * v63 真机反馈修正层
+ * ============================================================ */
+/* ① 右上角金币：只在对战（牌桌）页显示；大厅 / 聊天 / 我的页去掉。
+   「我的」页昵称下面那行 .coinrow 保留，仍显示金币。 */
+#topbar .coin{display:none!important}
+body.in-play #topbar .coin{display:flex!important}
+
+/* ② 玩法弹窗：× 放弹窗内右上角，「知道了」靠右 */
+.modal .box{position:relative}
+.modal .tipx{position:absolute;top:8px;right:10px;width:30px;height:30px;
+  display:grid;place-items:center;font-size:16px;line-height:1;color:var(--sub);
+  cursor:pointer;border-radius:50%;z-index:2;user-select:none}
+.modal .tipx:active{background:rgba(255,255,255,.12);color:#fff}
+.modal .tip-foot{display:flex;justify-content:flex-end;margin-top:2px}
+.modal .tip-foot .btn{width:auto;min-width:96px;padding:10px 20px;letter-spacing:0;font-size:14px}
+
+/* ③ 软键盘避让时 #app 被压缩，会话内部滚动区域仍可正常滚动 */
+.thread .msgs{min-height:0}
+.composer{flex:0 0 auto}
+
+/* ④ 好友空间「添加」输入框：长按粘贴菜单一定要能弹出来 */
+.frbox .fr-addrow input,#sfr-q,#s-input{-webkit-user-select:text!important;user-select:text!important}
+
+/* end v63 真机反馈修正层 */
 </style></head><body>
 <header>
   <h1>PP斗地主 · 打牌布局测试台 <small style="font-size:15px;background:#f3c96b;color:#3a2607;padding:3px 10px;border-radius:9px">v57</small></h1>

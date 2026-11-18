@@ -492,15 +492,12 @@ window.Secret = (function () {
       var inp = box.querySelector('#sfr-q');
       var fill = function (t) {
         if (t && t.trim()) { inp.value = t.trim(); inp.focus(); App.toast('已粘贴'); }
-        else App.toast('剪贴板是空的');
+        else { App.toast('剪贴板是空的，可长按输入框选「粘贴」'); inp.focus(); }
       };
-      try {
-        if (navigator.clipboard && navigator.clipboard.readText) {
-          navigator.clipboard.readText().then(fill).catch(function () {
-            App.toast('请长按输入框选择「粘贴」'); inp.focus();
-          });
-        } else { App.toast('请长按输入框选择「粘贴」'); inp.focus(); }
-      } catch (e) { App.toast('请长按输入框选择「粘贴」'); inp.focus(); }
+      /* v63：http 页面 navigator.clipboard.readText 通常不可用，
+         优先读 App 内部剪贴板（由聊天页「复制对方 UID」写入）。 */
+      if (window.DDZPaste) window.DDZPaste(fill);
+      else fill('');
     };
     box.querySelector('#sfr-add').onclick = function () {
       var q = (box.querySelector('#sfr-q').value || '').trim();

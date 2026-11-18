@@ -1,6 +1,6 @@
 /* ===================== 主应用 ===================== */
 window.App = (function () {
-  var me = null, page = 'home', rule = 'let46';
+  var me = null, page = 'home', rule = 'duo37';
   /* 隐私伪装默认关闭：开启后会话内容会被伪装成「邀请你开局」，
      语音/图片/视频/文件将无法正常显示，只有需要防偷看时才手动打开 */
   /* 四个开关各管各的：
@@ -17,9 +17,11 @@ window.App = (function () {
     /* 出牌语音播报的语速 / 音调：拖滑钮即时生效，试听提示音听的就是调后的效果 */
     rate: 1.08, pitch: 1.0,
     /* 新消息提醒：与「音效」开关完全独立，只管后台/未读消息的提示音与震动 */
-    msgSound: true, msgVibe: true
+    msgSound: true, msgVibe: true,
+    /* v64：出牌震动强度（毫秒），设置页滑动条可调 10~200 */
+    vibeMs: 60
   };
-  var createCfg = { mode: 'duo', rule: 'let46' };
+  var createCfg = { mode: 'duo', rule: 'duo37' };
   var contacts = [], onlineUsers = [], allUsers = [], fakeOnline = 0, invited = new Set();
   var hist = [];
 
@@ -408,9 +410,10 @@ window.App = (function () {
   }
   /* 一次性提示弹窗（带关闭按钮）：玩法说明等，点掉就不再出现 */
   function firstTipOf(title, body, cb) {
-    var m = modal('<h3>' + esc(title) + '</h3><p>' + esc(body) + '</p>' +
-      '<div class="row"><button class="btn jade" data-a="1">知道了</button></div>' +
-      '<div class="tipx" data-a="0">✕</div>');
+    /* v63：× 放弹窗内右上角，「知道了」靠右，符合一般操作习惯 */
+    var m = modal('<div class="tipx" data-a="0">✕</div>' +
+      '<h3>' + esc(title) + '</h3><p>' + esc(body) + '</p>' +
+      '<div class="tip-foot"><button class="btn jade" data-a="1">知道了</button></div>');
     m.el.querySelectorAll('[data-a]').forEach(function (b) {
       b.onclick = function () { m.close(); cb && cb(); };
     });
@@ -421,7 +424,8 @@ window.App = (function () {
      表现就是「开了出牌震动，打牌时一点都不震」。 */
   function vibeDo(ms) {
     if (!settings.vibe) return;
-    var n = Math.max(1, ms || 12);
+    /* v64：默认取设置页滑动条的强度；原来 18ms 在多数 ROM 上几乎感觉不到 */
+    var n = Math.max(1, ms || settings.vibeMs || 60);
     try {
       if (window.DDZNative && DDZNative.vibrate) { DDZNative.vibrate(n); return; }
     } catch (e) { }
@@ -715,13 +719,15 @@ window.App = (function () {
       });
     };
     bind('sel-mode', 'mode', function () {
-      var box = document.getElementById('sel-rule');
+      /* v63：三人斗地主固定 54 张，整个「玩法规则」卡片不显示；
+         双人只留 37 张叫分加倍 / 37 张减牌竞叫两种。 */
       var trio = createCfg.mode === 'trio';
-      box.style.opacity = trio ? .45 : 1;
-      box.style.pointerEvents = trio ? 'none' : 'auto';
-      var note = document.getElementById('rule-note');
+      var rb = document.getElementById('rule-box');
+      if (rb) rb.style.display = trio ? 'none' : '';
+      var box = document.getElementById('sel-rule');
+      if (box) { box.style.opacity = trio ? .45 : 1; box.style.pointerEvents = trio ? 'none' : 'auto'; }
       if (trio) createCfg.rule = 'trio54';
-      else if (createCfg.rule === 'trio54') createCfg.rule = 'let46';
+      else if (createCfg.rule !== 'cut37') createCfg.rule = 'duo37';
       updateRuleNote();
       syncCreateUI();
     });
@@ -748,9 +754,7 @@ window.App = (function () {
     }
     note.textContent = createCfg.rule === 'cut37'
       ? '37 张减牌竞叫：首叫减1/减2，之后只能 +1 或 +2；一旦有人不叫立刻定庄；不设主动加倍，春天/炸弹照常翻倍'
-      : createCfg.rule === 'duo37'
-        ? '37 张叫分加倍：叫分 1~3 分且必须比上家高，只有没轮到叫分的人能加倍'
-        : '46 张叫分加倍：叫分 1~3 分且必须比上家高，只有没轮到叫分的人能加倍';
+      : '37 张叫分加倍：叫分 1~3 分且必须比上家高，只有没轮到叫分的人能加倍';
   }
   function syncCreateUI() {
     ['mode', 'rule'].forEach(function (k) {
@@ -761,11 +765,10 @@ window.App = (function () {
       });
     });
     var box = document.getElementById('sel-rule');
-    if (box) {
-      var trio = createCfg.mode === 'trio';
-      box.style.opacity = trio ? .45 : 1;
-      box.style.pointerEvents = trio ? 'none' : 'auto';
-    }
+    var trio = createCfg.mode === 'trio';
+    if (box) { box.style.opacity = trio ? .45 : 1; box.style.pointerEvents = trio ? 'none' : 'auto'; }
+    var rb = document.getElementById('rule-box');
+    if (rb) rb.style.display = trio ? 'none' : '';
   }
 
   /* 创建房间页：把所有真人玩家列为可邀请对象 */
@@ -1108,6 +1111,21 @@ window.App = (function () {
       var sr = document.getElementById('sl-rate'), sp = document.getElementById('sl-pitch');
       if (sr) { sr.value = settings.rate; var lr = document.getElementById('lb-rate'); if (lr) lr.textContent = settings.rate.toFixed(2); }
       if (sp) { sp.value = settings.pitch; var lp = document.getElementById('lb-pitch'); if (lp) lp.textContent = settings.pitch.toFixed(2); }
+      /* v64：出牌震动强度滑动条 —— 拖动即时试震，松开即保存 */
+      if (typeof settings.vibeMs !== 'number') settings.vibeMs = 60;
+      settings.vibeMs = Math.max(10, Math.min(200, Math.round(settings.vibeMs / 10) * 10));
+      var vm = document.getElementById('sl-vibems'), vl = document.getElementById('lb-vibems');
+      if (vm) {
+        vm.value = settings.vibeMs; if (vl) vl.textContent = settings.vibeMs + 'ms';
+        vm.oninput = function () {
+          settings.vibeMs = parseInt(vm.value, 10) || 60;
+          if (vl) vl.textContent = settings.vibeMs + 'ms';
+          vibeDo(settings.vibeMs);
+          saveSettings();
+        };
+      }
+      var vt = document.getElementById('row-vibetest');
+      if (vt) vt.onclick = function () { vibeDo(settings.vibeMs || 60); toast('已试震 ' + (settings.vibeMs || 60) + 'ms'); };
       try { Sfx.setTune(settings.rate, settings.pitch); } catch (e) {}
       /* 隐私伪装开关已从「我的」页移除（它会把语音/图片全部藏掉，容易误开），
          默认保持关闭，保证媒体能正常显示；好友空间里那个开关仍可手动打开。

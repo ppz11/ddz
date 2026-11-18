@@ -1,0 +1,704 @@
+/* ============================================================
+ *  斗地主核心规则引擎（服务端 / 前端共用同一份）
+ *  支持四种玩法：
+ *    let46     二人 46 张（去掉 3、4），叫分抢地主 + 加倍，先出完者胜
+ *    duo37     二人 37 张（54 张随机去掉 17 张），叫分抢地主 + 加倍，先出完者胜
+ *    cut37     二人 37 张「减牌竞叫」：竞叫减 N 张定地主，农民剩 <=N 张即胜；
+ *              不设玩家主动加倍，但春天/反春天/炸弹照常翻倍，基础倍数 1
+ *    trio54    三人 54 张，叫分抢地主 + 加倍，农民一方出完即胜
+ *
+ *  v46 规则（逐条与用户确认后实现）：
+ *   · 三人只有 54 张；二人可选 46 张 / 37 张；37 张建房时选「叫分加倍」或「减牌」
+ *   · 叫分 1~3 分，每人仅一次机会，后叫者必须严格高于当前最高分；叫满 3 分提前定庄
+ *   · 加倍权只属于「叫分提前结束、从头到尾没轮到叫分」的玩家；一人 x2、两人 x4
+ *     轮到叫分但选了不叫、以及叫过分的玩家，都不能加倍
+ *   · 减牌：首叫「减1 / 减2 / 不叫」，之后「上家+1 / 上家+2 / 不叫」；
+ *     一旦有人不叫立刻定庄：最后叫数字的人当地主，不叫的人当农民，门槛 N = 最后那个数字；
+ *     首叫直接不叫 → 对方当地主、N = 1；减牌玩法没有「玩家主动加倍」阶段，
+ *     但结算时春天/反春天/炸弹/王炸照常翻倍（基础倍数 1，不拿 N 当底分）
+ *   · 减牌胜负：农民手牌 <=N 当场立刻判农民胜；地主必须赶在农民降到 N 张之前出完才算赢
+ * ============================================================ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.DDZ = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var SUITS = ['S', 'H', 'C', 'D'];
+  var SUIT_CHAR = { S: '♠', H: '♥', C: '♣', D: '♦', J: '' };
+  var RANKS = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
+  var RANK_VAL = { '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14, '2': 15, 'w': 16, 'W': 17 };
+
+  function makeDeck(rule, rnd) {
+    rnd = rnd || Math.random;
+    var cards = [], id = 0;
+    RANKS.forEach(function (r) {
+      if (rule === 'let46' && (r === '3' || r === '4')) return;
+      SUITS.forEach(function (s) {
+        cards.push({ id: 'c' + (id++), r: r, s: s, v: RANK_VAL[r], red: (s === 'H' || s === 'D') });
+      });
+    });
+    cards.push({ id: 'c' + (id++), r: 'w', s: 'J', v: 16, red: false, joker: 'small' });
+    cards.push({ id: 'c' + (id++), r: 'W', s: 'J', v: 17, red: true, joker: 'big' });
+    // 双人经典玩法：54 张随机去掉 17 张 → 37 张（17+17+3 底牌）
+    // 这里保留完整 54 张，由 newGame 发牌后把剩下的 17 张归入 dead（结算时公开为「封印废牌」）
+    return cards;
+  }
+  function shuffle(arr, rnd) {
+    rnd = rnd || Math.random;
+    for (var i = arr.length - 1; i > 0; i--) {
+      var j = Math.floor(rnd() * (i + 1));
+      var t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
+  }
+  function sortCards(cards) {
+    return cards.slice().sort(function (a, b) { return b.v - a.v || a.s.localeCompare(b.s); });
+  }
+  function byId(hand, ids) {
+    var m = {}; hand.forEach(function (c) { m[c.id] = c; });
+    return ids.map(function (i) { return m[i]; }).filter(Boolean);
+  }
+  function counts(cards) {
+    var m = {};
+    cards.forEach(function (c) { m[c.v] = (m[c.v] || 0) + 1; });
+    return m;
+  }
+
+  /* ---------------- 牌型识别 ---------------- */
+  function parse(cards) {
+    if (!cards || !cards.length) return null;
+    var n = cards.length, cnt = counts(cards), i, j;
+    var vals = Object.keys(cnt).map(Number).sort(function (a, b) { return a - b; });
+
+    if (n === 2 && cnt[16] === 1 && cnt[17] === 1) return { type: 'rocket', main: 100, len: 2, name: '王炸' };
+    if (n === 4 && vals.length === 1) return { type: 'bomb', main: vals[0], len: 4, name: '炸弹' };
+    if (vals.length === 1) {
+      if (n === 1) return { type: 'single', main: vals[0], len: 1, name: '单张' };
+      if (n === 2 && vals[0] < 16) return { type: 'pair', main: vals[0], len: 2, name: '对子' };
+      if (n === 3) return { type: 'triple', main: vals[0], len: 3, name: '三张' };
+    }
+    if (n === 4 && vals.length === 2) {
+      for (i = 0; i < 2; i++) if (cnt[vals[i]] === 3) return { type: 'triple1', main: vals[i], len: 4, name: '三带一' };
+    }
+    if (n === 5 && vals.length === 2) {
+      for (i = 0; i < 2; i++) if (cnt[vals[i]] === 3) return { type: 'triple2', main: vals[i], len: 5, name: '三带一对' };
+    }
+    if (n >= 5 && vals.length === n && isRun(vals) && vals[vals.length - 1] <= 14)
+      return { type: 'straight', main: vals[vals.length - 1], len: n, name: '顺子' };
+    if (n >= 6 && n % 2 === 0 && vals.length === n / 2 && allEq(cnt, vals, 2) && isRun(vals) && vals[vals.length - 1] <= 14)
+      return { type: 'dstraight', main: vals[vals.length - 1], len: n, name: '连对' };
+    if (n >= 6 && n % 3 === 0 && vals.length === n / 3 && allEq(cnt, vals, 3) && isRun(vals) && vals[vals.length - 1] <= 14)
+      return { type: 'plane', main: vals[vals.length - 1], len: n, name: '飞机' };
+
+    var triples = vals.filter(function (v) { return cnt[v] >= 3 && v <= 14; });
+    var quads = vals.filter(function (v) { return cnt[v] === 4; });
+    if (quads.length === 1) {
+      var q = quads[0], rest = n - 4;
+      if (rest === 2) return { type: 'four2', main: q, len: 6, name: '四带二' };
+      if (rest === 4) {
+        var others = vals.filter(function (v) { return v !== q; });
+        if (others.length === 2 && others.every(function (v) { return cnt[v] === 2; }))
+          return { type: 'four2p', main: q, len: 8, name: '四带两对' };
+      }
+    }
+    if (triples.length >= 2) {
+      var best = null;
+      for (i = 0; i < triples.length; i++) {
+        var run = [triples[i]];
+        for (j = i + 1; j < triples.length; j++) {
+          if (triples[j] === run[run.length - 1] + 1) run.push(triples[j]); else break;
+        }
+        if (!best || run.length > best.length) best = run;
+      }
+      if (best && best.length >= 2) {
+        var k = best.length, wing = n - 3 * k, okS = true, okP = true;
+        if (wing === k) {
+          vals.forEach(function (v) { if (best.indexOf(v) < 0 && cnt[v] > 2) okS = false; });
+          if (okS) return { type: 'plane1', main: best[k - 1], len: n, name: '飞机带单' };
+        }
+        if (wing === 2 * k) {
+          vals.forEach(function (v) {
+            if (best.indexOf(v) < 0) { if (cnt[v] !== 2) okP = false; }
+            else { if (cnt[v] - 3 !== 0) okP = false; }
+          });
+          if (okP) return { type: 'plane2', main: best[k - 1], len: n, name: '飞机带对' };
+        }
+      }
+    }
+    return null;
+  }
+  /* ---------------- 牌型播报文案（用于出牌语音提示） ---------------- */
+  var RANK_NAME = { 3: '3', 4: '4', 5: '5', 6: '6', 7: '7', 8: '8', 9: '9', 10: '10',
+    11: 'J', 12: 'Q', 13: 'K', 14: 'A', 15: '2', 16: '小王', 17: '大王' };
+  function rankName(v) { return RANK_NAME[v] || String(v); }
+  /* 返回适合朗读的中文短语，如「一张 5」「对 K」「三带一」「5 到 10 的顺子」 */
+  /* 从「牌组」里找出带的翅膀（三带一/三带二/四带二要念出具体点数，
+     以前只说「三带一」，听的人根本不知道带的是什么）。 */
+  function wingText(cards, mainV, take) {
+    if (!cards || !cards.length) return '';
+    var cnt = counts(cards);
+    var kv = Object.keys(cnt).map(Number).filter(function (v) { return v !== mainV; })
+      .sort(function (a, b) { return a - b; });
+    if (!kv.length) return '';
+    /* v40：这里只返回「点数」，量词由 speak() 加。
+       以前 take===2 返回「一对3」，speak 又拼「带一对」，念成「三张5带一对一对3」。 */
+    var parts = kv.map(function (v) { return rankName(v); });
+    return parts.join('、');
+  }
+  function speak(info, cards) {
+    if (!info) return '过';
+    var n = info.name, t = info.type, m = info.main;
+    if (t === 'rocket') return '王炸';
+    if (t === 'bomb') return '炸弹';
+    if (t === 'single') return (m >= 16 ? '' : '一张 ') + rankName(m);
+    if (t === 'pair') return '一对' + rankName(m);
+    if (t === 'triple') return '三张' + rankName(m);
+    if (t === 'triple1') { var w1 = wingText(cards, m, 1); return '三张' + rankName(m) + '带一张' + (w1 || rankName(m)); }
+    if (t === 'triple2') { var w2 = wingText(cards, m, 2); return '三张' + rankName(m) + '带一对' + (w2 || rankName(m)); }
+    if (t === 'four2') { var w3 = wingText(cards, m, 1); return '四个' + rankName(m) + '带两张' + (w3 || rankName(m)); }
+    if (t === 'four2p') { var w4 = wingText(cards, m, 2); return '四个' + rankName(m) + '带两对' + (w4 || rankName(m)); }
+    if (t === 'straight') {
+      var lo = m - info.len + 1;
+      return rankName(lo) + '到' + rankName(m) + '的顺子';
+    }
+    if (t === 'dstraight') {
+      var lo2 = m - info.len / 2 + 1;
+      return rankName(lo2) + '到' + rankName(m) + '的连对';
+    }
+    if (t === 'plane') return '飞机';
+    if (t === 'plane1') return '飞机带单';
+    if (t === 'plane2') return '飞机带对';
+    return n || '';
+  }
+
+  function isRun(v) { for (var i = 1; i < v.length; i++) if (v[i] !== v[i - 1] + 1) return false; return true; }
+  function allEq(cnt, vals, num) { return vals.every(function (v) { return cnt[v] === num; }); }
+
+  function beats(cur, prev) {
+    if (!cur) return false;
+    if (!prev) return true;
+    if (cur.type === 'rocket') return true;
+    if (prev.type === 'rocket') return false;
+    if (cur.type === 'bomb' && prev.type !== 'bomb') return true;
+    if (prev.type === 'bomb' && cur.type !== 'bomb') return false;
+    if (cur.type === 'bomb' && prev.type === 'bomb') return cur.main > prev.main;
+    return cur.type === prev.type && cur.len === prev.len && cur.main > prev.main;
+  }
+
+  /* ---------------- 枚举可出的牌 ---------------- */
+  function allMoves(hand) {
+    var res = [], i, len, j;
+    var cnt = counts(hand);
+    var vals = Object.keys(cnt).map(Number).sort(function (a, b) { return a - b; });
+    function pick(v, n) {
+      var out = [], got = 0;
+      for (var x = 0; x < hand.length && got < n; x++) if (hand[x].v === v) { out.push(hand[x].id); got++; }
+      return got === n ? out : null;
+    }
+    function rest(ex, num) {
+      var pool = hand.filter(function (c) { return ex.indexOf(c.v) < 0; });
+      var c2 = counts(pool);
+      var safe = pool.filter(function (c) { return c2[c.v] < 4; });
+      var use = safe.length >= num ? safe : pool;
+      use = use.sort(function (a, b) { return a.v - b.v || (cnt[a.v] - cnt[b.v]); });
+      return use.slice(0, num).map(function (c) { return c.id; });
+    }
+    vals.forEach(function (v) {
+      if (cnt[v] >= 1) res.push(pick(v, 1));
+      if (cnt[v] >= 2 && v < 16) res.push(pick(v, 2));
+      if (cnt[v] >= 3) res.push(pick(v, 3));
+      if (cnt[v] === 4) res.push(pick(v, 4));
+      if (cnt[v] >= 3 && v <= 14) {
+        var t = pick(v, 3), w1 = rest([v], 1), w2 = null;
+        var pv = vals.filter(function (x) { return x !== v && cnt[x] >= 2 && x < 16; })[0];
+        if (pv) w2 = pick(pv, 2);
+        if (w1 && w1.length === 1) res.push(t.concat(w1));
+        if (w2) res.push(t.concat(w2));
+      }
+    });
+    if (cnt[16] && cnt[17]) res.push([pick(16, 1)[0], pick(17, 1)[0]]);
+    var uniq = vals.filter(function (v) { return v <= 14; });
+    for (i = 0; i < uniq.length; i++) {
+      for (len = 5; len <= 12; len++) {
+        var seg = [];
+        for (j = 0; j < len; j++) { if (uniq.indexOf(uniq[i] + j) < 0) break; seg.push(uniq[i] + j); }
+        if (seg.length === len && uniq[i] + len - 1 <= 14) {
+          res.push(seg.map(function (v) { return pick(v, 1)[0]; }));
+          if (seg.every(function (v) { return cnt[v] >= 2; })) res.push(seg.reduce(function (a, v) { return a.concat(pick(v, 2)); }, []));
+          if (seg.every(function (v) { return cnt[v] >= 3; })) res.push(seg.reduce(function (a, v) { return a.concat(pick(v, 3)); }, []));
+        }
+      }
+    }
+    /* 四带二 / 四带两对：以前这里完全没枚举，
+       对手出四带二时提示永远说「没有能压过的牌」，实际手上有也压不了。 */
+    vals.forEach(function (v) {
+      if (cnt[v] !== 4) return;
+      var q = pick(v, 4);
+      var w = rest([v], 2);
+      if (w && w.length === 2) res.push(q.concat(w));
+      var pw = rest([v], 4);
+      if (pw && pw.length === 4) {
+        var pc = counts(byId(hand, pw));
+        var ks = Object.keys(pc).map(Number);
+        if (ks.length === 2 && pc[ks[0]] === 2 && pc[ks[1]] === 2) res.push(q.concat(pw));
+      }
+    });
+    /* 飞机带单 / 飞机带对：同样漏了枚举 */
+    var tri = vals.filter(function (v) { return cnt[v] >= 3 && v <= 14; });
+    for (i = 0; i < tri.length; i++) {
+      var run = [tri[i]];
+      for (j = i + 1; j < tri.length; j++) {
+        if (tri[j] === run[run.length - 1] + 1) run.push(tri[j]); else break;
+      }
+      if (run.length < 2) continue;
+      for (var take = 2; take <= run.length; take++) {
+        var seg2 = run.slice(0, take);
+        var body = seg2.reduce(function (a, v) { return a.concat(pick(v, 3)); }, []);
+        /* 纯飞机（不带翅膀）：上面那条顺子循环从 5 连起步，
+           而飞机只要 2 连三张 —— 所以以前手里有飞机也提示不出来。 */
+        res.push(body);
+        var w1 = rest(seg2, take);
+        if (w1 && w1.length === take) res.push(body.concat(w1));
+        var w2 = rest(seg2, take * 2);
+        if (w2 && w2.length === take * 2) {
+          var wc = counts(byId(hand, w2));
+          if (Object.keys(wc).every(function (k) { return wc[k] === 2; })) res.push(body.concat(w2));
+        }
+      }
+    }
+    return res.filter(function (m) { return m && m.length && parse(byId(hand, m)); });
+  }
+  /* 手牌结构评估：把牌尽量拆成「成型牌型」，拆不出来的散牌越多越差。
+     以前只看「这一手有没有拆同点数」，所以经常出现：
+     手上有 3-4-5-6-7 的顺子，提示却让你出一张 5 —— 顺子就这么被拆散了。
+     这里改成看「出完这一手之后，剩下的牌还剩多少成型牌型」。 */
+  var STRUCT_CACHE = {};
+  function shapeOf(arr) {
+    var key = arr.map(function (c) { return c.v; }).sort(function (a, b) { return a - b; }).join(',');
+    if (STRUCT_CACHE[key]) return STRUCT_CACHE[key];
+    var cnt = counts(arr);
+    var vs = Object.keys(cnt).map(Number).sort(function (a, b) { return a - b; });
+    var left = {}; vs.forEach(function (v) { left[v] = cnt[v]; });
+    var meld = 0, orph = 0;
+    // 1) 炸弹
+    vs.forEach(function (v) { if (left[v] === 4) { meld++; left[v] = 0; } });
+    // 2) 顺子：从最长的开始拿，避免贪心把长顺拆成两个短顺
+    for (var len = 12; len >= 5; len--) {
+      var found = true;
+      while (found) {
+        found = false;
+        for (var i = 0; i + len <= vs.length; i++) {
+          var ok = true;
+          for (var j = 0; j < len; j++) {
+            if (vs[i + j] !== vs[i] + j || left[vs[i + j]] < 1) { ok = false; break; }
+          }
+          if (!ok) continue;
+          for (var k = 0; k < len; k++) left[vs[i + k]]--;
+          meld++; found = true; break;
+        }
+      }
+    }
+    // 3) 剩下按点数成组
+    vs.forEach(function (v) {
+      var n = left[v];
+      if (n === 3) meld++;                       // 三张（可带牌）
+      else if (n === 2) meld += 0.5;             // 对子
+      else if (n === 1) orph++;                  // 散牌：最差
+    });
+    var r = { meld: meld, orph: orph };
+    STRUCT_CACHE[key] = r;
+    return r;
+  }
+
+  /* 候选打分：越小越优先（兼顾「不拆牌 / 不大材小用 / 能顺出去 / 保住成型牌型」） */
+  function moveCost(hand, m, info, prev) {
+    var cnt = counts(hand);
+    var use = {};
+    m.forEach(function (id) {
+      for (var i = 0; i < hand.length; i++) if (hand[i].id === id) { use[hand[i].v] = (use[hand[i].v] || 0) + 1; break; }
+    });
+    var s = 0;
+    // 拆牌惩罚
+    Object.keys(use).forEach(function (v) {
+      var have = cnt[v], take = use[v];
+      if (have === 2 && take === 1) s += 14;
+      if (have === 3 && take < 3) s += 20;
+      if (have === 4 && take < 4) s += 70;          // 绝不轻易拆炸弹
+      if (have >= 3 && take === 1 && have - take >= 2) s += 6;
+    });
+    var t = info.type, main = info.main;
+    if (t === 'bomb') s += 260;                      // 炸弹压到最后
+    if (t === 'rocket') s += 400;
+    if (main >= 16) s += 46;                         // 小王
+    if (main === 17) s += 26;                        // 大王
+    if (main === 15) s += 18;                        // 2
+    if (main === 14) s += 8;                         // A
+    s += main * 1.6;                                 // 先出小牌
+    if (t === 'straight' || t === 'dstraight' || t === 'plane' || t === 'plane1' || t === 'plane2') s -= m.length * 4.5;
+    if (t === 'triple1' || t === 'triple2' || t === 'four2' || t === 'four2p') s -= 3;
+    // 跟牌时：刚好压过最好，差距越大越亏
+    if (prev && prev.type === t) s += Math.max(0, (main - prev.main)) * 3.2;
+
+    /* 结构惩罚：出完这一手后，剩下的牌被拆得越散越亏。
+       以前只看单点拆牌，长顺子被拆、三张被拆都判不出来。 */
+    try {
+      var rest = hand.filter(function (c) { return m.indexOf(c.id) < 0; });
+      var sh0 = shapeOf(hand), sh1 = shapeOf(rest);
+      // 成型牌型变少 → 罚；散牌变多 → 重罚
+      s += (sh0.meld - sh1.meld) * 16;
+      s += (sh1.orph - sh0.orph) * 9;
+      // 剩的牌越少，结构越不重要（快出完了就别抠结构）
+      var ratio = rest.length / Math.max(1, hand.length);
+      s *= (0.45 + 0.55 * ratio);
+    } catch (e) { }
+    return s;
+  }
+
+  /* 返回按「推荐程度」排序的候选列表（最好的在最前） */
+  function hintOptions(hand, prev) {
+    var ok = [];
+    allMoves(hand).forEach(function (m) {
+      var p = parse(byId(hand, m));
+      if (!p || !beats(p, prev)) return;
+      ok.push({ ids: m, info: p, cost: moveCost(hand, m, p, prev) });
+    });
+    if (!ok.length) return [];
+    ok.sort(function (a, b) {
+      if (a.cost !== b.cost) return a.cost - b.cost;
+      if (a.info.main !== b.info.main) return a.info.main - b.info.main;
+      return a.ids.length - b.ids.length;
+    });
+    return ok;
+  }
+
+  /* 智能提示
+   * ctx = { cycle: 第几次按提示（用于轮换候选）, urgent: 对手快赢了（可动用炸弹） }
+   */
+  function hint(hand, prev, ctx) {
+    ctx = ctx || {};
+    var ok = hintOptions(hand, prev);
+    if (!ok.length) return null;
+    // 不紧急时，把炸弹/王炸挪到最后，避免一按提示就甩炸
+    if (!ctx.urgent) {
+      var noBoom = ok.filter(function (x) { return x.info.type !== 'bomb' && x.info.type !== 'rocket'; });
+      if (noBoom.length) ok = noBoom.concat(ok.filter(function (x) { return x.info.type === 'bomb' || x.info.type === 'rocket'; }));
+    }
+    var i = Math.max(0, Math.min(ok.length - 1, ctx.cycle || 0));
+    return ok[i];
+  }
+  function hasMove(hand, prev) { return !!hint(hand, prev); }
+
+  /* ---------------- 对局状态 ---------------- */
+  function seatCount(rule) { return rule === 'trio54' ? 3 : 2; }
+  function isCut(rule) { return rule === 'cut37'; }
+  /* 本轮可选的减牌数：首叫 1/2，之后只能在上家基础上 +1 或 +2。
+     没有人为上限，唯一物理约束是不能超过自己手上牌的张数。 */
+  function cutOptions(g) {
+    var hi = g.cutHigh || 0;
+    if (!g.cutSeq || !g.cutSeq.length) return [1, 2];
+    return [hi + 1, hi + 2];
+  }
+
+  function newGame(rule, rnd) {
+    rnd = rnd || Math.random;
+    var n = seatCount(rule);
+    var deck = shuffle(makeDeck(rule), rnd);
+    var hands = [], i;
+    for (i = 0; i < n; i++) hands.push(sortCards(deck.slice(i * 17, i * 17 + 17)));
+    var bottom = deck.slice(n * 17, n * 17 + 3);
+    var dead = deck.slice(n * 17 + 3);
+    var openSeat = Math.floor(rnd() * n);
+    var openCard = hands[openSeat][Math.floor(rnd() * hands[openSeat].length)];
+    var g = {
+      rule: rule, seats: n, hands: hands, bottom: bottom, dead: dead, deadCount: dead.length,
+      openCard: openCard, firstBidder: openSeat,
+      phase: 'bid', bid: null, landlord: -1, bidTurn: openSeat, bidSeq: [],
+      doubleSeats: [], doubleIdx: 0, doubled: [],
+      grabCount: 0, letCount: rule === 'let46' ? 1 : 0, multiplier: 1,
+      /* v46 减牌竞叫状态 */
+      cutHigh: 0, cutBidder: -1, cutTarget: 0, cutSeq: [],
+      turn: -1, last: null, lastSeat: [], passFlag: 0, bidPasses: 0,
+      playedCount: [], bombCount: 0, spring: false, antiSpring: false,
+      winner: -1, winnerSide: null, result: null, bots: []
+    };
+    for (i = 0; i < n; i++) { g.playedCount.push(0); g.lastSeat.push(null); }
+    return g;
+  }
+
+  /* ---------------- 叫地主 / 抢地主 ---------------- */
+  function applyBid(g, seat, act) {
+    if (g.phase !== 'bid') return { err: '当前不是叫地主阶段' };
+    var n = g.seats;
+    /* v46 减牌竞叫（仅二人 37 张）：复用 phase='bid'，但完全是另一套定庄规则。
+       「减 N 张」是竞叫的数字，不是真的从手牌里拿走牌；
+       数字越大代表地主越有把握「在农民剩 N 张之前出完」。 */
+    if (g.rule === 'cut37') {
+      var hi = g.cutHigh || 0;
+      if (act.type === 'cut') {
+        var cn = Number(act.count);
+        var opts = cutOptions(g);
+        if (Math.floor(cn) !== cn || opts.indexOf(cn) < 0)
+          return { err: '本轮只能减 ' + opts.join(' 或 ') + ' 张' };
+        /* 减牌数不可能超过自己手牌数，否则开局农民就已经达标，竞叫失去意义。
+           这也是「没有最高」之外的唯一物理上限，保证竞叫一定会结束。 */
+        if (cn > g.hands[seat].length)
+          return { err: '减牌数不能超过自己的手牌张数' };
+        g.cutHigh = cn; g.cutBidder = seat;
+        g.cutSeq.push({ seat: seat, act: 'cut', count: cn });
+        g.bidSeq.push({ seat: seat, act: 'bid', score: cn });
+        g.bid = { score: cn, by: seat };
+        g.bidTurn = 1 - seat;
+        return { ok: true };
+      }
+      g.cutSeq.push({ seat: seat, act: 'pass' });
+      g.bidSeq.push({ seat: seat, act: 'pass' });
+      /* 一旦有人不叫，本局立刻定庄，不再往下轮 */
+      return finishCut(g);
+    }
+    /* v46：46 张也走叫分制（用户第 11 条：选叫分加倍就跟 46 张和 54 张一样）。
+       只有减牌玩法走上面的独立分支。 */
+    if (g.rule !== 'cut37') {
+      // 叫分制：每人一次机会，从明牌者开始轮流；叫 3 分立即定地主
+      if (act.type === 'bid') {
+        /* v45：后叫的人必须「严格高于」当前最高分，不能叫一样的分数。
+           以前只是不更新 g.bid，却照样把这次动作记成一次有效叫分，
+           于是一桌人都能显示「叫 1 分」。这里直接在引擎层拒绝。 */
+        var sc = Number(act.score), cur = g.bid ? g.bid.score : 0;
+        if (!(sc >= 1 && sc <= 3) || Math.floor(sc) !== sc)
+          return { err: '叫分只能是 1、2 或 3 分' };
+        if (sc <= cur)
+          return { err: '叫分必须比当前最高分高（当前 ' + cur + ' 分）' };
+        g.bid = { score: sc, by: seat };
+        g.bidSeq.push({ seat: seat, act: 'bid', score: sc });
+        if (sc >= 3) {
+          /* 叫满 3 分直接定地主，叫分就提前结束了。
+             规则（v45 明确）：只有「没轮到叫分」的人能选加倍；
+             已经叫过分（以及已经轮到过、选择不叫）的人都没有这个权力。
+             doubleExcluded 同时下发给前端，界面上直接写明为什么不能加倍。 */
+          var acted = {}, bidders = {};
+          g.bidSeq.forEach(function (b) {
+            acted[b.seat] = 1;
+            if (b.act === 'bid') bidders[b.seat] = 1;
+          });
+          g.doubleExcluded = Object.keys(acted).map(Number);
+          g.doubleBidders = Object.keys(bidders).map(Number);
+          g.doubleSeats = [];
+          for (var di = 0; di < n; di++) if (!acted[di]) g.doubleSeats.push(di);
+          var fr = finishBid(g);
+          if (fr.err) return fr;
+          if (g.doubleSeats.length) {
+            g.phase = 'double'; g.doubleIdx = 0; g.doubled = [];
+            return { ok: true, needDouble: true };
+          }
+          return fr;
+        }
+      } else {
+        g.bidSeq.push({ seat: seat, act: 'pass' });
+      }
+      if (g.bidSeq.length >= n) {
+        if (g.bid) return finishBid(g);
+        return { redeal: true };
+      }
+      g.bidTurn = (seat + 1) % n;
+      return { ok: true };
+    }
+    // let46 让牌玩法
+    if (g.landlord < 0) {
+      if (act.type === 'bid') {
+        g.landlord = seat; g.letCount = 1; g.grabCount = 0;
+        g.bidTurn = 1 - seat;
+        g.bidSeq.push({ seat: seat, act: 'bid' });
+        return { ok: true, needGrab: 1 - seat };
+      }
+      g.bidSeq.push({ seat: seat, act: 'pass' });
+      if (g.bidSeq.length >= 2) return { redeal: true };
+      g.bidTurn = 1 - seat;
+      return { ok: true };
+    }
+    if (act.type === 'grab') {
+      if (seat === g.landlord) return { err: '不能抢自己的地主' };
+      if (g.grabCount >= 4) return { err: '已达最大抢地主次数' };
+      g.landlord = seat; g.grabCount++;
+      g.letCount = 1 + g.grabCount;
+      g.multiplier = [1, 1, 2, 3, 4, 5][g.grabCount] || g.grabCount;
+      g.bidTurn = 1 - seat;
+      g.bidSeq.push({ seat: seat, act: 'grab' });
+      return { ok: true, needGrab: 1 - seat };
+    }
+    g.bidSeq.push({ seat: seat, act: 'pass' });
+    return finishBid(g);
+  }
+
+  /* ---------------- 加倍 ----------------
+   * 触发条件：有人叫 3 分直接当上地主，叫分提前结束。
+   * 只有「没轮到叫分」的人能选加倍；加倍则总倍数 ×2。 */
+  function applyDouble(g, seat, yes) {
+    if (g.phase !== 'double') return { err: '当前不是加倍阶段' };
+    var q = g.doubleSeats || [];
+    if (!q.length) { g.phase = 'play'; return { ok: true, started: true }; }
+    /* v45：即使 doubleSeats 被改坏，也要挡住「已经叫过分 / 已经轮到叫分」的人。
+       加倍权只属于叫分提前结束时、从头到尾没轮到叫分的玩家，且必须轮流决定。 */
+    var ex = g.doubleExcluded || [];
+    if (ex.indexOf(seat) >= 0) {
+      return { err: (g.doubleBidders || []).indexOf(seat) >= 0
+        ? '已经叫过分的玩家不能再加倍' : '你已经轮到叫分，不能加倍' };
+    }
+    if (q[g.doubleIdx] !== seat) return { err: '还没轮到你加倍' };
+    if (yes) { g.multiplier = (g.multiplier || 1) * 2; (g.doubled = g.doubled || []).push(seat); }
+    g.doubleIdx++;
+    if (g.doubleIdx >= q.length) { g.phase = 'play'; return { ok: true, started: true }; }
+    return { ok: true };
+  }
+  /* 加倍阶段当前该谁决定 */
+  function doubleTurn(g) {
+    if (g.phase !== 'double') return -1;
+    var q = g.doubleSeats || [];
+    return (g.doubleIdx < q.length) ? q[g.doubleIdx] : -1;
+  }
+
+  /* v46 减牌定庄：
+     最后叫出数字的人当地主，选「不叫」的人当农民；
+     门槛 N = 最后叫的那个数字。首叫直接不叫 → 对方当地主、N = 1。 */
+  function finishCut(g) {
+    var last = null;
+    for (var ci = g.cutSeq.length - 1; ci >= 0; ci--) {
+      if (g.cutSeq[ci].act === 'cut') { last = g.cutSeq[ci]; break; }
+    }
+    var N = last ? last.count : 1;
+    var lord = last ? last.seat : (1 - g.firstBidder);
+    g.cutTarget = N;
+    g.landlord = lord;
+    g.letCount = N;
+    g.multiplier = 1;                 // 基础倍数 1（不拿竞叫 N 当底分），春天/炸弹在结算时照算
+    g.doubleExcluded = [0, 1];         // 两人都参与了竞叫，谁都不能加倍
+    g.doubleBidders = [];
+    g.doubleSeats = [];
+    g.hands[lord] = sortCards(g.hands[lord].concat(g.bottom));
+    g.phase = 'play';
+    g.turn = lord;
+    g.last = null;
+    return { ok: true, started: true, cutTarget: N, cutLandlord: lord };
+  }
+
+  function finishBid(g) {
+    /* v45：叫分没提前结束（全员都轮过）时，没有任何人有加倍权，
+       把名单补齐，前端/服务端双重校验都不会漏。 */
+    if (!g.doubleExcluded) {
+      var seen = {};
+      (g.bidSeq || []).forEach(function (b) { seen[b.seat] = 1; });
+      g.doubleExcluded = Object.keys(seen).map(Number);
+      g.doubleBidders = (g.bidSeq || []).filter(function (b) { return b.act === 'bid'; })
+        .map(function (b) { return b.seat; });
+      g.doubleSeats = [];
+    }
+    /* v46：46 张也走叫分制，不再有「抢地主让牌」定庄。
+       所有非减牌玩法统一由最高叫分者当地主。 */
+    if (!g.bid) return { redeal: true };
+    g.landlord = g.bid.by;
+    g.multiplier = g.bid.score || 1;
+    g.letCount = 0;
+    g.hands[g.landlord] = sortCards(g.hands[g.landlord].concat(g.bottom));
+    g.phase = 'play';
+    g.turn = g.landlord;
+    g.last = null;
+    return { ok: true, started: true };
+  }
+
+  /* ---------------- 出牌 ---------------- */
+  function applyPlay(g, seat, ids) {
+    if (g.phase !== 'play') return { err: '当前不是出牌阶段' };
+    if (seat !== g.turn) return { err: '还没轮到你' };
+    var hand = g.hands[seat];
+    var cards = byId(hand, ids);
+    if (cards.length !== ids.length) return { err: '手牌中没有这些牌' };
+    var info = null;
+    if (ids.length > 0) {
+      info = parse(cards);
+      if (!info) return { err: '牌型不合法' };
+      var need = (g.last && g.last.by !== seat) ? g.last.info : null;
+      if (!beats(info, need)) return { err: '打不过上家' };
+    } else if (!g.last) {
+      return { err: '你是先手，必须出牌' };
+    }
+    if (ids.length > 0) {
+      var set = {}; ids.forEach(function (i) { set[i] = 1; });
+      g.hands[seat] = hand.filter(function (c) { return !set[c.id]; });
+      g.playedCount[seat]++;
+      if (info.type === 'bomb' || info.type === 'rocket') g.bombCount++;
+      g.last = { ids: ids, info: info, by: seat, cards: cards };
+      g.lastSeat[seat] = { ids: ids, info: info, by: seat, cards: cards };
+      g.passFlag = 0;
+    } else {
+      g.passFlag++;
+      /* 记录这一家「过」：牌桌上要在他出牌的位置写上「过」，
+         否则别人只知道他没出牌，看不出是主动过还是还没轮到。 */
+      g.lastSeat[seat] = { by: seat, pass: true };
+      if (g.passFlag >= g.seats - 1) { g.last = null; g.lastSeat = g.lastSeat.map(function () { return null; }); g.passFlag = 0; }
+    }
+    // 胜负
+    var i, farmerDone = false;
+    for (i = 0; i < g.seats; i++) {
+      if (i === g.landlord) continue;
+      if (g.hands[i].length === 0) farmerDone = true;
+    }
+    if (g.rule === 'cut37') {
+      /* v46：农民剩 <=N 张「当场立刻」判农民胜，牌局立即结束；
+         地主只有赶在农民降到 N 张之前出完手牌才算赢。 */
+      var cFarmer = 1 - g.landlord;
+      if (g.hands[cFarmer].length <= g.cutTarget) g.winner = cFarmer;
+      else if (g.hands[g.landlord].length === 0) g.winner = g.landlord;
+    } else {
+      if (g.hands[g.landlord].length === 0) g.winner = g.landlord;
+      else if (farmerDone) {
+        // 农民方胜：取第一个出完的农民座位作为代表
+        for (i = 0; i < g.seats; i++) if (i !== g.landlord && g.hands[i].length === 0) { g.winner = i; break; }
+      }
+    }
+    if (g.winner >= 0) {
+      g.phase = 'over';
+      var isLandlordWin = g.winner === g.landlord;
+      /* v47：所有玩法统一结算春天/反春天/炸弹倍率。
+         减牌玩法只是「没有玩家主动加倍」这一步，基础倍数 1；
+         出牌过程中出现的春天/反春天、炸弹/王炸照样各 ×2。
+         农民剩 <=N 张当场赢也算反春天——牌局已结束，只看实际出牌情况。 */
+      if (g.seats === 2) {
+        if (isLandlordWin && g.playedCount[1 - g.landlord] === 0) { g.spring = true; g.multiplier *= 2; }
+        if (!isLandlordWin && g.playedCount[g.landlord] <= 1) { g.antiSpring = true; g.multiplier *= 2; }
+      } else {
+        var farmerPlayed = 0;
+        for (i = 0; i < g.seats; i++) if (i !== g.landlord) farmerPlayed += g.playedCount[i];
+        if (isLandlordWin && farmerPlayed === 0) { g.spring = true; g.multiplier *= 2; }
+        if (!isLandlordWin && g.playedCount[g.landlord] <= 1) { g.antiSpring = true; g.multiplier *= 2; }
+      }
+      g.multiplier *= Math.pow(2, g.bombCount);
+      g.result = {
+        winner: g.winner, landlord: g.landlord, winnerSide: isLandlordWin ? 'landlord' : 'farmer',
+        spring: g.spring, antiSpring: g.antiSpring, bombCount: g.bombCount,
+        multiplier: g.multiplier, letCount: g.letCount,
+        cutTarget: g.rule === 'cut37' ? g.cutTarget : null
+      };
+      return { ok: true, over: true, result: g.result };
+    }
+    g.turn = (seat + 1) % g.seats;
+    return { ok: true };
+  }
+
+  function farmerTarget(g) {
+    if (g.rule === 'cut37')
+      return g.landlord < 0 ? 0 : Math.max(0, g.hands[1 - g.landlord].length - g.cutTarget);
+    if (g.rule !== 'let46' || g.landlord < 0) return 0;
+    return Math.max(0, g.hands[1 - g.landlord].length - g.letCount);
+  }
+
+  return {
+    SUITS: SUITS, SUIT_CHAR: SUIT_CHAR, RANKS: RANKS, RANK_VAL: RANK_VAL,
+    makeDeck: makeDeck, shuffle: shuffle, sortCards: sortCards, byId: byId,
+    parse: parse, beats: beats, allMoves: allMoves, hint: hint, hintOptions: hintOptions,
+    moveCost: moveCost, speak: speak, rankName: rankName, hasMove: hasMove,
+    newGame: newGame, applyBid: applyBid, applyPlay: applyPlay, finishBid: finishBid,
+    applyDouble: applyDouble, doubleTurn: doubleTurn,
+    farmerTarget: farmerTarget, seatCount: seatCount,
+    cutOptions: cutOptions, finishCut: finishCut, isCut: isCut
+  };
+});

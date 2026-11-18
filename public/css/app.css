@@ -2693,3 +2693,63 @@ body.land #page-play .tablerail{
 #app > #big-sticker .bs-tip{font-size:11px!important;color:#cfe8dc!important}
 #app > #big-sticker.hidden{display:none!important}
 /* ================= end v61 ================= */
+
+/* ============================================================
+   v62 真机反馈修正层（2026-11-16）
+   验证：curl -s http://127.0.0.1:8080/css/app.css | grep "end v62"
+   ① 我方昵称/身份/叫分/剩张与左上座位水平对齐：
+      实测 .myinfo 容器 max-width 只有 200px，内部 .ts-i 两列各 ≥104px
+      合计 262px，居中排布时向左溢出，ts-i.left = -20px（被屏幕切掉）。
+      现在把容器放宽到与左上座位同量级、左边缘锁 0、内容左对齐。
+   ② 剩最后一张牌时提牌往左上跑：
+      v61 的 .pc.sel{margin-left:var(--ov)!important} 压过了
+      .hand .pc:first-child{margin-left:0}，唯一一张牌被负 margin
+      往左推 38px。补 :first-child 规则，抬起只剩纯 Y 位移。
+   ============================================================ */
+/* ① 我方信息：与左上座位同一左边缘，内容不再被裁 */
+#app #page-play .myinfo{
+  left:0!important;margin-left:0!important;padding-left:0!important;
+  max-width:min(46vw,420px)!important;
+  justify-content:flex-start!important;align-items:flex-start!important;
+  overflow:visible!important;
+}
+#app #page-play .myinfo .ts-i{
+  margin-left:0!important;margin-right:0!important;
+  padding-left:0!important;transform:none!important;
+  left:auto!important;position:static!important;
+  min-width:0!important;max-width:100%!important;
+}
+#app #page-play .myinfo .ts-main,
+#app #page-play .myinfo .ts-side{max-width:none!important}
+/* ② 第一张牌（只剩一张时就是它）选中不再横向位移 */
+#app #page-play .hand .pc.sel:first-child{
+  margin-left:0!important;margin-right:0!important;
+}
+/* ================= end v62 ================= */
+
+
+/* ============================================================
+ * v63 真机反馈修正层
+ * ============================================================ */
+/* ① 右上角金币：只在对战（牌桌）页显示；大厅 / 聊天 / 我的页去掉。
+   「我的」页昵称下面那行 .coinrow 保留，仍显示金币。 */
+#topbar .coin{display:none!important}
+body.in-play #topbar .coin{display:flex!important}
+
+/* ② 玩法弹窗：× 放弹窗内右上角，「知道了」靠右 */
+.modal .box{position:relative}
+.modal .tipx{position:absolute;top:8px;right:10px;width:30px;height:30px;
+  display:grid;place-items:center;font-size:16px;line-height:1;color:var(--sub);
+  cursor:pointer;border-radius:50%;z-index:2;user-select:none}
+.modal .tipx:active{background:rgba(255,255,255,.12);color:#fff}
+.modal .tip-foot{display:flex;justify-content:flex-end;margin-top:2px}
+.modal .tip-foot .btn{width:auto;min-width:96px;padding:10px 20px;letter-spacing:0;font-size:14px}
+
+/* ③ 软键盘避让时 #app 被压缩，会话内部滚动区域仍可正常滚动 */
+.thread .msgs{min-height:0}
+.composer{flex:0 0 auto}
+
+/* ④ 好友空间「添加」输入框：长按粘贴菜单一定要能弹出来 */
+.frbox .fr-addrow input,#sfr-q,#s-input{-webkit-user-select:text!important;user-select:text!important}
+
+/* end v63 真机反馈修正层 */

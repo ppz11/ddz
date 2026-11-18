@@ -123,7 +123,12 @@ function body(req, limit) {
     req.on('error', reject);
   });
 }
-const uid = () => 'u' + crypto.randomBytes(5).toString('hex');
+/* v64：真人 UID 统一 8 位纯数字（好记、好复制），生成时避开已有账号 */
+const uid = () => {
+  let s;
+  do { s = String(10000000 + Math.floor(Math.random() * 90000000)); } while (db.users[s]);
+  return s;
+};
 const tok = () => crypto.randomBytes(12).toString('hex');
 const mid = () => 'm' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
 
@@ -159,9 +164,9 @@ const pubPerson = p => ({ pid: p.pid, nick: p.nick, avatar: p.avatar, locOn: !!p
 
 /* ------------------------- */
 
-/* 初始金币：几千左右随机 */
-const COIN_MIN = 2000, COIN_MAX = 8000;
-function randomCoins() { return Math.round((COIN_MIN + Math.random() * (COIN_MAX - COIN_MIN)) / 10) * 10; }
+/* v64：初始金币固定 10000，不再随机（保留函数名，所有旧调用点自动生效） */
+const INIT_COINS = 10000;
+function randomCoins() { return INIT_COINS; }
 
 /* 固定测试号 666888：昵称头像长期不变，方便两台设备对照调试 */
 const TEST_ID = '666888';
@@ -279,7 +284,8 @@ const server = http.createServer(async (req, res) => {
       const b = JSON.parse((await body(req, 4096)).toString() || '{}');
       const u = userByToken(b.token);
       if (!u) return json(res, 401, { err: '登录已失效，请重新进入' });
-      refreshIdentity(u, u.test); personOf(u); u.coins = coinsOf(u);
+      /* v64：默认身份保持不变，只有手动点「换一个身份」(/api/reroll) 才换 */
+      refreshIdentity(u, true); personOf(u); u.coins = coinsOf(u);
       return json(res, 200, { uid: u.uid, token: u.token, me: pub(u), coins: u.coins | 0 });
     }
     if (p === '/api/loginbyid' && req.method === 'POST') {
@@ -287,7 +293,8 @@ const server = http.createServer(async (req, res) => {
       const id = String(b.id || '').trim();
       const u = (id === TEST_ID) ? ensureTestUser() : db.users[id];
       if (!u) return json(res, 404, { err: '该 ID 不存在' });
-      refreshIdentity(u, !!u.test); personOf(u); u.coins = coinsOf(u);
+      /* v64：用 ID 登录也不换身份 */
+      refreshIdentity(u, true); personOf(u); u.coins = coinsOf(u);
       return json(res, 200, { uid: u.uid, token: u.token, me: pub(u), coins: u.coins | 0 });
     }
     /* 换个身份：昵称 / 头像 / UID 一起换。
@@ -296,37 +303,35 @@ const server = http.createServer(async (req, res) => {
        这样跟同一个人还能接着聊，会话不会出现两个分身。 */
     if (p === '/api/reroll' && req.method === 'POST') {
       const b = JSON.parse((await body(req, 4096)).toString() || '{}');
-      const u = userByToken(b.token);
-      if (!u) return json(res, 401, { err: '登录已失效，请重新进入' });
-      if (u.test) return json(res, 400, { err: '测试号不支持换身份' });
-      const oldUid = u.uid;
-      const newUid = uid();
-      delete db.users[oldUid];
-      u.uid = newUid;
-      db.users[newUid] = u;
-      u.token = tok();
-      refreshIdentity(u);            // 新昵称 + 新头像
-      const p = personOf(u);
-      p.uids = (p.uids || []).map(x => (x === oldUid ? newUid : x));
-      if (p.uids.indexOf(newUid) < 0) p.uids.push(newUid);
-      /* 会话迁移：from / to 里的旧 uid 全部换成新的，聊天记录不断档 */
-      (db.messages || []).forEach(m => {
-        if (m.from === oldUid) m.from = newUid;
-        if (m.to === oldUid) m.to = newUid;
-      });
-      /* 单向隐藏记录同样跟着换，否则删过的消息会重新冒出来 */
-      const hv = db.hidden && db.hidden[oldUid];
-      if (hv) { db.hidden[newUid] = hv; delete db.hidden[oldUid]; }
-      /* 牌局名单：换号后仍能看到自己的历史战绩 */
-      (db.games || []).forEach(g => {
-        if (Array.isArray(g.players)) g.players = g.players.map(x => (x === oldUid ? newUid : x));
-      });
-      /* 在线状态：online 是 Map<uid, ws>，原地换 key，别把自己踢下线 */
-      if (online.has(oldUid)) { const w = online.get(oldUid); online.delete(oldUid); online.set(newUid, w); }
-      /* 防止同一次连接里残留旧 uid 导致后续消息发不出去 */
-      for (const [ws2, c] of clients) if (c && c.u === oldUid) c.u = newUid;
+      const old = userByToken(b.token);
+      if (!old) return json(res, 401, { err: '登录已失效，请重新进入' });
+      if (old.test) return json(res, 400, { err: '测试号不支持换身份' });
+      /* v63：切换身份 = 新增一个身份，旧身份完整保留成离线账号。
+         以前会 delete 旧 uid 并把聊天记录里旧 uid 全改成新 uid（等于把会话合并），
+         导致旧昵称会话消失。现在：
+           · 主聊天按 uid 分组 → 旧昵称、新昵称各是独立会话，都能看到（不合并）
+           · 好友空间按 pid 分组 → 同一个人仍只有一个会话
+         两者共用 person.pid，金币/好友/收藏都跟着真人走，不会丢。 */
+      const person = personOf(old);
+      /* v64：切换身份时金币恢复默认 10000（旧身份保留为离线账号，不合并会话） */
+      person.coins = INIT_COINS;
+      old.coins = INIT_COINS;
+      const fresh = createUser(String(old.device || ''));
+      fresh.coins = INIT_COINS;
+      fresh.pid = person.pid;
+      if (!Array.isArray(person.uids)) person.uids = [];
+      if (person.uids.indexOf(fresh.uid) < 0) person.uids.push(fresh.uid);
+      /* 同设备注册时以新身份为「当前账号」，旧账号不再占用 device */
+      if (fresh.device) {
+        Object.values(db.users).forEach(x => {
+          if (x !== fresh && !x.bot && !x.test && x.device === fresh.device) x.device = '';
+        });
+      }
+      /* 当前 WS 连接改绑到新 uid，别把自己踢下线 */
+      if (online.has(old.uid)) { const w = online.get(old.uid); online.delete(old.uid); online.set(fresh.uid, w); }
+      for (const [ws2, c] of clients) if (c && c.u === old.uid) c.u = fresh.uid;
       store.save();
-      return json(res, 200, { uid: u.uid, token: u.token, me: pub(u), coins: coinsOf(u) | 0 });
+      return json(res, 200, { uid: fresh.uid, token: fresh.token, me: pub(fresh), coins: coinsOf(fresh) | 0 });
     }
     if (p === '/api/me') {
       const u = userByToken(url.searchParams.get('token'));
@@ -339,6 +344,25 @@ const server = http.createServer(async (req, res) => {
       if (buf.length > MAX_UPLOAD) return json(res, 413, { err: '文件太大（上限 300MB）' });
       const rec = store.putUpload(b.name || 'file', b.mime || 'application/octet-stream', buf, { kind: b.kind, dur: b.dur });
       return json(res, 200, { id: rec.id, url: '/api/file/' + rec.id, name: rec.name, size: rec.size, mime: rec.mime });
+    }
+    /* v63 收藏导出：把收藏条目（文字/语音/图片/视频引用）和对应的上传文件
+       一起打成 tar.gz，机主凭口令即可在删服务器前整包取回本地。
+       固定落盘目录：/opt/ddz/export/favorites/ */
+    if (p === '/api/export/favorites') {
+      if (String(url.searchParams.get('key') || '') !== STICKER_KEY) return json(res, 403, { err: '口令不对' });
+      try {
+        const out = require('../scripts/export-favorites.js').run();
+        if (!out || !out.tar || !fs.existsSync(out.tar)) {
+          return json(res, 200, { ok: true, dir: out && out.dir, note: '本机没有 tar 命令，请用 scp 直接拷目录', list: out && out.list });
+        }
+        const st = fs.statSync(out.tar);
+        res.writeHead(200, {
+          'Content-Type': 'application/gzip',
+          'Content-Disposition': 'attachment; filename="ddz-favorites.tar.gz"',
+          'Content-Length': st.size, 'Cache-Control': 'no-store'
+        });
+        return fs.createReadStream(out.tar).pipe(res);
+      } catch (e) { return json(res, 500, { err: '导出失败：' + e.message }); }
     }
     /* 服务器统一表情包：房主上传一次，所有玩家登录后自动拉取到同样的包 */
     if (p === '/api/stickers') return json(res, 200, { packs: StickerStore.list() });
@@ -408,6 +432,25 @@ const server = http.createServer(async (req, res) => {
       else if (videoByExt && !audioByExt) mime = videoByExt;
       else if (audioByExt) mime = audioByExt;
       else if (videoByExt) mime = videoByExt;
+      /* v62：表情上传时 mime 常为空、文件名又没有后缀（如 1badb5a8...），
+         imageByExt 命中不了 → mime 落到 application/octet-stream，
+         部分 WebView 会直接拒绝渲染 <img>（表情面板小图 / 牌桌大图都受影响）。
+         这里按文件头补一次真实图片类型，不影响语音、视频、铃声的既有判定。 */
+      if (!imageByExt && (!mime || mime === 'application/octet-stream')) {
+        try {
+          const fd = fs.openSync(fp, 'r');
+          const head = Buffer.alloc(12);
+          fs.readSync(fd, head, 0, 12, 0);
+          fs.closeSync(fd);
+          const hx = head.toString('hex');
+          if (/^474946383(961|761)/.test(hx)) mime = 'image/gif';
+          else if (/^89504e470d0a1a0a/.test(hx)) mime = 'image/png';
+          else if (/^ffd8ff/.test(hx)) mime = 'image/jpeg';
+          else if (/^52494646/.test(hx) && head.toString('ascii', 8, 12) === 'WEBP') mime = 'image/webp';
+          else if (/^424d/.test(hx)) mime = 'image/bmp';
+          else if (/^3c737667/i.test(hx) || /^3c3f786d/i.test(hx)) mime = 'image/svg+xml';
+        } catch (e) { }
+      }
       const dl = url.searchParams.get('dl') === '1';
       /* Content-Disposition 里不能直接放中文。
          Node 的 header 值只接受 latin1，遇到「不得不夸下我老公了.docx」这种名字会直接抛
@@ -812,10 +855,10 @@ function tryStart(room) {
     scheduleBots(room);
   }
 }
-/* 金币结算：底分 100 × 倍数；地主在三人场输赢翻倍 */
+/* v64 金币结算：底分 10 × 倍数（不加倍时每局 ±10）；地主在三人场输赢翻倍 */
 function settleCoins(room) {
   const g = room.game; if (!g || !g.result) return {};
-  const base = 100 * (g.multiplier || 1);
+  const base = 10 * (g.multiplier || 1);
   const delta = {};
   room.seats.forEach((s, i) => {
     if (!s || s.bot) return;
@@ -1091,6 +1134,9 @@ function findPeople(pid, q) {
 }
 
 function contactsOf(u) {
+  /* v63：主聊天「故意」按 uid 分组，绝不按 pid 合并。
+     同一个真人换过几次身份，对方在这里就能看到几个昵称各自独立的会话。
+     唯一要排除的是「自己同 pid 的历史分身」——那是自己，不该出现在自己的列表里。 */
   const set = new Map();
   const uid = typeof u === 'string' ? u : u.uid;
   const hid = hiddenFor(uid).threads || {};
@@ -1134,8 +1180,15 @@ function contactsOf(u) {
      - 自己正在用的 ID 不出现在列表里
      - 当前真正在线的真人 ID 排最前，标在线
      - 历史用过但已离线的 ID 排后面，标离线 */
+  let myPid = null;
+  try {
+    /* contactsOf 可能收到 uid 字符串（不是 user 对象），必须换回对象再取 pid，
+       否则 personOf 会给字符串写属性并往 person.uids 里塞进 undefined */
+    const meU = typeof u === 'string' ? db.users[u] : u;
+    myPid = meU ? personOf(meU).pid : null;
+  } catch (e) { }
   const list = [...set.entries()]
-    .filter(([k]) => db.users[k] && k !== u && (!db.users[k].bot || k === ECHO_UID))
+    .filter(([k]) => db.users[k] && k !== u && (!myPid || db.users[k].pid !== myPid) && (!db.users[k].bot || k === ECHO_UID))
     .map(([k, ts]) => ({ u: db.users[k], ts, online: online.has(k), room: roomOf(k) }))
     .sort((a, b) => (b.online - a.online) || (b.ts - a.ts))
     .slice(0, 80)
@@ -1208,7 +1261,17 @@ function mySecretRooms(u) {
         unread: r.msgs.filter(m => m.fromPid !== me && !m.read && !sMsgHidden(me, m.id)).length
       };
     })
-    .sort((a, b) => b.ts - a.ts);
+    .sort((a, b) => b.ts - a.ts)
+    /* v63：老数据里可能有按 uid 建的历史 rid，换身份后会残留多条指向
+       同一个 otherPid 的会话。按真人去重，只留最新一条（不删数据）。 */
+    .filter((function () {
+      const seen = new Set();
+      return r => {
+        const k = String(r.otherPid || r.rid);
+        if (seen.has(k)) return false;
+        seen.add(k); return true;
+      };
+    })());
 }
 function getSecret(rid, u) {
   const r = getSecretByRid(rid);

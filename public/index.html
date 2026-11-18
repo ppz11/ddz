@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="ddz-build" content="v55">
+<meta name="ddz-build" content="v63">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#061f18">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -83,14 +83,14 @@
           <p>联网真人对战 · 两种玩法任选 · 一局三分钟</p>
         </div>
         <div class="mode">
-          <div class="m on" data-rule="let46">
+          <div class="m on" data-rule="duo37">
             <div class="tag">推荐</div>
-            <h4>让牌玩法</h4>
-            <p>46 张牌 · 叫分抢地主<br>没轮到叫分的可加倍</p>
-          </div>
-          <div class="m" data-rule="duo37">
-            <h4>经典玩法</h4>
+            <h4>叫分加倍</h4>
             <p>37 张 · 叫分抢地主<br>先出完手牌者获胜</p>
+          </div>
+          <div class="m" data-rule="cut37">
+            <h4>减牌竞叫</h4>
+            <p>37 张 · 竞叫减几张<br>农民剩 ≤N 张即胜</p>
           </div>
         </div>
         <div style="margin:0 14px 12px;display:flex;gap:10px">
@@ -117,8 +117,8 @@
               <div class="etit">牌桌已就位，等你开局</div>
               <div class="esub">选一个玩法直接开局，或输入好友的房间号加入</div>
               <div class="emode" id="pe-mode">
-                <div class="em on" data-rule="let46"><b>46 张</b><span>叫分抢地主 · 可加倍</span></div>
-                <div class="em" data-rule="duo37"><b>37 张</b><span>叫分抢地主 · 可加倍</span></div>
+                <div class="em on" data-rule="duo37"><b>37 张</b><span>叫分加倍</span></div>
+                <div class="em" data-rule="cut37"><b>37 张</b><span>减牌竞叫</span></div>
               </div>
               <div class="erow">
                 <button class="btn jade" id="pe-quick">⚡ 快速匹配</button>
@@ -191,14 +191,10 @@
           </div>
         </div>
 
-        <div class="setbox">
+        <div class="setbox" id="rule-box">
           <div class="set-hd">玩法规则</div>
           <div class="rulesel" id="sel-rule">
-            <div class="rs on" data-rule="let46">
-              <b>46 张 · 叫分加倍</b>
-              <span>去掉 3、4 共 46 张 · 1~3 分叫地主 · 没轮到叫分的人可加倍 · 先出完手牌者胜</span>
-            </div>
-            <div class="rs" data-rule="duo37">
+            <div class="rs on" data-rule="duo37">
               <b>37 张 · 叫分加倍</b>
               <span>54 张随机去掉 17 张 · 共 37 张 · 1~3 分叫地主 · 可加倍 · 先出完手牌者胜</span>
             </div>
@@ -207,7 +203,7 @@
               <span>竞叫「减几张」定地主：农民剩 ≤N 张即胜 · 地主须赶在之前出完 · 本玩法不加倍</span>
             </div>
           </div>
-          <div class="tip-line" id="rule-note">三人斗地主只有 54 张叫分加倍；二人 37 张可选叫分加倍或减牌竞叫</div>
+          <div class="tip-line" id="rule-note">双人斗地主可选：37 张叫分加倍 / 37 张减牌竞叫；三人斗地主固定 54 张叫分加倍</div>
         </div>
 
         <div class="setbox">
@@ -257,6 +253,8 @@
         <div class="rowset" id="row-preview" style="cursor:pointer">🔊 试听提示音<span style="color:#5c6b66;font-size:11px">叫分/加倍/出牌</span></div>
         <div class="rowset">背景音乐<button class="sw on" id="sw-bgm"><i></i></button></div>
         <div class="rowset">出牌震动<button class="sw on" id="sw-vibe"><i></i></button></div>
+        <div class="rowset tune">震动强度<b id="lb-vibems">60ms</b><input type="range" id="sl-vibems" min="10" max="200" step="10" value="60"></div>
+        <div class="rowset" id="row-vibetest" style="cursor:pointer">📳 试震一下<span style="color:#5c6b66;font-size:11px">按当前强度</span></div>
         <div class="rowset">新消息提示音<button class="sw on" id="sw-newsound"><i></i></button></div>
         <div class="rowset">新消息震动<button class="sw on" id="sw-newvibe"><i></i></button></div>
         <div class="rowset">来电震动<button class="sw on" id="sw-callvibe"><i></i></button></div>
@@ -315,6 +313,72 @@
     for (var i = 0; i < ps.length; i++) ps[i].remove();
     try { document.dispatchEvent(new CustomEvent('ddz:panelclosed')); } catch (x) { }
   }, true);
+})();
+
+/* ============================================================
+ * v63 ① 软键盘避让：Android WebView 里键盘常常不 resize 视口，
+ *    输入框被压在键盘下面。用 visualViewport 算出键盘高度，
+ *    把 #app 的底边抬上去，.thread / .composer 自然跟着上移。
+ * ============================================================ */
+(function () {
+  var app = document.getElementById('app');
+  if (!app) return;
+  var vv = window.visualViewport, last = 0;
+  function fit() {
+    if (!vv) return;
+    /* 横屏牌桌被整体旋转过，动 bottom 会错位；只处理竖屏输入场景 */
+    if (document.body.classList.contains('land')) { app.style.bottom = ''; return; }
+    var kb = Math.max(0, (window.innerHeight || 0) - vv.height - (vv.offsetTop || 0));
+    if (kb < 90) kb = 0;                    /* 状态栏/地址栏的微小波动不算键盘 */
+    if (kb === last) return;
+    last = kb;
+    app.style.bottom = kb ? (kb + 'px') : '';
+  }
+  if (vv) {
+    try { vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); } catch (e) { }
+  }
+  window.addEventListener('resize', fit);
+  document.addEventListener('focusin', function (e) {
+    var t = e.target;
+    if (t && t.matches && t.matches('input,textarea,[contenteditable="true"]')) {
+      setTimeout(fit, 220); setTimeout(fit, 550);
+    }
+  }, true);
+  document.addEventListener('focusout', function () { setTimeout(fit, 150); }, true);
+
+  /* v63 ② 内部剪贴板：页面是 http（非安全上下文），navigator.clipboard
+     在多数 Android WebView 里直接 undefined。复制端用 execCommand 兜底，
+     粘贴端优先读 App 内部最近一次复制的值，保证「复制 UID → 好友空间粘贴」闭环可用。 */
+  window.DDZCopy = function (text) {
+    var s = String(text == null ? '' : text);
+    try { localStorage.setItem('ddz_clip', s); } catch (e) { }
+    var ok = function () { try { App.toast('已复制：' + s); } catch (e) { } };
+    var fallback = function () {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = s; ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;';
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        try { ta.setSelectionRange(0, s.length); } catch (e) { }
+        var good = document.execCommand('copy');
+        ta.remove();
+        if (good) { ok(); return; }
+      } catch (e) { }
+      try { App.toast('已记录 UID：' + s + '（可在好友空间点 📋 粘贴）'); } catch (e) { }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+      navigator.clipboard.writeText(s).then(ok).catch(fallback);
+    } else fallback();
+  };
+  window.DDZPaste = function (cb) {
+    var local = '';
+    try { local = localStorage.getItem('ddz_clip') || ''; } catch (e) { }
+    if (local) { cb(local); return; }
+    if (navigator.clipboard && navigator.clipboard.readText && window.isSecureContext) {
+      navigator.clipboard.readText().then(function (t) { cb(t || ''); }).catch(function () { cb(''); });
+    } else cb('');
+  };
 })();
 </script>
 </body>

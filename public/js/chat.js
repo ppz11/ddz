@@ -314,7 +314,11 @@ window.Chat = (function () {
           Net.send({ t: 'friend:add', via: 'main', q: uid });
           App.toast('已发送好友请求');
         }],
-        ['📋 复制对方 UID', function () { App.toast('UID：' + uid); }]];
+        ['📋 复制对方 UID', function () {
+          /* v63：以前只 toast 显示、根本没写剪贴板，好友空间当然粘不出来 */
+          if (window.DDZCopy) window.DDZCopy(uid);
+          else App.toast('UID：' + uid);
+        }]];
       try { App.sheet(acts); } catch (e) { App.toast('UID：' + uid); }
     };
     document.getElementById('th-call').onclick = function () { Call.start(uid, 'audio'); };
