@@ -234,9 +234,12 @@ window.Stickers = (function () {
         clearUserPick();
       }
       if (!packUsable(DEFAULT_PACK)) DEFAULT_PACK = USER_PACKS.length ? USER_PACKS[0].id : '';
-      markSyncVersion();
-      savePacks();
-      cb && cb(GLOBAL_PACKS.length);
+       markSyncVersion();
+       savePacks();
+       /* v72：同步一完成就通知缓存模块全量预热，不等那个 4 秒定时器 —
+          用户刚打开 App 就发表情时，缓存还空着，第一次必然显示不出来。 */
+       try { document.dispatchEvent(new CustomEvent('ddz:stickers')); } catch (e) { }
+       cb && cb(GLOBAL_PACKS.length);
     }).catch(function (e) {
       SYNC_INFO = { at: Date.now(), packs: GLOBAL_PACKS.length, items: 0,
                     err: '拉取失败：' + (e && e.message ? String(e.message).slice(0, 90) : '连不上服务器') };
@@ -718,6 +721,8 @@ window.Stickers = (function () {
   }
 
   loadPacks();
+  /* v72：本地包也立刻预热一次（离线 / 服务器无包时同样不空白） */
+  try { setTimeout(function () { document.dispatchEvent(new CustomEvent('ddz:stickers')); }, 60); } catch (e) { }
 
   return {
     PACK_FACE: PACK_FACE, PACK_OBJ: PACK_OBJ, EMOJI: EMOJI,

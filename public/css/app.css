@@ -2772,3 +2772,29 @@ body.in-play #topbar .coin{display:flex!important}
 /* ④ 表情大图：下载期间给个占位，不再整块空白 */
 .bs-card img{min-height:120px;background:rgba(255,255,255,.06)}
 /* end v65 */
+
+
+/* ============================================================
+ * v72 真机反馈修正层（2026-11-20）
+ * ============================================================ */
+/* ① 聊天 / 我的 / 大厅页顶部那片空白：v63 把金币从这些页去掉后，
+   #topbar 仍占 52px + safe-t 的空条。竖屏非牌桌页直接整条隐藏。 */
+#main.no-topbar #topbar{display:none!important}
+/* ② 键盘态：#app / #tabbar 一律不动，只把输入条固定到键盘上沿 */
+body.kb-on #tabbar{visibility:hidden}
+.thread.kb .composer,.tchat.kb .tc-bar{
+  position:fixed!important;left:0;right:0;bottom:var(--kb,0px)!important;
+  z-index:90!important;transform:none!important;
+  background:#0b2b22;border-top:1px solid var(--line);
+  padding-bottom:calc(8px + var(--safe-b))!important}
+.thread.kb .msgs{padding-bottom:14px}
+/* ③ 缓存进度提示 */
+.cache-tip{font-size:10px;color:var(--jade);margin:4px 0 0;line-height:1.4;
+  letter-spacing:.3px;opacity:.95}
+.cache-tip.done{color:var(--sub);opacity:.75}
+/* ④ 我自己动作的提示（叫分 / 加倍 / 过），复用「过」字视觉 */
+.my-act-word{display:inline-block;font-size:13px;font-weight:800;color:var(--gold);
+  padding:2px 8px;border-radius:9px;background:rgba(0,0,0,.32);
+  border:1px solid rgba(243,201,107,.35);white-space:nowrap}
+#app #page-play .pcards .pass-word{font-size:calc(20px * var(--k,1))!important}
+/* end v72 */

@@ -630,6 +630,8 @@ window.App = (function () {
       if (window.Secret && Secret.pullState) setTimeout(Secret.pullState, 500);
       // 登录后同步服务器统一表情包：房主传一次，所有玩家这里自动拿到
       if (window.Stickers && Stickers.syncGlobal) setTimeout(function () { Stickers.syncGlobal(); }, 600);
+    /* v72：不等 4 秒定时器，登录成功立刻把全部表情拉进本地缓存 */
+    try { setTimeout(function () { if (window.MediaCache && MediaCache.warmStickers) MediaCache.warmStickers(); }, 300); } catch (e) { }
     }
   }
   function enterApp() {
@@ -658,6 +660,7 @@ window.App = (function () {
     /* 自动登录会跳过 boot 的登录接口，那条路径上的表情包同步就丢了。
        这里补一次，保证「服务器传一次 → 每台手机打开都有」不依赖登录方式。 */
     if (window.Stickers && Stickers.syncGlobal) setTimeout(function () { Stickers.syncGlobal(); }, 900);
+    try { setTimeout(function () { if (window.MediaCache && MediaCache.warmStickers) MediaCache.warmStickers(); }, 400); } catch (e) { }
     loadHistory();
     go('home');
     startFakeOnline();
@@ -1003,6 +1006,9 @@ window.App = (function () {
   }
   function go(p) {
     page = p;
+    /* v72：聊天/我的/大厅不再显示空顶栏，去掉顶部那片空白 */
+    try { var mn = document.getElementById('main'); if (mn) mn.classList.toggle('no-topbar', p !== 'play'); } catch (e) { }
+    try { if (window.MediaCache && MediaCache.warmStickers) MediaCache.warmStickers(); } catch (e) { }
     /* v51：底牌条只在牌桌页显示（它已移到 #main 层） */
     try { document.body.classList.toggle('in-play', p === 'play'); } catch (e) { }
     // 切换底部标签时，先把打开的会话页 / 浮层收掉，否则会盖住标签栏点不动

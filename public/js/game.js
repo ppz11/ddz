@@ -1,6 +1,9 @@
 /* ===================== 牌桌界面与交互（支持双人 / 三人 / 在线玩家补位） ===================== */
 window.Game = (function () {
   var S = null, sel = {}, gid = null, rule = 'let46', dealAnim = false, mySeat = 0;
+  /* v72：本地记录我最近一次动作，服务端 lastSeat 不写「过/不叫/加倍」，
+     以前我在出牌区点过牌什么都不显示。 */
+  var myAct = null;
   var timer = null, left = 0, over = false, myRoom = null;
   var hintCycle = 0, lastHintKey = '';
   var tcMsgs = [], tcOpen = false, tcRec = null, tcChunks = [], tcStream = null, tcStart = 0, tcCancel = false;
@@ -216,7 +219,7 @@ window.Game = (function () {
   }
   function reset() {
     sel = {}; over = false; autoPlay = false; dealAnim = true; S = null; myRoom = null; gid = null;
-    hintCycle = 0; lastHintKey = ''; tcMsgs = []; closeTableChat(true);
+    hintCycle = 0; lastHintKey = ''; tcMsgs = []; closeTableChat(true); myAct = null;
     bidLog = []; v37BidTurn = -1; v37BidScore = 0; prevBidSeq = 0;
     lastActEvtKey = ''; lastBidEvtKey = ''; lastSpokenCards = '';
     feedGid = ''; seenFeed = {}; feedInit = false;
@@ -383,6 +386,7 @@ window.Game = (function () {
     var prevTurn = S ? S.turn : -1;
     var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',') +
                     '|t' + S.turn + '|c' + (S.counts || []).join('.') + '|g' + (S.gid || '')) : '';
+    if (gid && m.gid && String(gid) !== String(m.gid)) myAct = null;  /* 新局重置 */
     S = m; mySeat = m.seat; gid = m.gid; rule = m.rule;
     /* v66：另外两家在对局中的任何动作都震动 —— 叫分 / 不叫 / 减牌竞叫 /
        加倍 / 不加倍 / 出牌 / 不出（pass）全覆盖；自己的动作一律不震。
@@ -744,11 +748,23 @@ window.Game = (function () {
     function colHTML(seatHtml, playedHtml, side) {
       return '<div class="seatcol ' + side + '">' + seatHtml + playedHtml + '</div>';
     }
+    /* v72：我自己的叫分 / 加倍 / 出牌 / 过 / 不出，也在出牌区显示一下。
+       服务端有我打出的牌时优先显示牌；没有时（过、不叫、不加倍）显示本地动作标。 */
+    function myActHTML() {
+      if (!myAct || Date.now() - myAct.t > 6000) return '';
+      if (myAct.k === 'pass' || myAct.k === 'nobid' || myAct.k === 'nodouble' || myAct.k === 'nocut')
+        return '<span class="pass-word">过</span>';
+      if (myAct.k === 'bid') return '<span class="my-act-word">' + esc(myAct.txt || '叫分') + '</span>';
+      if (myAct.k === 'double') return '<span class="my-act-word">' + esc(myAct.txt || '加倍') + '</span>';
+      if (myAct.k === 'cut') return '<span class="my-act-word">' + esc(myAct.txt || '减牌') + '</span>';
+      if (myAct.k === 'play' && myAct.cards && myAct.cards.length) return rowHTML(myAct.cards);
+      return '';
+    }
     function myPlayedHTML() {
       var myRow = '';
       if (ls[me] && ls[me].cards && ls[me].cards.length) myRow = rowHTML(ls[me].cards);
       else if (S.last && S.last.by === me) myRow = rowHTML(S.last.cards);
-      return myRow || '';
+      return myRow || myActHTML();
     }
 
     var elL = document.getElementById('seat-left');
@@ -1190,6 +1206,7 @@ window.Game = (function () {
     if (!S || S.phase !== 'double') return;
     Sfx.click();
     if (App.settings().voice) Sfx.speak(yes ? '加倍' : '不加倍');
+    myAct = { k: yes ? 'double' : 'nodouble', txt: yes ? '加倍' : '不加倍', t: Date.now() };
     Net.send({ t: 'game:double', yes: !!yes });
   }
   function bindDouble() {
@@ -1255,6 +1272,7 @@ window.Game = (function () {
     if (info) Sfx.announce(info, cs);
     if (info && (info.type === 'bomb' || info.type === 'rocket')) shake();
     sel = {};
+    myAct = { k: 'play', cards: cs.slice(), t: Date.now() };
     Net.send({ t: 'game:play', ids: cs.map(function (c) { return c.id; }) });
   }
   function pass() {
@@ -1265,6 +1283,7 @@ window.Game = (function () {
     /* v40：走统一播报出口，会清掉排队中的上一家牌型语音 */
     if (App.settings().voice) Sfx.announce({ type: 'pass' });
     sel = {};
+    myAct = { k: 'pass', t: Date.now() };
     Net.send({ t: 'game:play', ids: [] });
   }
   function hint() {
@@ -1322,6 +1341,11 @@ window.Game = (function () {
     flashBigAct((S && S.cutMode)
       ? (n ? ('减 ' + n + ' 张') : '不叫')
       : ((a.type === 'grab') ? '抢地主' : (n ? ('叫 ' + n + ' 分') : '不叫')), '', mySeat);
+    myAct = (S && S.cutMode)
+      ? { k: (n ? 'cut' : 'nocut'), txt: n ? ('减 ' + n + ' 张') : '不叫', t: Date.now() }
+      : (n || a.type === 'grab')
+        ? { k: 'bid', txt: (a.type === 'grab' ? '抢地主' : ('叫 ' + n + ' 分')), t: Date.now() }
+        : { k: 'nobid', t: Date.now() };
     Net.send({ t: 'game:bid', act: a });
   }
   /* 认输：右上角常驻（竖屏按钮左边），只在牌局进行中显示，
@@ -1794,31 +1818,41 @@ window.Game = (function () {
         img.onerror = function () { fail(reason || '图片地址打不开'); };
         img.src = u;
       }
-      /* v65 真因：原来每次发表情都 fetch 一次 /api/file 且带 no-store，
-         服务端又没给 Cache-Control，大 GIF 下完前 <img> 一直是空的 → 先空白几秒。
-         现在先查本地缓存（内存 + IndexedDB），命中同步设 src 立即显示。 */
+      /* v72 真因：v65 起「未命中缓存就只等 fetchURL 异步回包」，而表情预热是
+          每 4 秒才扫一次的定时器、且 syncGlobal 是异步的 —— 刚打开 App 就发，
+          缓存里没有，3 秒计时已经走完，图上还没出来 → 报「图片解码失败」；
+          第二次发时缓存好了，就正常。现在改成「先直链同步出图，后台再补缓存」。 */
+      var shownAt = Date.now();
+      function startTimer() {
+        clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
+        bigStkTimer = setTimeout(function () {
+          box.classList.add('out');
+          bigStkOutTimer = setTimeout(hideBigSticker, 300);
+        }, 3000);
+      }
+      var hit = null;
+      try { hit = (window.MediaCache && MediaCache.get) ? MediaCache.get(u) : null; } catch (e) { }
+      img.onload = function () { img.__ok = 1; startTimer(); };
+      img.onerror = function () {
+        if (hit) { hit = null; img.onerror = null; img.src = u; return; }  /* 缓存副本坏了退回直链 */
+        fail('图片地址打不开');
+      };
+      img.src = hit || u;                       /* 同步赋值，第一帧就有画面 */
       try {
-        var hit = window.MediaCache && MediaCache.get(u);
-        if (hit) {
-          img.onerror = function () { direct('缓存图片解码失败'); };
-          img.src = hit;
-        } else if (window.MediaCache) {
+        if (!hit && window.MediaCache && MediaCache.fetchURL) {
           MediaCache.fetchURL(u).then(function (obj) {
-            img.onerror = function () { fail('图片解码失败'); };
-            img.src = obj;
-          }).catch(function (e) { direct(String(e && e.message || e)); });
-        } else {
-          direct('缓存模块未加载');
+            if (!obj || obj === u) return;
+            if (box.classList.contains('hidden') || Date.now() - shownAt > 2600) return;
+            var im2 = box.querySelector('img');
+            if (im2 && im2.parentNode) { im2.onerror = null; im2.src = obj; }
+          }).catch(function () { });
         }
-      } catch (e) { direct('此环境不支持 fetch'); }
+      } catch (e) { }
       box.classList.remove('hidden');
       box.classList.remove('out');
       clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
-      /* 3 秒显示 → 0.3 秒渐变透明缩小 → 隐藏 */
-      bigStkTimer = setTimeout(function () {
-        box.classList.add('out');
-        bigStkOutTimer = setTimeout(hideBigSticker, 300);
-      }, 3000);
+      /* 直链/缓存都没在 1.2 秒内 load 时给一个兜底计时，避免大图永远挂着 */
+      setTimeout(function () { if (!img.__ok) startTimer(); }, 1200);
       /* v61：整屏可点，touchstart / pointerdown 立即关并 preventDefault，
          不等动画、不穿透到牌桌；click 兜底。每次显示覆盖 on*，不累积监听器。 */
       box.onclick = hideBigSticker;

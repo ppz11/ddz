@@ -237,8 +237,9 @@ window.MediaCache = (function () {
   /* 30 只是「每次进会话预热的条数」，不是缓存容量上限：
      更早的媒体点开时同样会缓存并永久保留，没有条数 / 时间淘汰。 */
   function warmChat(list) {
-    var arr = (list || []).slice(-40).reverse(), out = [];
-    for (var i = 0; i < arr.length && out.length < 30; i++) {
+    /* v72：收到的视频/文件也要缓存，不再只取 30 条 / 跳过大文件 */
+    var arr = (list || []).slice(-300).reverse(), out = [];
+    for (var i = 0; i < arr.length; i++) {
       var m = arr[i]; if (!m || !m.url) continue;
       var u = String(m.url);
       if (/^\/api\/file\//.test(u) || /^https?:\/\//.test(u)) out.push(u);
@@ -284,29 +285,65 @@ window.MediaCache = (function () {
     return clearDB();
   }
 
-  /* 表情登录后增量预热（每 4 秒扫一次，已缓存的不会重复下载） */
-  try {
-    setInterval(function () {
-      var S = window.Stickers; if (!S) return;
-      var ps = (S.globalPacks && S.globalPacks.length) ? S.globalPacks : (S.packs || []);
-      var out = [];
-      for (var i = 0; i < ps.length && out.length < 80; i++) {
-        var items = ps[i] && ps[i].items || [];
-        for (var j = 0; j < items.length && out.length < 80; j++) {
-          var u = items[j] && items[j].url;
-          if (u && /^\/api\/file\//.test(u)) out.push(u);
-        }
+  /* v72 表情预热：不再「每 4 秒扫一次、只取前 80 张」。
+     登录后 / 同步完成 / 本地包就绪三个时机都立刻全量预热，之后 15 秒轻扫一次补漏。
+     已缓存的由 prefetch 自己跳过，不会重复消耗流量。 */
+  function collectStickers() {
+    var S = window.Stickers; if (!S) return [];
+    var ps = (S.globalPacks && S.globalPacks.length) ? S.globalPacks : (S.packs || []);
+    var out = [];
+    for (var i = 0; i < ps.length; i++) {
+      var items = (ps[i] && ps[i].items) || [];
+      for (var j = 0; j < items.length; j++) {
+        var u = items[j] && items[j].url;
+        if (u && /^\/api\/file\//.test(String(u))) out.push(String(u));
       }
-      warmRef(out);
-    }, 4000);
+    }
+    return out;
+  }
+  function warmStickers() { try { warmRef(collectStickers()); } catch (e) { } }
+  try {
+    setTimeout(warmStickers, 120);
+    document.addEventListener('ddz:stickers', warmStickers);
+    setInterval(warmStickers, 15000);
   } catch (e) { }
+
+  /* v72 缓存进度订阅：返回取消函数。cb(pct, done)。
+     新 APK 的原生桥给真实百分比；旧 APK 退化为「缓存中… → 已缓存」。 */
+  function makeWatch(cachedFn, progressFn) {
+    var watchers = {};
+    function emit(u, pct, done) {
+      var ws = watchers[u]; if (!ws) return;
+      for (var i = 0; i < ws.length; i++) { try { ws[i](pct, done); } catch (e) { } }
+      if (done) delete watchers[u];
+    }
+    return function (url, cb) {
+      url = String(url || ''); if (!url) return function () { };
+      (watchers[url] = watchers[url] || []).push(cb);
+      var tries = 0;
+      (function tick() {
+        try {
+          cachedFn(url).then(function (hit) {
+            if (hit) { emit(url, 100, true); return; }
+            var pct = 0;
+            try { pct = progressFn(url) || 0; } catch (e) { }
+            emit(url, pct, false);
+            if (++tries < 1500) setTimeout(tick, 400);
+            else emit(url, 0, true);
+          }).catch(function () { emit(url, 0, true); });
+        } catch (e) { emit(url, 0, true); }
+      })();
+      return function () { delete watchers[url]; };
+    };
+  }
+  var watchIDB = makeWatch(cached, function () { return 0; });
 
   /* 无原生（PC 浏览器 / 尚未重编译的旧 APK）：沿用 v67 的内存 + IndexedDB 缓存。
      这条路径受 WebView 存储配额约束，大文件建议 ≤200MB。 */
   var idbApi = {
     get: get, cached: cached, resolve: resolve, fetchURL: fetchURL,
-    prefetch: prefetch, warm: warm, warmChat: warmChat,
-    stats: stats, clear: clear,
+    prefetch: prefetch,    warm: warm, warmChat: warmChat, warmStickers: warmStickers,
+    watch: watchIDB, stats: stats, clear: clear,
     size: function () { return mem.size; },
     queued: function () { return queue.length; }
   };
@@ -378,6 +415,23 @@ window.MediaCache = (function () {
   }
   /* 换绑表情预热：原生模式只拉服务器表情（都很小），不重复走 IDB */
   warmRef = function (list) { (list || []).forEach(nStart); };
+  /* v72：新收到的视频/文件立刻入队缓存，最多 2 个并发，不会一进会话拉满带宽 */
+  var nQueue = [];
+  setInterval(function () {
+    if (!nQueue.length) return;
+    if (Object.keys(inflight).length >= 2) return;
+    nStart(nQueue.shift());
+  }, 350);
+  function nProgress(url) {
+    try {
+      if (!N || typeof N.cacheProgress !== 'function') return 0;
+      var s = String(N.cacheProgress(nId(url)) || '');
+      var m = s.match(/^(\d+)\/(\d+)$/);
+      if (m && Number(m[2]) > 0) return Math.min(99, Math.floor(Number(m[1]) * 100 / Number(m[2])));
+    } catch (e) { }
+    return 0;
+  }
+  var watchNative = makeWatch(function (u) { return Promise.resolve(nLocal(u)); }, nProgress);
 
   return {
     get: function (url) { return nLocal(url); },
@@ -393,17 +447,20 @@ window.MediaCache = (function () {
     fetchURL: function (url) { return this.resolve(url); },
     prefetch: nStart,
     warm: function (list) { (list || []).forEach(nStart); },
-    /* 进会话预热：只对 ≤8MB 且非视频的媒体自动缓存；
-       大视频等用户点开再下，避免一进会话就下 30 个 1GB 文件。 */
+    /* v72：视频 / 大文件收到就入队开始缓存，不再等用户点开。
+       2 并发的队列保证不会一次拉爆带宽，进度由 cacheProgress 真实上报。 */
     warmChat: function (list) {
-      var arr = (list || []).slice(-40).reverse();
+      var arr = (list || []).slice().reverse();
       for (var i = 0; i < arr.length; i++) {
-        var m = arr[i];
-        if (!m || !m.url) continue;
-        if (m.kind === 'video' || (m.size && m.size > 8 * 1024 * 1024)) continue;
-        nStart(m.url);
+        var m = arr[i]; if (!m || !m.url) continue;
+        var u = String(m.url);
+        if (!/^\/api\/file\//.test(u) && !/^https?:\/\//.test(u)) continue;
+        try { if (String(N.cacheHas(nId(u))) === '1') continue; } catch (e) { }
+        nQueue.push(u);
       }
     },
+    warmStickers: warmStickers,
+    watch: watchNative,
     stats: function () { return Promise.resolve(nStats()); },
     clear: function () {
       try { N.cacheClear(); } catch (e) { }

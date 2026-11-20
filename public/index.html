@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="ddz-build" content="v68">
+<meta name="ddz-build" content="v72">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#061f18">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -254,8 +254,7 @@
         <div class="rowset" id="row-vibetest" style="cursor:pointer">📳 试震一下<span style="color:#5c6b66;font-size:11px">按当前强度</span></div>
         <div style="font-size:10px;color:#5c6b66;padding:0 12px 4px">叫分 / 加倍 / 不出 / 出牌都震，只有自己的操作不震</div>
         <div class="rowset tune">媒体缓存<b id="lb-cache">…</b><button id="btn-clearcache" style="background:#1d3a33;color:#9fe8cf;border:1px solid #2c5a4c;border-radius:6px;padding:2px 8px;font-size:11px">清除</button></div>
-        <div style="font-size:10px;color:#5c6b66;padding:0 12px 6px">图片 / 视频 / 文件 / 表情默认缓存，仅本 App 可见，文件管理和手机管家扫不到；只有手动「保存到手机」的文件才会出现在下载目录。</div>
-        <div class="rowset">新消息提示音<button class="sw on" id="sw-newsound"><i></i></button></div>
+<div class="rowset">新消息提示音<button class="sw on" id="sw-newsound"><i></i></button></div>
         <div class="rowset">新消息震动<button class="sw on" id="sw-newvibe"><i></i></button></div>
         <div class="rowset">来电震动<button class="sw on" id="sw-callvibe"><i></i></button></div>
         <div class="rowset">来电铃声<button class="sw on" id="sw-callring"><i></i></button></div>
@@ -317,18 +316,16 @@
 })();
 
 /* ============================================================
- * v63 ① 软键盘避让：Android WebView 里键盘常常不 resize 视口，
- *    输入框被压在键盘下面。用 visualViewport 算出键盘高度，
- *    把 #app 的底边抬上去，.thread / .composer 自然跟着上移。
+ * v72 软键盘避让（重写）
+ * ------------------------------------------------------------
+ * 旧版把 #app.style.bottom 抬高 kb 像素：#app 是 flex 列容器，一抬
+ * 整个页面连 #tabbar 一起上移 —— 真机上表现为「大厅/对战/聊天/我的
+ * 四个按钮跑到键盘上方、页面顶部空出一大片」，输入框还是被挡。
+ * 现在 #app 与 #tabbar 完全不动，只把 .composer / .tc-bar 固定到
+ * 键盘上沿；键盘收起时原样恢复。
  * ============================================================ */
 (function () {
-  var app = document.getElementById('app');
-  if (!app) return;
-  var vv = window.visualViewport, last = 0;
-  /* v65 真因：Android WebView 键盘弹出时 window.innerHeight 常和 vv.height 一起缩小，
-     原来用「innerHeight - vv.height」算出来恒为 0，于是 <90 被归零、输入框永远不上移。
-     改成记录「无键盘时的基准高度」，之后拿基准减当前 vv.height。 */
-  var baseH = 0;
+  var vv = window.visualViewport, baseH = 0, last = 0, poll = null;
   function baseOf() {
     var h = vv ? vv.height : (window.innerHeight || 0);
     if (!baseH || h > baseH) baseH = h;
@@ -345,20 +342,15 @@
     } else {
       kb = Math.max(0, (screen.height || 0) - (window.innerHeight || 0));
     }
-    /* 横屏牌桌整体旋转过，动 bottom 会错位 */
-    if (document.body.classList.contains('land')) {
-      app.style.bottom = ''; app.style.setProperty('--kb', '0px'); return;
-    }
     if (kb < 90) kb = 0;
     if (kb === last) return;
     last = kb;
-    app.style.bottom = kb ? (kb + 'px') : '';
-    app.style.setProperty('--kb', kb + 'px');
-    /* 双保险：输入条自己抬起，不依赖祖先是否跟随 #app 的 bottom */
+    var app = document.getElementById('app');
+    if (app) app.style.setProperty('--kb', kb + 'px');   /* 不动 bottom，页面绝不位移 */
+    try { document.body.classList.toggle('kb-on', !!kb); } catch (e) { }
     try {
-      document.querySelectorAll('.composer,.tchat .tc-bar').forEach(function (el) {
-        el.style.transform = kb ? ('translateY(-' + kb + 'px)') : '';
-        el.style.zIndex = kb ? '60' : '';
+      document.querySelectorAll('.thread,.tchat').forEach(function (el) {
+        el.classList.toggle('kb', !!kb);
       });
     } catch (e) { }
   }
@@ -366,14 +358,13 @@
     try { vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); } catch (e) { }
   }
   window.addEventListener('resize', fit);
-  /* 带「点击说话」工具条的定制输入法不触发 vv.resize：聚焦后 1 秒内轮询补抬 */
-  var poll = null;
+  /* 带「点击说话」工具条的定制输入法不触发 vv.resize：聚焦后持续轮询补抬 */
   document.addEventListener('focusin', function (e) {
     var t = e.target;
     if (t && t.matches && t.matches('input,textarea,[contenteditable="true"]')) {
       clearInterval(poll);
       var n = 0;
-      poll = setInterval(function () { fit(); if (++n > 12) clearInterval(poll); }, 80);
+      poll = setInterval(function () { fit(); if (++n > 14) clearInterval(poll); }, 80);
       setTimeout(fit, 220); setTimeout(fit, 550); setTimeout(fit, 900);
       try { setTimeout(function () { if (t.scrollIntoView) t.scrollIntoView({ block: 'end' }); }, 260); } catch (x) { }
     }
@@ -384,40 +375,6 @@
       if (!a || !/INPUT|TEXTAREA/.test(a.tagName || '')) { clearInterval(poll); fit(); }
     }, 180);
   }, true);
-
-  /* v63 ② 内部剪贴板：页面是 http（非安全上下文），navigator.clipboard
-     在多数 Android WebView 里直接 undefined。复制端用 execCommand 兜底，
-     粘贴端优先读 App 内部最近一次复制的值，保证「复制 UID → 好友空间粘贴」闭环可用。 */
-  window.DDZCopy = function (text) {
-    var s = String(text == null ? '' : text);
-    try { localStorage.setItem('ddz_clip', s); } catch (e) { }
-    var ok = function () { try { App.toast('已复制：' + s); } catch (e) { } };
-    var fallback = function () {
-      try {
-        var ta = document.createElement('textarea');
-        ta.value = s; ta.setAttribute('readonly', '');
-        ta.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;';
-        document.body.appendChild(ta);
-        ta.focus(); ta.select();
-        try { ta.setSelectionRange(0, s.length); } catch (e) { }
-        var good = document.execCommand('copy');
-        ta.remove();
-        if (good) { ok(); return; }
-      } catch (e) { }
-      try { App.toast('已记录 UID：' + s + '（可在好友空间点 📋 粘贴）'); } catch (e) { }
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
-      navigator.clipboard.writeText(s).then(ok).catch(fallback);
-    } else fallback();
-  };
-  window.DDZPaste = function (cb) {
-    var local = '';
-    try { local = localStorage.getItem('ddz_clip') || ''; } catch (e) { }
-    if (local) { cb(local); return; }
-    if (navigator.clipboard && navigator.clipboard.readText && window.isSecureContext) {
-      navigator.clipboard.readText().then(function (t) { cb(t || ''); }).catch(function () { cb(''); });
-    } else cb('');
-  };
 })();
 </script>
 </body>

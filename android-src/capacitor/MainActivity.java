@@ -861,8 +861,16 @@ public class MainActivity extends BridgeActivity {
                         InputStream in = c.getInputStream();
                         FileOutputStream fo = new FileOutputStream(part, false);
                         byte[] buf = new byte[64 * 1024];
-                        int r;
-                        while ((r = in.read(buf)) > 0) fo.write(buf, 0, r);
+                         int total = c.getContentLength();
+                         long done = 0;
+                         int r;
+                         while ((r = in.read(buf)) > 0) {
+                             fo.write(buf, 0, r);
+                             done += r;
+                             synchronized (sProg) {
+                                 sProg.put(sid, new long[]{done, total > 0 ? total : 0});
+                             }
+                         }
                         fo.flush(); fo.close();
                         try { in.close(); } catch (Exception ignored) { }
                         if (!part.renameTo(dst)) throw new Exception("rename 失败");
@@ -875,11 +883,23 @@ public class MainActivity extends BridgeActivity {
                         try { if (part.exists()) part.delete(); } catch (Exception ignored) { }
                     } finally {
                         if (c != null) try { c.disconnect(); } catch (Exception ignored) { }
-                        synchronized (sFetching) { sFetching.remove(sid); }
+                         synchronized (sProg) { sProg.remove(sid); }
+                         synchronized (sFetching) { sFetching.remove(sid); }
                     }
                 }
             }, "ddz-cache-fetch").start();
             return "started";
+        }
+
+        /* v72: returns "loaded/total" while downloading, empty when done/unknown */
+        @JavascriptInterface
+        public String cacheProgress(final String id) {
+            final String sid = safeId(id);
+            synchronized (sProg) {
+                long[] p = sProg.get(sid);
+                if (p == null) return "";
+                return p[0] + "/" + p[1];
+            }
         }
 
         @JavascriptInterface
@@ -919,6 +939,8 @@ public class MainActivity extends BridgeActivity {
     /* ---------------- v68 私有缓存：目录 / 本地服务 ---------------- */
     private static volatile int sCachePort = 0;
     private static final Set<String> sFetching = Collections.synchronizedSet(new HashSet<String>());
+    /* v72: download progress for private media cache, id -> {loaded,total} */
+    private static final java.util.HashMap<String, long[]> sProg = new java.util.HashMap<String, long[]>();
 
     private File cacheRoot() {
         File d = new File(getNoBackupFilesDir(), "ddz_media");

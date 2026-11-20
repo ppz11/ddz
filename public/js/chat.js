@@ -7,11 +7,34 @@ window.Chat = (function () {
   /* v41：好友名单缓存 —— 会话删掉后从好友列表点开，仍能显示昵称头像 */
   var friendCache = {};
   var rec = null, chunks = [], stream = null, recStart = 0, recTimer = null, canceling = false;
+  /* v72：UID 改成 8 位纯数字后，服务端给的是数字、本地 cur 常是字符串，
+     原来 `===` 比较失败 → 会话开着也把消息计成未读；后台补投还会重复 +1。 */
+  function U(k) { return String(k == null ? '' : k); }
+  var seenChat = new Set(), readAt = {}, histTimer = null, histTry = 0, histFor = '';
+  function syncDot() {
+    var n = 0; Object.keys(unread).forEach(function (k) { n += (Number(unread[k]) || 0); });
+    try { App.updateChatDot(n); } catch (e) { }
+  }
+  function prefetchMsg(m) {
+    if (!m || !m.url) return;
+    try { if (window.MediaCache && MediaCache.prefetch) MediaCache.prefetch(m.url); } catch (e) { }
+  }
   /* 多选删除：'conv' = 选会话，'msg' = 选消息 */
   var selMode = null, selConvs = new Set(), selMsgs = new Set();
 
   function init() {
-    Net.on('contacts', function (m) { contacts = m.list || []; renderList(); paintThreadState(); });
+    Net.on('contacts', function (m) {
+      contacts = m.list || [];
+      /* v72：服务端的 unread 只在「本地还没有这条记录」时作初值；
+         正在看的会话一律 0，且绝不让服务端回灌覆盖刚刚清掉的已读。 */
+      contacts.forEach(function (c) {
+        var k = U(c.uid);
+        if (k === U(cur)) { unread[k] = 0; return; }
+        if (!(k in unread) && Number(c.unread) > 0) unread[k] = Number(c.unread);
+        if (readAt[k] && Number(c.unread) > 0) unread[k] = 0;
+      });
+      renderList(); paintThreadState(); syncDot();
+    });
     /* 好友名单：主界面专用，与隐私空间完全隔离 */
     Net.on('friend:list', function (m) {
       if (m.via === 'secret') return;
@@ -19,23 +42,39 @@ window.Chat = (function () {
     });
     Net.on('friend:search', function (m) { paintFriends(m.list || [], 'search'); });
     Net.on('chat', function (m) {
+      var msg = m.msg || {};
+      /* 后台积压补投 / 重连重发会重复投递同一条，先按 id 去重 */
+      var mk = U(msg.id || (msg.from + '|' + msg.ts));
+      if (seenChat.has(mk)) return; seenChat.add(mk);
+      if (seenChat.size > 600) seenChat = new Set(Array.from(seenChat).slice(-300));
+      /* v72：视频 / 文件 / 图片 / 语音收到就立刻开始缓存，不等点开 */
+      prefetchMsg(msg);
       // 通知栏永远只推送斗地主营销广告，绝不泄露真实内容
-      if (m.msg.from !== App.me().uid) Notifier.notifyIfHidden(m.msg.id || (m.msg.from + m.msg.ts));
-      if (cur && (m.msg.from === cur || m.msg.to === cur)) {
-        pushMsg(m.msg);   /* v41：滚动由 pushMsg 按「是否在底部」自行决定 */
+      if (U(msg.from) !== U(App.me().uid)) Notifier.notifyIfHidden(mk);
+      var inThread = cur && (U(msg.from) === U(cur) || U(msg.to) === U(cur));
+      if (inThread) {
+        pushMsg(msg);   /* v41：滚动由 pushMsg 按「是否在底部」自行决定 */
+        unread[U(cur)] = 0;
         Sfx.msg();
       }
       else {
-        unread[m.msg.from] = (unread[m.msg.from] || 0) + 1;
+        var k = U(msg.from);
+        unread[k] = (Number(unread[k]) || 0) + 1;
         Sfx.msg();
         if (App.disguise()) App.toast(ADS.randomFeed()); else App.toast('收到新消息');
       }
-      renderList();
+      renderList(); syncDot();
     });
     Net.on('chat:history', function (m) {
-      msgs = m.list || []; renderMsgs();
+      /* v72：串台的历史包（切会话太快 / 后台补投）会渲染成空白或错会话 */
+      if (cur && m.with && U(m.with) !== U(cur)) return;
+      clearTimeout(histTimer); histTimer = null; histTry = 0;
+      msgs = m.list || [];
+      /* v72：历史包只负责整表重建，串台包已在上面拦掉 */
+      renderMsgs();
       /* v41：history 到达后统一设锚点，多次重试直到容器/图片尺寸稳定 */
       scrollToUnread();
+      syncDot();
     });
     Net.on('chat:read', function (m) {
       var ids = ((m && m.ids) || []).map(String);
@@ -50,7 +89,7 @@ window.Chat = (function () {
           if (rd2) { rd2.textContent = '已读'; rd2.className = 'rd yes'; }
         }
       });
-      renderList();
+       renderList(); syncDot();
     });
     Net.on('chat:deleted', function (m) {
       msgs = msgs.filter(function (x) { return String(x.id) !== String(m.id); });
@@ -65,13 +104,14 @@ window.Chat = (function () {
     Net.on('chat:threadsdeleted', function (m) {
       var uids = m.uids || [];
       uids.forEach(function (k) { delete unread[k]; });
-      if (cur && uids.indexOf(cur) >= 0) close();
-      exitSel(); renderList();
+      uids.forEach(function (k) { readAt[U(k)] = Date.now(); });
+      if (cur && uids.map(U).indexOf(U(cur)) >= 0) close();
+      exitSel(); renderList(); syncDot();
     });
     Net.on('chat:threadgone', function (m) {
-      delete unread[m.with];
-      if (cur === m.with) { msgs = []; renderMsgs(); }
-      renderList();
+      delete unread[U(m.with)]; readAt[U(m.with)] = Date.now();
+      if (U(cur) === U(m.with)) { msgs = []; renderMsgs(); }
+      renderList(); syncDot();
     });
   }
 
@@ -93,7 +133,7 @@ window.Chat = (function () {
       box.innerHTML = '<div class="empty">还没有联系人<br>去大厅邀人开局，或在创建房间页邀请在线好友</div>';
     } else {
       box.innerHTML = contacts.map(function (c) {
-      var n = unread[c.uid] || 0;
+      var n = Number(unread[U(c.uid)]) || 0;
       // 伪装模式下，列表预览一律伪装成「邀请你开局」，不做广告资讯
       var last = App.disguise() ? ADS.inviteFor(c.uid + (c.ts || '')) : (c.lastText || '');
       var rm = c.room;
@@ -161,13 +201,13 @@ window.Chat = (function () {
           ['🗑 删除该会话', function () {
             App.confirm('删除与「' + esc(c.nick || '玩家') + '」的会话？', '只在你这边删除，对方仍能看到', function () {
               Net.send({ t: 'chat:delthread', with: uid });
-              unread[uid] = 0;
-              if (cur === uid) close();
+               unread[U(uid)] = 0; readAt[U(uid)] = Date.now();
+               if (U(cur) === U(uid)) close(); syncDot();
               App.toast('会话已删除');
             });
           }],
           ['☑️ 多选删除', function () { enterConvSel(uid); }],
-          ['✅ 标记已读', function () { unread[uid] = 0; renderList(); }]
+           ['✅ 标记已读', function () { unread[U(uid)] = 0; readAt[U(uid)] = Date.now(); renderList(); syncDot(); }]
         ]);
       });
     });
@@ -175,7 +215,7 @@ window.Chat = (function () {
       b.onclick = function (e) { e.stopPropagation(); toggleConv(b.dataset.pick); };
     });
     paintConvBar();
-    App.updateChatDot(Object.keys(unread).reduce(function (a, k) { return a + unread[k]; }, 0));
+    syncDot();
     /* 顶部「管理」：一键进入多选删除，不必靠长按才发现 */
     var mb = document.getElementById('chat-manage');
     if (mb) {
@@ -269,8 +309,11 @@ window.Chat = (function () {
   }
 
   function open(uid) {
-    lastUnread = unread[uid] || 0;
-    cur = uid; unread[uid] = 0; msgs = [];
+    uid = U(uid);
+    lastUnread = Number(unread[uid]) || 0;
+    cur = uid; unread[uid] = 0; readAt[uid] = Date.now(); msgs = [];
+    clearTimeout(histTimer); histTry = 0; histFor = uid;
+    syncDot();
     var c = contacts.filter(function (x) { return String(x.uid) === String(uid); })[0] || friendCache[String(uid)] || {};
     var t = document.createElement('div');
     t.className = 'thread'; t.id = 'thread';
@@ -341,10 +384,21 @@ window.Chat = (function () {
     if (!contacts.some(function (x) { return String(x.uid) === String(uid); })) {
       Net.send({ t: 'chat:reopen', with: uid });
     }
-    Net.send({ t: 'chat:history', with: uid });
-    renderList();
+    /* v72：history 丢包 / 后台补投延迟时，会话会一直是空白。
+       先给占位，再按 1.8s / 3.6s / 7.2s 重发三次，到达即停。 */
+    var mb = document.getElementById('msgs');
+    if (mb) mb.innerHTML = '<div class="empty" style="opacity:.6">正在加载消息…</div>';
+    function askHistory() {
+      if (!cur || U(cur) !== U(histFor)) return;
+      Net.send({ t: 'chat:history', with: histFor });
+      histTry++;
+      if (histTry < 4) histTimer = setTimeout(askHistory, 1800 * histTry);
+    }
+    askHistory();
+    renderList(); syncDot();
   }
   function close() {
+    clearTimeout(histTimer); histTimer = null; histFor = '';
     var t = document.getElementById('thread'); if (t) t.remove();
     cur = null; closePanel();
     exitSel();
@@ -392,8 +446,8 @@ window.Chat = (function () {
     var box = document.getElementById('msgs'); if (!box) return;
     box.innerHTML = msgs.map(msgHtml).join('');
     bindMsgNodes(box);
-    /* v66：进入/刷新会话即后台预热最近 30 条图片/视频/文件/语音到 App 私有缓存，
-       点开时直接命中，不用每次都从服务器要内容；外部软件扫不到缓存。 */
+    /* v72：进入/刷新会话即把全部图片/视频/文件/语音入队缓存（不再跳过视频大文件）。
+        命中本地一个网络字节都不发，外部软件扫不到缓存。 */
     try { if (window.MediaCache && MediaCache.warmChat) MediaCache.warmChat(msgs); } catch (e) { }
     paintMsgBar();
     var mg = document.getElementById('th-manage');
@@ -414,16 +468,31 @@ window.Chat = (function () {
         : '';
       // 对方的消息带昵称，一眼分得清是谁说的
       var nm = (!isMe && who.nick) ? '<div class="who">' + esc(who.nick) + '</div>' : '';
-      return '<div class="msg ' + (isMe ? 'me' : '') + (selMsgs.has(String(m.id)) ? ' picked' : '') + '" data-id="' + m.id + '">' +
-        pick +
-        '<div class="a">' + av + '</div><div class="bcol">' + nm + '<div class="bub ' + (m.kind || 'text') + '">' + body +
-        '<div class="time">' + fmt(m.ts) +
-        (isMe ? (function () { var rd = m.read || readAck.has(String(m.id));
-          return '<span class="rd' + (rd ? ' yes' : '') + '">' + (rd ? '已读' : '未读') + '</span>'; })() : '') +
-        '</div></div></div></div>';
+       /* v72：图片/视频/文件/语音下方显示缓存进度（百分比 / 已缓存） */
+       var ctip = '';
+       if (m.url && /^(image|video|file|voice)$/.test(m.kind || ''))
+         ctip = '<div class="cache-tip" data-cache="' + esc(m.url) + '">缓存中…</div>';
+       return '<div class="msg ' + (isMe ? 'me' : '') + (selMsgs.has(String(m.id)) ? ' picked' : '') + '" data-id="' + m.id + '">' +
+         pick +
+         '<div class="a">' + av + '</div><div class="bcol">' + nm + '<div class="bub ' + (m.kind || 'text') + '">' + body + ctip +
+         '<div class="time">' + fmt(m.ts) +
+         (isMe ? (function () { var rd = m.read || readAck.has(String(m.id));
+           return '<span class="rd' + (rd ? ' yes' : '') + '">' + (rd ? '已读' : '未读') + '</span>'; })() : '') +
+         '</div></div></div></div>';
   }
   /* 绑定可复用：renderMsgs 传整个容器，pushMsg 传只包含新节点的包裹层 */
   function bindMsgNodes(root) {
+    /* v72：逐条订阅缓存进度，DOM 被重绘时旧订阅自动作废 */
+    try {
+      if (window.MediaCache && MediaCache.watch) root.querySelectorAll('[data-cache]').forEach(function (el) {
+        var u = el.getAttribute('data-cache');
+        MediaCache.watch(u, function (pct, done) {
+          if (!el.parentNode) return;
+          el.textContent = done ? '已缓存' : (pct > 0 ? ('缓存 ' + pct + '%') : '缓存中…');
+          el.className = 'cache-tip' + (done ? ' done' : '');
+        });
+      });
+    } catch (e) { }
 
     root.querySelectorAll('[data-join]').forEach(function (b) {
       b.onclick = function (e) {

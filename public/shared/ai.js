@@ -152,9 +152,20 @@
     var lastBy = last.by;
     var isLandlord = seat === g.landlord;
     var teammate = !isLandlord && lastBy !== g.landlord && lastBy !== seat;  // 队友出的牌
-    var oppLast = g.seats === 3
-      ? Math.min.apply(null, g.hands.map(function (h, i) { return i === seat ? 99 : h.length; }))
-      : g.hands[1 - seat].length;
+    /* v72：三人场原来用「所有其他家最小牌数」当对手，把队友也算进去了 ——
+       队友只剩 2 张时 urgent=true，机器人会去压队友，最终把农民方拖输。
+       现在只认地主的牌数。 */
+    var oppLast;
+    if (g.seats === 3 && g.landlord >= 0) {
+      oppLast = 99;
+      g.hands.forEach(function (h, i) {
+        if (i === seat) return;                 /* 自己不算 */
+        if (isLandlord || i !== g.landlord)     /* 地主看所有农民；农民只看地主 */
+          oppLast = Math.min(oppLast, (h || []).length);
+      });
+    } else {
+      oppLast = (g.hands[1 - seat] || []).length;
+    }
 
     /* v59 农民配合：以前「队友出的牌」92% 直接放过，叠加跟牌保守策略后，
        经常表现成「一家一直出、另一家一整局都不出」，看着像挂机。
@@ -168,16 +179,23 @@
         var inf = DDZ.parse(DDZ.byId(hand, m));
         return inf && DDZ.beats(inf, needBeat);
       });
-      if (finish0.length) return { ids: finish0[0] };       // 自己能走完 → 接管
-      g._farmerYield = g._farmerYield || {};
-      var y = (g._farmerYield[seat] || 0) + 1;
-      g._farmerYield[seat] = y;
-      var takeOver = (y % 3 === 0) || (mateLeft > 6 && hand.length <= 4 && Math.random() < 0.35);
-      if (mateLeft <= 2) return { ids: [] };                // 队友快赢，让路
-      if (!takeOver) {
-        if (Math.random() < 0.08) { /* 偶尔手滑，继续走压制逻辑 */ }
-        else return { ids: [] };
+      if (finish0.length) return { ids: finish0[0] };       // 自己能一手走完 → 接管收尾
+      /* v72：撤掉「每让 2 次第 3 次必接管」和 8% 手滑。
+         我（真人农民）牌快出完时机器人还压我，多半就是这两条触发的。
+         队友剩 ≤6 张一律让路；只有队友牌还很多(>10)、自己牌极少(≤3)
+         时才偶尔接管一次，避免整局一动不动像挂机。 */
+      if (mateLeft <= 6) return { ids: [] };
+      if (mateLeft > 10 && hand.length <= 3 && Math.random() < 0.25) {
+        /* 接管就直接出，不再走后面的「藏牌 / 忍让」随机放过，
+           否则刚允许接管又被放过，会退回「一家整局不出」的老毛病。 */
+        var take = null;
+        for (var ti = 0; ti < all0.length && !take; ti++) {
+          var inf2 = DDZ.parse(DDZ.byId(hand, all0[ti]));
+          if (inf2 && DDZ.beats(inf2, needBeat)) take = all0[ti];
+        }
+        if (take) return { ids: take };
       }
+      return { ids: [] };
     }
 
     var all = DDZ.allMoves(hand);
