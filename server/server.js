@@ -38,7 +38,15 @@ function asciiName(nm) {
   return stem + ext;
 }
 
-const MAX_UPLOAD = 300 * 1024 * 1024;
+/* v68：单文件上限 1GB（原来是 300MB，且被 base64 链路压缩到实际约 220MB）。
+   大文件改走 /api/upload/chunk 二进制分片直传，服务端按片流式落盘，
+   内存占用恒定；下面 3 个常量是这条新链路的边界。 */
+const MAX_UPLOAD   = 1024 * 1024 * 1024;   /* 1GB */
+const MAX_JSON_BODY = 8 * 1024 * 1024;     /* JSON 请求体上限，防止有人用 JSON 塞大文件炸内存 */
+const CHUNK_SIZE   = 4 * 1024 * 1024;      /* 单片 4MB */
+const MAX_CHUNKS   = Math.ceil(MAX_UPLOAD / CHUNK_SIZE);  /* 256 片 */
+const safeUploadId = s => /^[A-Za-z0-9_-]{6,64}$/.test(String(s || '')) ? String(s) : '';
+const partsDir = upId => path.join(store.DATA_DIR, 'uploads', '.parts', upId);
 
 /* ============================================================
  *  TURN 中继（语音 / 视频通话跨网络必备）
@@ -116,7 +124,7 @@ function body(req, limit) {
     let n = 0; const chunks = [];
     req.on('data', c => {
       n += c.length;
-      if (n > (limit || MAX_UPLOAD)) { reject(new Error('TOO_BIG')); req.destroy(); return; }
+      if (n > (limit || MAX_JSON_BODY)) { reject(new Error('TOO_BIG')); req.destroy(); return; }
       chunks.push(c);
     });
     req.on('end', () => resolve(Buffer.concat(chunks)));
@@ -337,12 +345,107 @@ const server = http.createServer(async (req, res) => {
       const u = userByToken(url.searchParams.get('token'));
       return u ? json(res, 200, { me: pub(u) }) : json(res, 401, { err: 'no' });
     }
+    /* 旧 base64 接口：只留给 ≤8MB 的语音 / 表情 / 老版本客户端。
+       大文件一律走下面的分片接口，不再把 base64 塞进 JSON（膨胀 4/3 + 整块进内存）。 */
     if (p === '/api/upload' && req.method === 'POST') {
-      const b = JSON.parse((await body(req)).toString() || '{}');
+      const b = JSON.parse((await body(req, 12 << 20)).toString() || '{}');
       if (!b.data) return json(res, 400, { err: 'empty' });
       const buf = Buffer.from(b.data, 'base64');
-      if (buf.length > MAX_UPLOAD) return json(res, 413, { err: '文件太大（上限 300MB）' });
+      if (buf.length > 8 * 1024 * 1024) return json(res, 413, { err: '文件超过 8MB，请用分片上传' });
       const rec = store.putUpload(b.name || 'file', b.mime || 'application/octet-stream', buf, { kind: b.kind, dur: b.dur });
+      return json(res, 200, { id: rec.id, url: '/api/file/' + rec.id, name: rec.name, size: rec.size, mime: rec.mime });
+    }
+
+    /* ============================================================
+     * v68 大文件分片上传（二进制直传，不经过 base64 / JSON）
+     *   GET  /api/upload/status?uploadId=&token=           → 已收到的片号（断点续传）
+     *   POST /api/upload/chunk?uploadId=&idx=&total=&token=  body = 原始二进制
+     *   POST /api/upload/finish                            → 合并并返回 /api/file/:id
+     * 设计要点：每片直接流式写盘，请求体不进内存；合并时按片顺序 append，
+     *           1GB 也只是磁盘顺序写；失败重传只补缺的片。
+     * ============================================================ */
+    if (p === '/api/upload/status' && req.method === 'GET') {
+      const upId = safeUploadId(url.searchParams.get('uploadId'));
+      if (!upId) return json(res, 400, { err: 'uploadId 不合法' });
+      if (!userByToken(url.searchParams.get('token'))) return json(res, 401, { err: '登录失效' });
+      const d = partsDir(upId), got = [];
+      try {
+        for (const f of fs.readdirSync(d)) {
+          const m = /^(\d+)\.part$/.exec(f);
+          if (m && fs.statSync(path.join(d, f)).size > 0) got.push(parseInt(m[1], 10));
+        }
+      } catch (e) { }
+      got.sort((a, b) => a - b);
+      return json(res, 200, { received: got });
+    }
+
+    if (p === '/api/upload/chunk' && req.method === 'POST') {
+      const upId = safeUploadId(url.searchParams.get('uploadId'));
+      const idx = parseInt(url.searchParams.get('idx') || '', 10);
+      const total = parseInt(url.searchParams.get('total') || '', 10);
+      if (!upId || !Number.isInteger(idx) || !Number.isInteger(total) ||
+          idx < 0 || total < 1 || total > MAX_CHUNKS || idx >= total)
+        return json(res, 400, { err: '分片参数不合法' });
+      if (!userByToken(url.searchParams.get('token'))) return json(res, 401, { err: '登录失效' });
+      const d = partsDir(upId);
+      fs.mkdirSync(d, { recursive: true });
+      const tmp = path.join(d, idx + '.part.tmp'), dst = path.join(d, idx + '.part');
+      let written = 0, tooBig = false;
+      const ws = fs.createWriteStream(tmp);
+      try {
+        await new Promise(function (resolve, reject) {
+          req.on('data', function (c) {
+            written += c.length;
+            if (written > CHUNK_SIZE + 1024) { tooBig = true; ws.destroy(); reject(new Error('TOO_BIG')); return; }
+            if (!ws.write(c)) { req.pause(); ws.once('drain', function () { req.resume(); }); }
+          });
+          req.on('end', function () { if (!tooBig) ws.end(resolve); });
+          req.on('error', reject);
+          ws.on('error', reject);
+        });
+        fs.renameSync(tmp, dst);
+      } catch (e) {
+        try { ws.destroy(); } catch (x) { }
+        try { fs.unlinkSync(tmp); } catch (x) { }
+        return json(res, 413, { err: '单片超过 4MB 或写入失败' });
+      }
+      return json(res, 200, { ok: true, idx: idx, size: written });
+    }
+
+    if (p === '/api/upload/finish' && req.method === 'POST') {
+      const b = JSON.parse((await body(req, 64 << 10)).toString() || '{}');
+      const upId = safeUploadId(b.uploadId), total = parseInt(b.total, 10);
+      if (!upId || !Number.isInteger(total) || total < 1 || total > MAX_CHUNKS)
+        return json(res, 400, { err: '参数不合法' });
+      if (!userByToken(b.token || url.searchParams.get('token'))) return json(res, 401, { err: '登录失效' });
+      const d = partsDir(upId);
+      for (let i = 0; i < total; i++)
+        if (!fs.existsSync(path.join(d, i + '.part'))) return json(res, 409, { err: '缺第 ' + i + ' 片，请重试' });
+      const merged = path.join(d, 'merged.bin');
+      const out = fs.createWriteStream(merged);
+      try {
+        for (let i = 0; i < total; i++) {
+          await new Promise(function (resolve, reject) {
+            const rs = fs.createReadStream(path.join(d, i + '.part'));
+            rs.on('error', reject);
+            rs.on('end', resolve);
+            rs.pipe(out, { end: false });
+          });
+        }
+        await new Promise(function (resolve, reject) { out.on('error', reject); out.end(resolve); });
+      } catch (e) {
+        try { out.destroy(); } catch (x) { }
+        return json(res, 500, { err: '合并失败：' + e.message });
+      }
+      const size = fs.statSync(merged).size;
+      if (size > MAX_UPLOAD) {
+        try { fs.unlinkSync(merged); } catch (x) { }
+        return json(res, 413, { err: '文件超过 1GB' });
+      }
+      const rec = store.putUploadFromPath(b.name || 'file.bin', b.mime || 'application/octet-stream',
+                                          merged, size, { kind: b.kind, dur: b.dur, chunked: true });
+      try { fs.rmSync(d, { recursive: true, force: true }); }
+      catch (e) { try { fs.rmdirSync(d, { recursive: true }); } catch (x) { } }
       return json(res, 200, { id: rec.id, url: '/api/file/' + rec.id, name: rec.name, size: rec.size, mime: rec.mime });
     }
     /* v63 收藏导出：把收藏条目（文字/语音/图片/视频引用）和对应的上传文件
@@ -459,7 +562,21 @@ const server = http.createServer(async (req, res) => {
                真名通过 filename*=UTF-8''<urlencode> 给（浏览器/下载器都认这个）。 */
       const disp = (dl ? 'attachment' : 'inline')
         + '; filename="' + asciiName(rec.name) + '"; filename*=UTF-8\'\'' + encodeURIComponent(rec.name || 'file');
-      const base = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Content-Disposition': disp };
+      /* v65：文件 id 一生成就不可变，给长缓存 + ETag。
+         原来没有任何缓存头，每次发表情 / 点视频都要回源下载，
+         表现就是「先空白几秒」「点开一大会才播」。 */
+      const etag = '"' + String(rec.id) + '-' + size + '"';
+      /* v66：private 而非 public —— 文件只允许缓存在客户端私有区，
+         不经过共享代理；真正的落地缓存走 WebView 私有 IndexedDB。 */
+      const base = {
+        'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Content-Disposition': disp,
+        'Cache-Control': 'private, max-age=31536000, immutable',
+        'ETag': etag
+      };
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, base);
+        return res.end();
+      }
       const range = req.headers.range;
       if (range) {
         const m2 = /bytes=(\d*)-(\d*)/.exec(range);
@@ -689,6 +806,14 @@ function gameView(g, seat, room) {
   };
   return v;
 }
+/* v66：统一动作流水，只用于「对手动作震动」与审计，不参与引擎判定。
+   叫分 / 不叫 / 减牌竞叫 / 加倍 / 不加倍 / 出牌 / 不出 全部记一条，
+   用独立 feedSeq，绝不改动 evtSeq（前端播报去重仍按老字段）。 */
+function noteAct(g, by, act, phase) {
+  if (!g) return;
+  g.feedSeq = (g.feedSeq || 0) + 1;
+  g.feed = (g.feed || []).concat([{ by: by, act: act, phase: phase || '', seq: g.feedSeq }]).slice(-40);
+}
 function pushGame(room) {
   const g = room.game; if (!g) return;
   room.seats.forEach((s, i) => {
@@ -698,7 +823,8 @@ function pushGame(room) {
        否则有人「过」时 m.last 仍是上上家的牌，会被误判成又出了一遍。 */
     send(w, { t: 'game', gid: room.gid, ...gameView(g, i, room),
       actEvt: g.actEvt || null, bidEvt: g.bidEvt || null,
-      bidActs: g.bidActs || [], actLog: g.actLog || [] });
+      bidActs: g.bidActs || [], actLog: g.actLog || [],
+      feed: g.feed || [] });
   });
   /* v52：每次状态推送都重设「当前行动玩家」的限时，掉线 / 切后台不会卡桌。 */
   armDoubleTimeout(room);
@@ -730,6 +856,7 @@ function applyBidAndLog(g, seat, act, gid) {
     g.evtSeq = (g.evtSeq || 0) + 1;
     g.bidEvt = { by: seat, score: score, act: act ? act.type : 'pass', seq: g.evtSeq, gid: gid };
     g.bidActs = (g.bidActs || []).concat([{ by: seat, score: score, act: g.bidEvt.act, seq: g.evtSeq }]).slice(-12);
+    noteAct(g, seat, g.bidEvt.act || 'pass', 'bid');
   }
   return r;
 }
@@ -756,6 +883,7 @@ function botAct(room, seat) {
       const strong = (g.hands[seat] || []).filter(c => c.v >= 15 || c.v === 14).length;
       const yes = strong >= 2 || (g.hands[seat] || []).some(c => c.v >= 16);
       DDZ.applyDouble(g, seat, yes);
+      noteAct(g, seat, yes ? 'double' : 'nodouble', 'double');
       pushGame(room);
       scheduleBots(room);
       return;
@@ -790,6 +918,7 @@ function botAct(room, seat) {
               /* v44：机器人每做一次出牌动作都记进权威日志，客户端据此渲染
                  叫分/出牌浮标，不再靠「状态差推断」漏掉某一家。 */
               g.actLog = (g.actLog || []).concat([{ by: seat, act: g.actEvt.act, seq: g.evtSeq }]).slice(-24);
+              noteAct(g, seat, g.actEvt.act, 'play');
 
             }
       if (r.err) {
@@ -797,6 +926,7 @@ function botAct(room, seat) {
         g.evtSeq = (g.evtSeq || 0) + 1;
         g.actEvt = { by: seat, act: 'pass', seq: g.evtSeq, gid: room.gid };
         g.actLog = (g.actLog || []).concat([{ by: seat, act: 'pass', seq: g.evtSeq }]).slice(-24);
+        noteAct(g, seat, 'pass', 'play');
       }
       pushGame(room);
       if (g.phase === 'over') { saveGame(room); pushResult(room); return; }
@@ -839,6 +969,7 @@ function armDoubleTimeout(room) {
       }
     } else {
       DDZ.applyDouble(gg, seat, false);
+      noteAct(gg, seat, 'nodouble', 'double');
     }
     pushGame(room);
     scheduleBots(room);
@@ -1649,6 +1780,7 @@ function handle(ws, st, m) {
           ? '已经叫过分的玩家不能再加倍' : '你已经轮到叫分，不能加倍' });
       const r = DDZ.applyDouble(room.game, seat, !!m.yes);
       if (r.err) return send(ws, { t: 'err', msg: r.err });
+      noteAct(room.game, seat, m.yes ? 'double' : 'nodouble', 'double');
       pushGame(room);
       if (room.game.phase === 'double') { scheduleBots(room); armDoubleTimeout(room); }
       else scheduleBots(room);
@@ -1663,6 +1795,7 @@ function handle(ws, st, m) {
       pg.evtSeq = (pg.evtSeq || 0) + 1;
       pg.actEvt = { by: seat, act: played ? 'play' : 'pass', seq: pg.evtSeq, gid: room.gid };
       pg.actLog = (pg.actLog || []).concat([{ by: seat, act: pg.actEvt.act, seq: pg.evtSeq }]).slice(-24);
+      noteAct(pg, seat, played ? 'play' : 'pass', 'play');
       pushGame(room);
       if (room.game.phase === 'over') { saveGame(room); pushResult(room); return; }
       scheduleBots(room);

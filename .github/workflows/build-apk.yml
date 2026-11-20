@@ -207,6 +207,7 @@ jobs:
           grep -q 'screenOrientation="fullSensor"' "$MF" || { echo "✘ 屏幕方向未放开"; MISS=1; }
           grep -q 'DDZPushService' "$MJ" || { echo "✘ 缺后台保活服务引用"; MISS=1; }
           grep -q 'setBadge' "$MJ" || { echo "✘ 缺桌面角标"; MISS=1; }
+          grep -q 'cacheFetch' "$MJ" || { echo "✘ 缺 v68 原生私有缓存"; MISS=1; }
           [ -f android/app/src/main/java/com/yuanbao/ddz/DDZPushService.java ] || { echo "✘ 缺 DDZPushService.java"; MISS=1; }
           [ -f android/app/src/main/java/com/yuanbao/ddz/DDZSocket.java ] || { echo "✘ 缺 DDZSocket.java"; MISS=1; }
           [ -f android/app/src/main/java/com/yuanbao/ddz/BadgeUtil.java ] || { echo "✘ 缺 BadgeUtil.java"; MISS=1; }

@@ -392,6 +392,9 @@ window.Chat = (function () {
     var box = document.getElementById('msgs'); if (!box) return;
     box.innerHTML = msgs.map(msgHtml).join('');
     bindMsgNodes(box);
+    /* v66：进入/刷新会话即后台预热最近 30 条图片/视频/文件/语音到 App 私有缓存，
+       点开时直接命中，不用每次都从服务器要内容；外部软件扫不到缓存。 */
+    try { if (window.MediaCache && MediaCache.warmChat) MediaCache.warmChat(msgs); } catch (e) { }
     paintMsgBar();
     var mg = document.getElementById('th-manage');
     if (mg) mg.textContent = selMode === 'msg' ? '完成' : '管理';
@@ -438,7 +441,16 @@ window.Chat = (function () {
       var nm = th.getAttribute('data-name');
       var vd = th.querySelector('video');
       if (kind === 'video') {
-        // 视频缩略图：metadata 拿到就能显示首帧，不额外请求
+        // v66：首帧仍用直链 metadata，同时把正片缓存到 App 私有区；
+        // 已经缓存过就直接用本地 objectURL，点开播放器 0 等待。
+        try {
+          if (window.MediaCache) {
+            var vhit = MediaCache.get(src);
+            if (vhit && vd) vd.src = vhit;
+            /* v68：缩略图不再自动整包预取 —— 1GB 视频一进会话就后台下载会吃满流量。
+               只在用户点开播放器时缓存一次，之后永久命中本地。 */
+          }
+        } catch (e) { }
         th.onclick = function (e) { e.stopPropagation(); App.viewMedia(src, true, nm); };
         return;
       }
@@ -448,12 +460,17 @@ window.Chat = (function () {
         im.src = u; im.alt = '图片';
         th.appendChild(im);
       };
+      /* v66：统一走私有缓存，命中即秒出；未命中回源一次并自动缓存，下次不再向服务器要内容 */
       try {
-        fetch(src, { credentials: 'same-origin' }).then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.blob();
-        }).then(function (b) { show(URL.createObjectURL(b)); })
-          ['catch'](function () { show(src); });
+        if (window.MediaCache && MediaCache.resolve) {
+          MediaCache.resolve(src).then(show)['catch'](function () { show(src); });
+        } else {
+          fetch(src, { credentials: 'same-origin' }).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.blob();
+          }).then(function (b) { show(URL.createObjectURL(b)); })
+            ['catch'](function () { show(src); });
+        }
       } catch (e) { show(src); }
       th.onclick = function (e) { e.stopPropagation(); App.viewMedia(src, false, nm); };
     });
@@ -485,6 +502,8 @@ window.Chat = (function () {
       }
     });
     root.querySelectorAll('[data-play]').forEach(function (b) {
+      /* v66：语音也后台缓存一份（只改预取，不动播放/防重复播逻辑） */
+      try { if (window.MediaCache) MediaCache.prefetch(b.dataset.play); } catch (e) { }
       b.onclick = function (e) { e.stopPropagation(); playVoice(b.dataset.play, b); };
     });
     /* 图片 / 视频 / 文件支持保存；短语音不提供下载（点一下直接播就行，存下来没意义） */
@@ -692,9 +711,14 @@ window.Chat = (function () {
   }
   function sendFile(file, kind) {
     if (!file) return;
-    if (file.size > 300 * 1024 * 1024) return App.toast('文件太大，上限 300MB');
+    /* v68：上限 1GB；>8MB 自动走分片直传，进度按 10% 一档提示，不刷屏 */
+    if (file.size > 1024 * 1024 * 1024) return App.toast('文件太大，上限 1GB');
     App.toast('发送中…');
-    Net.upload(file, kind, 0).then(function (r) {
+    var lastPct = -1;
+    Net.upload(file, kind, 0, function (p) {
+      var pct = Math.floor(p * 10) * 10;
+      if (pct !== lastPct && pct < 100) { lastPct = pct; App.toast('发送中 ' + pct + '%'); }
+    }).then(function (r) {
       if (r.err) return App.toast(r.err);
       send({ kind: kind, url: r.url, name: r.name, size: r.size, mime: r.mime });
       App.toast('已发送');
@@ -953,28 +977,43 @@ window.Chat = (function () {
    * 查看器带「保存到手机」：原生桥接优先（安卓 DownloadManager 落到下载目录），
    * 无原生时退回到浏览器下载。所有失败都有明确提示。 */
   function view(src, isVideo, name) {
+    /* v68：播放地址优先用私有缓存的本地地址（1GB 视频也能秒开 / 快进）；
+       没缓存就先用服务器直链边下边播，同时后台补一次缓存。
+       手动「保存到手机」始终用服务器原始地址，绝不能传 127.0.0.1。 */
+    var originSrc = src, playSrc = src;
+    try {
+      if (window.MediaCache && MediaCache.get) playSrc = MediaCache.get(src) || src;
+      if (playSrc === src && window.MediaCache && MediaCache.prefetch) MediaCache.prefetch(src);
+    } catch (e) { }
     var v = document.createElement('div');
     v.className = 'viewer';
     v.innerHTML =
       '<div class="x">✕</div>' +
       (isVideo
-        ? '<video src="' + src + '" controls autoplay playsinline webkit-playsinline style="max-width:96%;max-height:74%;background:#000"></video>'
-        : '<img src="' + src + '" style="max-width:96%;max-height:74%">') +
+        ? '<video src="' + playSrc + '" controls autoplay playsinline webkit-playsinline style="max-width:96%;max-height:74%;background:#000"></video>'
+        : '<img src="' + playSrc + '" style="max-width:96%;max-height:74%">') +
       '<div class="vbar">' +
       '<button class="vb" data-a="save">⬇ 保存到手机</button>' +
-      '<button class="vb ghost" data-a="close">关闭</button>' +
       '</div>' +
       '<div class="vmsg" id="vmsg"></div>';
+    var closed = false;
     var close = function () {
+      if (closed) return; closed = true;
       try {
         var md = v.querySelector('video');
-        if (md) { md.pause(); md.removeAttribute('src'); if (md.load) md.load(); }
+        if (md) {
+          md.autoplay = false; md.muted = true; md.pause();
+          try { md.currentTime = 0; } catch (e) { }
+          md.removeAttribute('src'); if (md.load) md.load();
+        }
+        document.querySelectorAll('.viewer video').forEach(function (m) {
+          try { m.muted = true; m.pause(); m.removeAttribute('src'); if (m.load) m.load(); } catch (e) { }
+        });
       } catch (e) { }
       v.remove();
     };
     v.querySelector('.x').onclick = close;
-    v.querySelector('[data-a="close"]').onclick = close;
-    v.querySelector('[data-a="save"]').onclick = function () { saveToDevice(src, name || (isVideo ? 'video.mp4' : 'image.jpg')); };
+    v.querySelector('[data-a="save"]').onclick = function () { saveToDevice(originSrc, name || (isVideo ? 'video.mp4' : 'image.jpg')); };
     document.getElementById('app').appendChild(v);
   }
   /* 保存到本机：安卓原生 → 浏览器下载 → 新窗口兜底 */

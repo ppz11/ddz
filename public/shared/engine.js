@@ -418,7 +418,7 @@
       grabCount: 0, letCount: rule === 'let46' ? 1 : 0, multiplier: 1,
       /* v46 减牌竞叫状态 */
       cutHigh: 0, cutBidder: -1, cutTarget: 0, cutSeq: [],
-      turn: -1, last: null, lastSeat: [], passFlag: 0, bidPasses: 0,
+      turn: -1, last: null, lastSeat: [], passFlag: 0, bidPasses: 0, roundFresh: false,
       playedCount: [], bombCount: 0, spring: false, antiSpring: false,
       winner: -1, winnerSide: null, result: null, bots: []
     };
@@ -627,14 +627,27 @@
       g.playedCount[seat]++;
       if (info.type === 'bomb' || info.type === 'rocket') g.bombCount++;
       g.last = { ids: ids, info: info, by: seat, cards: cards };
+      /* v69：新一轮第一手真正出牌时，才撤掉上一圈留下的「过」字。
+         之前在两家都过那一刻就整圈清空，导致第二个「过」刚写下就被抹掉，
+         玩家只看到「轮到我出牌」，看不到任何一家过牌。 */
+      if (g.roundFresh) {
+        g.lastSeat = g.lastSeat.map(function () { return null; });
+        g.roundFresh = false;
+      }
       g.lastSeat[seat] = { ids: ids, info: info, by: seat, cards: cards };
       g.passFlag = 0;
     } else {
       g.passFlag++;
       /* 记录这一家「过」：牌桌上要在他出牌的位置写上「过」，
          否则别人只知道他没出牌，看不出是主动过还是还没轮到。 */
-      g.lastSeat[seat] = { by: seat, pass: true };
-      if (g.passFlag >= g.seats - 1) { g.last = null; g.lastSeat = g.lastSeat.map(function () { return null; }); g.passFlag = 0; }
+      g.lastSeat[seat] = { by: seat, pass: true, t: Date.now() };
+      if (g.passFlag >= g.seats - 1) {
+        /* v69：只重置出牌判定，不再清空展示用的 lastSeat，
+           两家的「过」字会一直留到下一手牌打出，符合牌桌习惯。 */
+        g.last = null;
+        g.passFlag = 0;
+        g.roundFresh = true;
+      }
     }
     // 胜负
     var i, farmerDone = false;

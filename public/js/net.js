@@ -198,7 +198,59 @@ window.Net = (function () {
       e.url = url; e.cause = err; throw e;
     });
   }
-  function upload(file, kind, dur) {
+  /* v68：>8MB 走二进制分片直传，单文件上限 1GB。
+     不再 FileReader.readAsDataURL（那会把整个文件 + base64 字符串同时塞进 WebView 内存，
+     1GB 必崩）；改成 File.slice 一片一片 fetch，内存里始终只有 4MB。 */
+  var BIG_CHUNK = 4 * 1024 * 1024;
+  function uploadBig(file, kind, dur, onProgress) {
+    var total = Math.ceil(file.size / BIG_CHUNK);
+    var uploadId = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10) + '_' + file.size.toString(36);
+    var q = function (s) { return encodeURIComponent(s); };
+    var base = origin();
+    var tk = q(token || '');
+    function postChunk(i, retry) {
+      var blob = file.slice(i * BIG_CHUNK, Math.min(file.size, (i + 1) * BIG_CHUNK));
+      return fetch(base + '/api/upload/chunk?uploadId=' + q(uploadId) + '&idx=' + i + '&total=' + total + '&token=' + tk, {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (j) {
+        if (j.err) throw new Error(j.err);
+      })['catch'](function (e) {
+        if (retry < 2) return postChunk(i, retry + 1);
+        throw e;
+      });
+    }
+    return fetch(base + '/api/upload/status?uploadId=' + q(uploadId) + '&token=' + tk)
+      .then(function (r) { return r.json(); })
+      .then(function (st) {
+        var have = {}; (st.received || []).forEach(function (i) { have[i] = 1; });
+        var seq = Promise.resolve();
+        for (var i = 0; i < total; i++) {
+          (function (i) {
+            seq = seq.then(function () {
+              if (have[i]) { if (onProgress) onProgress((i + 1) / total); return; }
+              return postChunk(i, 0).then(function () { if (onProgress) onProgress((i + 1) / total); });
+            });
+          })(i);
+        }
+        return seq;
+      })
+      .then(function () {
+        return api('/api/upload/finish', {
+          uploadId: uploadId, total: total, token: token || '',
+          name: file.name || ('file_' + Date.now()),
+          mime: file.type || 'application/octet-stream', kind: kind, dur: dur
+        });
+      })
+      .then(function (r) {
+        if (r.err) throw new Error(r.err);
+        return r;
+      });
+  }
+  function upload(file, kind, dur, onProgress) {
+    if (file && file.size > 8 * 1024 * 1024) return uploadBig(file, kind, dur, onProgress);
     return new Promise(function (res, rej) {
       var fr = new FileReader();
       fr.onload = function () {
@@ -225,7 +277,7 @@ window.Net = (function () {
   }
 
   return {
-    on: on, send: send, connect: connect, api: api, upload: upload, abs: abs,
+    on: on, send: send, connect: connect, api: api, upload: upload, uploadBig: uploadBig, abs: abs,
     setServer: function (v) {
       SERVER = String(v || '').trim().replace(/\/$/, '');
       retry = 0; queue.length = 0; opened = false;

@@ -75,4 +75,22 @@ function delUpload(id) {
   return true;
 }
 
-module.exports = { get, save, flush, nextId, ensure, putUpload, getUpload, uploadPath, delUpload, UP_DIR, DATA_DIR };
+/* v68：分片上传合并完成后，直接把已经落盘的临时文件登记为上传文件。
+   全程不把文件读进内存 —— 1GB 也只是一次 rename + 一条索引记录。 */
+function putUploadFromPath(name, mime, srcPath, size, meta) {
+  const id = nextId('u');
+  const ext = (path.extname(name) || '').replace(/[^\w.]/g, '').slice(0, 10);
+  const file = id + ext;
+  const dest = path.join(UP_DIR, file);
+  try { fs.renameSync(srcPath, dest); }
+  catch (e) {
+    fs.copyFileSync(srcPath, dest);
+    try { fs.unlinkSync(srcPath); } catch (e2) { }
+  }
+  get().uploads[id] = { id, file, name, mime, size: size | 0, ts: Date.now(), meta: meta || {} };
+  save();
+  return get().uploads[id];
+}
+
+module.exports = { get, save, flush, nextId, ensure, putUpload, putUploadFromPath,
+                   getUpload, uploadPath, delUpload, UP_DIR, DATA_DIR };

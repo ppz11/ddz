@@ -219,6 +219,8 @@ window.Game = (function () {
     hintCycle = 0; lastHintKey = ''; tcMsgs = []; closeTableChat(true);
     bidLog = []; v37BidTurn = -1; v37BidScore = 0; prevBidSeq = 0;
     lastActEvtKey = ''; lastBidEvtKey = ''; lastSpokenCards = '';
+    feedGid = ''; seenFeed = {}; feedInit = false;
+    clearPassSay();
     tipShownFor = '';
     clearInterval(timer);
     var rt = document.getElementById('rule-tip'); if (rt) rt.classList.add('hidden');
@@ -316,6 +318,25 @@ window.Game = (function () {
     if (!m.phase || m.phase === 'wait') { renderWaiting(m); showRuleTip(m); return; }
   }
   var prevBidTurn = -1, prevBidKey = '', prevDblKey = '';
+  /* v69：两家连续「过」时，逐条错开播报，不互相 cancel。
+     旧的 actEvt 是单值，一次推送里两个 pass 只留最后一个；且 pass 分支的
+     cancelSpeak() 会打断上一条还没念完的「过」，表现就是偶发「没提示」。 */
+  var passSayTimers = [];
+  function clearPassSay() {
+    passSayTimers.forEach(function (t) { clearTimeout(t); });
+    passSayTimers = [];
+  }
+  function queuePassSay(list) {
+    clearPassSay();
+    list.forEach(function (f, i) {
+      var base = i * 520;
+      passSayTimers.push(setTimeout(function () { try { Sfx.pass(); } catch (e) { } }, base));
+      passSayTimers.push(setTimeout(function () {
+        try { if (App.settings().voice) Sfx.announce({ type: 'pass' }); } catch (e) { }
+      }, base + 160));
+    });
+  }
+
   var bidFlash = null;   // 本地缓存最近一次叫分，防止浮标一闪而过
   /* 逐条叫分日志：引擎只在「有人叫分」时更新 S.bid，pass 不写进去，
      于是「不叫」的玩家既没浮标也没语音。用轮到谁的变化把每个动作补出来，
@@ -323,6 +344,8 @@ window.Game = (function () {
   var bidLog = [], v37BidTurn = -1, v37BidScore = 0, prevBidSeq = 0;
   var lastActEvtKey = '', lastBidEvtKey = '', lastSpokenCards = '';
   var spokenBidSeq = {};   /* v44：按服务端 seq 统一去重，bidEvt 与 bidActs 不会重复念 */
+  /* v66：对手动作震动去重（按 gid 重置；首批历史动作不震） */
+  var feedGid = '', seenFeed = {}, feedInit = false;
   /* v52：叫分 / 加倍播报队列。
      正常情况机器人约 3 秒一个动作，队列最多 1 条；但重连 / 丢帧时客户端可能
      一次收到多条 bidActs，旧版同步 forEach 会让几条语音互相 cancel、大字标
@@ -361,6 +384,33 @@ window.Game = (function () {
     var prevLast = (S && S.last) ? (S.last.by + ':' + (S.last.cards || []).map(function (c) { return c.id; }).join(',') +
                     '|t' + S.turn + '|c' + (S.counts || []).join('.') + '|g' + (S.gid || '')) : '';
     S = m; mySeat = m.seat; gid = m.gid; rule = m.rule;
+    /* v66：另外两家在对局中的任何动作都震动 —— 叫分 / 不叫 / 减牌竞叫 /
+       加倍 / 不加倍 / 出牌 / 不出（pass）全覆盖；自己的动作一律不震。
+       服务端 feed 按独立 seq 递增，按 gid 重置去重，首批历史不震；
+       同一批连续动作合并成一次震动，避免连震糊成一片。 */
+    var feedAvailable = Array.isArray(m.feed) && m.feed.length > 0;
+    var pendingPass = [];
+    try {
+      var fGid = m.gid || '';
+      if (fGid !== feedGid) { feedGid = fGid; seenFeed = {}; feedInit = false; }
+      var fd = Array.isArray(m.feed) ? m.feed : [];
+      var remoteNew = false;
+      for (var fi = 0; fi < fd.length; fi++) {
+        var f = fd[fi]; if (!f || f.seq == null) continue;
+        var fk = 's' + f.seq;
+        if (seenFeed[fk]) continue;
+        seenFeed[fk] = 1;
+        if (feedInit && String(f.by) !== String(mySeat)) {
+          remoteNew = true;
+          /* v69：服务端把两个机器人的动作合并进一次推送时，
+             actEvt 是单值只留最后一条 —— 用 feed 把每个「过」逐条收齐。 */
+          if (f.phase === 'play' && f.act === 'pass') pendingPass.push(f);
+        }
+      }
+      feedInit = true;
+      if (remoteNew && App.settings().vibe) App.vibeDo();
+    } catch (e) { }
+    if (pendingPass.length) queuePassSay(pendingPass);
     document.getElementById('mid-notice').classList.add('hidden');
     /* v43：服务端显式下发动作事件，按 gid+seq 去重后直接播报。
        旧推断靠「turn/counts 变了就当新动作」，有人「过」时 m.last 仍是
@@ -371,17 +421,19 @@ window.Game = (function () {
       lastActEvtKey = aKey; evtHandled = true;
       if (aEvt.act === 'pass') {
         lastSpokenCards = '';
-        if (aEvt.by !== mySeat) {
+        /* v69：正常路径由 queuePassSay 按 feed 逐条播报；这里只在
+           服务端没下发 feed 的老版本上兜底，且不再 cancel 掉上一条「过」。 */
+        if (!feedAvailable && aEvt.by !== mySeat) {
           Sfx.pass();
-          if (App.settings().voice) {
-            try { Sfx.cancelSpeak && Sfx.cancelSpeak(); } catch (e) { }
-            Sfx.announce({ type: 'pass' });
-          }
+          if (App.settings().voice) Sfx.announce({ type: 'pass' });
         }
       } else if (aEvt.act === 'play' && m.last && (m.last.cards || []).length) {
         var bigE = m.last.info && (m.last.info.type === 'bomb' || m.last.info.type === 'rocket');
         Sfx.cardDrop(bigE);
-        if (aEvt.by !== mySeat && m.last.info) Sfx.announce(m.last.info, m.last.cards);
+        if (aEvt.by !== mySeat) {
+          /* v66：震动统一由 feed 驱动（覆盖叫分/加倍/出牌/不出），此处不再单点触发 */
+          if (m.last.info) Sfx.announce(m.last.info, m.last.cards);
+        }
       }
     }
     /* v44：服务端下发权威叫分日志（每次动作一条，含「不叫」、含叫满 3 分
@@ -443,7 +495,11 @@ window.Game = (function () {
       }
     }
     // 轮到我出牌 → 明确提示音
-    if (m.phase === 'play' && m.turn === mySeat && prevTurn !== mySeat) Sfx.yourTurn();
+    if (m.phase === 'play' && m.turn === mySeat && prevTurn !== mySeat) {
+      /* v69：先让两家的「过」念完，再响「轮到你出牌」，否则提示音会盖掉最后一个「过」 */
+      var ytDelay = pendingPass.length ? (pendingPass.length * 520 + 120) : 0;
+      setTimeout(function () { Sfx.yourTurn(); }, ytDelay);
+    }
     /* 叫分阶段轮到我 → 也要提示音（原来只有出牌阶段有，叫分时静悄悄） */
     if (m.phase === 'bid') {
       var nowBid = m.bidTurn;
@@ -1198,7 +1254,6 @@ window.Game = (function () {
     Sfx.cardDrop(!!(info && (info.type === 'bomb' || info.type === 'rocket')));
     if (info) Sfx.announce(info, cs);
     if (info && (info.type === 'bomb' || info.type === 'rocket')) shake();
-    App.vibeDo();     // v64：强度取设置页滑动条（默认 60ms），走原生 Vibrator
     sel = {};
     Net.send({ t: 'game:play', ids: cs.map(function (c) { return c.id; }) });
   }
@@ -1739,21 +1794,22 @@ window.Game = (function () {
         img.onerror = function () { fail(reason || '图片地址打不开'); };
         img.src = u;
       }
+      /* v65 真因：原来每次发表情都 fetch 一次 /api/file 且带 no-store，
+         服务端又没给 Cache-Control，大 GIF 下完前 <img> 一直是空的 → 先空白几秒。
+         现在先查本地缓存（内存 + IndexedDB），命中同步设 src 立即显示。 */
       try {
-        fetch(u, { credentials: 'same-origin', cache: 'no-store' })
-          .then(function (r) {
-            if (!r.ok) throw new Error('HTTP ' + r.status + ' · ' + u);
-            return r.arrayBuffer();
-          })
-          .then(function (buf) {
-            if (!buf || !buf.byteLength) throw new Error('空文件 · ' + u);
-            var mime = sniffMime(buf) || 'image/png';
-            var obj = URL.createObjectURL(new Blob([buf], { type: mime }));
-            img.onerror = function () { try { URL.revokeObjectURL(obj); } catch (e) { } fail('图片解码失败'); };
+        var hit = window.MediaCache && MediaCache.get(u);
+        if (hit) {
+          img.onerror = function () { direct('缓存图片解码失败'); };
+          img.src = hit;
+        } else if (window.MediaCache) {
+          MediaCache.fetchURL(u).then(function (obj) {
+            img.onerror = function () { fail('图片解码失败'); };
             img.src = obj;
-            setTimeout(function () { try { URL.revokeObjectURL(obj); } catch (e) { } }, 30000);
-          })
-          .catch(function (e) { direct(String(e && e.message || e)); });
+          }).catch(function (e) { direct(String(e && e.message || e)); });
+        } else {
+          direct('缓存模块未加载');
+        }
       } catch (e) { direct('此环境不支持 fetch'); }
       box.classList.remove('hidden');
       box.classList.remove('out');

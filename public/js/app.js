@@ -176,25 +176,43 @@ window.App = (function () {
       '</div>' +
       '<div class="vbar">' +
       '<button class="vb" data-a="save">\u2b07 \u4fdd\u5b58\u5230\u624b\u673a</button>' +
-      '<button class="vb ghost" data-a="close">\u5173\u95ed</button>' +
       '</div>' +
       '<div class="vmsg" id="vmsg"></div>';
-    var objUrl = null, mediaEl = null;
-    /* 关闭时先暂停再清空 src：只 remove() 的话播放器还在后台响 */
+    var objUrl = null, mediaEl = null, closed = false;
+    /* v65 真因：× 按下后 loadedmetadata 的异步回调仍会 el.play()，
+       元素已 remove 但硬件解码器还在放声音 —— 表现为「关了声音还在」。
+       加 closed 标志，并且关闭时把页面里所有残留 media 一并停掉。 */
     var close = function () {
+      if (closed) return;
+      closed = true;
       try {
         if (mediaEl) {
+          try { mediaEl.autoplay = false; } catch (e) { }
+          try { mediaEl.muted = true; } catch (e) { }
           try { mediaEl.pause(); } catch (e) { }
+          try { mediaEl.currentTime = 0; } catch (e) { }
           try { mediaEl.removeAttribute('src'); } catch (e) { }
           try { if (mediaEl.load) mediaEl.load(); } catch (e) { }
+          try { mediaEl.remove(); } catch (e) { }
           mediaEl = null;
         }
+      } catch (e) { }
+      try {
+        document.querySelectorAll('.viewer video,.viewer audio').forEach(function (m) {
+          try {
+            m.autoplay = false; m.muted = true; m.pause();
+            m.removeAttribute('src'); if (m.load) m.load();
+          } catch (e) { }
+        });
       } catch (e) { }
       try { if (objUrl) URL.revokeObjectURL(objUrl); } catch (e) { }
       v.remove();
     };
     v.querySelector('.x').onclick = close;
-    v.querySelector('[data-a="close"]').onclick = close;
+    /* 返回键 / 页面隐藏时也必须停掉声音 */
+    var onHide = function () { if (document.hidden || !v.parentNode) return; close(); };
+    document.addEventListener('visibilitychange', onHide);
+    v.addEventListener('ddz:back', close);
     v.querySelector('[data-a="save"]').onclick = function () {
       saveToDevice(src, name || (isVideo ? 'video.mp4' : 'image.jpg'));
     };
@@ -249,7 +267,7 @@ window.App = (function () {
       el.className = 'vmedia';
       el.src = url;
       if (isVideo) {
-        el.controls = false; el.autoplay = true; el.preload = 'metadata';
+        el.controls = false; el.autoplay = true; el.preload = 'auto';
         /* 没有 playsinline，安卓 WebView 会把视频交给系统播放器接管（黑屏/只有声音） */
         el.setAttribute('playsinline', ''); el.setAttribute('webkit-playsinline', '');
         el.style.background = '#000';
@@ -289,8 +307,9 @@ window.App = (function () {
         if (tm) tm.textContent = mmss(el.currentTime) + ' / ' + mmss(el.duration);
       });
       el.addEventListener('loadedmetadata', function () {
+        if (closed) return;                       /* v65：关了就别再 play */
         if (tm) tm.textContent = '0:00 / ' + mmss(el.duration);
-        /* 拿到元数据就能播了，不用等整包下载完 —— 这是「启动慢」的根因 */
+        if (!el.paused) return;
         var p = el.play();
         if (p && p.catch) p.catch(function () { });
       });
@@ -321,6 +340,7 @@ window.App = (function () {
          这时再整包取回转 blob 试一次，两次都失败才提示下载后查看。 */
       var triedBlob = false;
       var retry = function () {
+        if (closed) return;                       /* v65：已关闭就不再回源 */
         if (triedBlob) {
           var m = v.querySelector('#vmsg');
           if (m) m.textContent = '\u65e0\u6cd5\u64ad\u653e\u8be5\u89c6\u9891\uff0c\u53ef\u7528\u300c\u4fdd\u5b58\u5230\u624b\u673a\u300d\u4e0b\u8f7d\u540e\u67e5\u770b';
@@ -332,6 +352,7 @@ window.App = (function () {
             if (!r.ok) throw new Error('HTTP ' + r.status);
             return r.blob();
           }).then(function (b) {
+            if (closed) return;                   /* v65 */
             try { if (objUrl) URL.revokeObjectURL(objUrl); } catch (e) { }
             objUrl = URL.createObjectURL(b);
             if (mediaEl) { try { mediaEl.pause(); } catch (e) { } mediaEl.remove(); }
@@ -341,17 +362,43 @@ window.App = (function () {
         } catch (e) { retry(); }
       };
       v.__retryVideo = retry;
-      put(src);
+      /* v65：视频本地缓存命中就直接给 blobURL，0 等待；
+         未命中仍走 Range 直链边下边播，后台静默预取供下次使用。 */
+      /* v66：先只查本地（内存 + IndexedDB），命中就 0 等待播放；
+         没命中才用 Range 直链边下边播，并后台静默缓存供下次命中。
+         用 cached() 而不是 resolve()，避免和直链并行整包下载浪费流量。 */
+      var startVideo = function () { if (!closed) put(src); };
+      try {
+        if (window.MediaCache && MediaCache.cached) {
+          MediaCache.cached(src).then(function (u) {
+            if (closed) return;
+            if (u) put(u);
+            else { try { MediaCache.prefetch(src); } catch (e) { } startVideo(); }
+          })['catch'](function () {
+            try { if (window.MediaCache) MediaCache.prefetch(src); } catch (e) { }
+            startVideo();
+          });
+        } else startVideo();
+      } catch (e) { startVideo(); }
       return;
     }
+    /* v66：图片也统一走私有缓存（v65 只有视频走了，图片每次都裸 fetch 回源）。
+       缓存生成的 objectURL 由 MediaCache 管理，这里不赋给 objUrl，
+       close() 也就不会误把它 revoke 掉。 */
     try {
-      fetch(src, { credentials: 'same-origin' }).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.blob();
-      }).then(function (b) {
-        objUrl = URL.createObjectURL(b);
-        put(objUrl);
+      var hit0 = window.MediaCache && MediaCache.get(src);
+      if (hit0) { put(hit0); return; }
+      var pr = (window.MediaCache && MediaCache.resolve)
+        ? MediaCache.resolve(src)
+        : fetch(src, { credentials: 'same-origin' }).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.blob();
+          }).then(function (b) { return URL.createObjectURL(b); });
+      pr.then(function (u) {
+        if (closed) return;
+        put(u);
       })['catch'](function () {
+        if (closed) return;
         put(src, '\u9884\u89c8\u5931\u8d25\uff0c\u53ef\u7528\u300c\u4fdd\u5b58\u5230\u624b\u673a\u300d\u4e0b\u8f7d\u540e\u67e5\u770b');
       });
     } catch (e) { put(src); }
@@ -697,7 +744,7 @@ window.App = (function () {
       Net.send({ t: 'match', rule: rule, quick: true });
     };
     document.getElementById('btn-create').onclick = function () {
-      Sfx.click(); syncCreateUI(); renderInviteList(); go('create');
+      Sfx.click(); syncCreateUI(); go('create');
     };
     document.getElementById('btn-join').onclick = joinRoom;
     /* v36：竖屏按钮已移除，牌桌恒定横屏 */
@@ -739,7 +786,7 @@ window.App = (function () {
       /* 只建房，不补机器人、不开局：进去后先邀请真人，
          人不满再点「补机器人」，最后点「开始游戏」才发牌 */
       Net.send({ t: 'room:create', rule: r });
-      toast('房间已建好：先邀请好友，人齐后点「开始游戏」');
+      toast('房间已建好：进牌桌后点邀请，人齐后点「开始游戏」');
     };
     document.getElementById('btn-back-home').onclick = function () { Sfx.click(); go('home'); };
     updateRuleNote();
@@ -809,7 +856,7 @@ window.App = (function () {
     var q = document.getElementById('pe-quick');
     if (q) q.onclick = function () { Sfx.click(); Game.reset(); toast('正在匹配对手…'); Net.send({ t: 'match', rule: rule, quick: true }); };
     var c = document.getElementById('pe-create');
-    if (c) c.onclick = function () { Sfx.click(); syncCreateUI(); renderInviteList(); go('create'); };
+    if (c) c.onclick = function () { Sfx.click(); syncCreateUI(); go('create'); };
     var j = document.getElementById('pe-join');
     if (j) j.onclick = function () {
       var v = document.getElementById('pe-input').value.trim();
@@ -968,7 +1015,7 @@ window.App = (function () {
     if (p === 'me') loadHistory();
     if (p === 'chat') { Net.send({ t: 'contacts' }); Chat.renderList(); }
     if (p === 'home') { Net.send({ t: 'lobby' }); }
-    if (p === 'create') renderInviteList();
+    /* v65：创建页不再拉在线列表 */
     // 对战页：真的在打牌时显示牌桌，否则显示「空牌桌 + 开局入口」（仍然是对战页的样子）
     if (p === 'play') { showPlayShell(); paintPlayEmptyMe(); }
     // 牌桌按用户偏好决定朝向（默认横屏），其它页面一律竖屏
@@ -1126,6 +1173,26 @@ window.App = (function () {
       }
       var vt = document.getElementById('row-vibetest');
       if (vt) vt.onclick = function () { vibeDo(settings.vibeMs || 60); toast('已试震 ' + (settings.vibeMs || 60) + 'ms'); };
+      /* v66：私有缓存状态 / 清除（只清本 App 内部缓存，不碰已保存到手机的文件） */
+      var cc = document.getElementById('btn-clearcache'), cl = document.getElementById('lb-cache');
+      var showCache = function () {
+        if (!cl) return;
+        if (!window.App || !App.cacheStats) { cl.textContent = '不可用'; return; }
+        App.cacheStats().then(function (s) {
+          if (!s) { cl.textContent = '不可用'; return; }
+          /* v67：显示持久化状态；配额写满时不再静默，直接标出来 */
+          var tag = s.persisted ? '已持久化' : '标准存储';
+          var bad = s.failed ? ' · ⚠ 写入失败(' + String(s.failed).slice(0, 14) + ')' : '';
+          cl.textContent = s.idb + ' 项 · ' + (s.bytes / 1048576).toFixed(1) + ' MB · ' + tag + bad;
+        });
+      };
+      showCache();
+      if (cc) cc.onclick = function () {
+        App.clearCache().then(function () {
+          showCache();
+          toast('已清除本 App 媒体缓存（已保存的文件不受影响）');
+        });
+      };
       try { Sfx.setTune(settings.rate, settings.pitch); } catch (e) {}
       /* 隐私伪装开关已从「我的」页移除（它会把语音/图片全部藏掉，容易误开），
          默认保持关闭，保证媒体能正常显示；好友空间里那个开关仍可手动打开。
@@ -1250,6 +1317,8 @@ window.App = (function () {
     esc: esc, disguise: function () { return !!settings.disguise; },
     setDisguise: setDisguise,
     isOwner: function () { return isOwner(); }, settings: function () { return settings; }, vibe: vibe, vibeDo: vibeDo, viewMedia: viewMedia, saveToDevice: saveToDevice, page: function () { return page; },
+    cacheStats: function () { return window.MediaCache && MediaCache.stats ? MediaCache.stats() : Promise.resolve(null); },
+    clearCache: function () { return window.MediaCache && MediaCache.clear ? MediaCache.clear() : Promise.resolve(false); },
     /* 当前登录用户。未登录时返回空对象，避免 App.me().uid 直接抛 TypeError */
     me: function () { return me || {}; },
     /* 联系人列表（通话 / 邀请等需要按 UID 反查昵称） */

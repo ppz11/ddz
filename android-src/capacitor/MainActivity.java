@@ -30,6 +30,19 @@ import com.getcapacitor.BridgeActivity;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.RandomAccessFile;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.InetAddress;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.Collections;
 
 /**
  * Capacitor 版 MainActivity。
@@ -140,7 +153,8 @@ public class MainActivity extends BridgeActivity {
                 getExternalCacheDir(),
                 new File(getFilesDir(), "webview"),
                 new File(getCacheDir(), "webview"),
-                new File(getFilesDir(), "ddz_cache")
+                new File(getFilesDir(), "ddz_cache"),
+                new File(getNoBackupFilesDir(), "ddz_media")
         };
         for (File dir : roots) {
             if (dir == null) continue;
@@ -185,6 +199,10 @@ public class MainActivity extends BridgeActivity {
            第三方文件管理器也读不到，双保险。
            注意：用户主动「保存到手机」的文件走公共目录，那个应该能被看到。 */
         hideCacheFromGallery();
+        /* v68：启动「私有媒体缓存」的本地 HTTP 服务（只绑 127.0.0.1）。
+           网页里的 <video>/<img> 通过 http://127.0.0.1:<port>/__ddz__/<id>
+           直接读 App 私有目录里的文件，支持 Range 快进，1GB 也不进 WebView 内存。 */
+        startPrivateCacheServer();
         initTts();
 
         applyWebViewSettings();
@@ -650,6 +668,12 @@ public class MainActivity extends BridgeActivity {
 
         private String saveFileTo(final String url, final String name, final String dir) {
             if (url == null || url.length() == 0) return "error:地址为空";
+            /* v66：本方法是唯一允许写公共「下载」目录并触发媒体扫描的入口。
+               缓存一律走 WebView 私有 IndexedDB（App 私有数据目录，另有 .nomedia），
+               不经过这里，所以文件管理 / 手机管家扫不到缓存；只有用户手动点
+               「⬇ 保存到手机」时 App.saveToDevice() 会给地址加 ?dl=1。 */
+            if (url.indexOf("dl=1") < 0)
+                return "error:仅手动保存可写入公共目录";
             try {
                 android.app.DownloadManager dm = (android.app.DownloadManager) getSystemService(android.content.Context.DOWNLOAD_SERVICE);
                 if (dm == null) return "error:系统不支持下载";
@@ -791,7 +815,256 @@ public class MainActivity extends BridgeActivity {
                 if (pitch > 0f) tts.setPitch(pitch);
             } catch (Exception ignored) { }
         }
+
+        /* ---------------- v68 私有媒体缓存桥 ----------------
+           唯一写入点：App 私有目录 no_backup/ddz_media/。
+           绝不写公共目录、绝不触发 DownloadManager / MediaScanner。
+           只有手动点「⬇ 保存到手机」的 saveFile(?dl=1) 才写公共目录。 */
+        @JavascriptInterface
+        public String cacheBase() { return "http://127.0.0.1:" + sCachePort + "/__ddz__/"; }
+
+        @JavascriptInterface
+        public String cacheHas(final String id) {
+            File f = cacheFile(id);
+            return (f != null && f.isFile() && f.length() > 0) ? "1" : "0";
+        }
+
+        @JavascriptInterface
+        public String cacheUrl(final String id) {
+            return "http://127.0.0.1:" + sCachePort + "/__ddz__/" + safeId(id);
+        }
+
+        /* 后台流式下载：HttpURLConnection → 私有文件，全程不经过 JS 内存。 */
+        @JavascriptInterface
+        public String cacheFetch(final String url, final String id) {
+            final String sid = safeId(id);
+            if (sid.length() == 0 || url == null || url.length() == 0) return "error:参数为空";
+            final File dst = new File(cacheRoot(), sid);
+            if (dst.isFile() && dst.length() > 0) return "exists";
+            synchronized (sFetching) {
+                if (sFetching.contains(sid)) return "running";
+                sFetching.add(sid);
+            }
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    HttpURLConnection c = null;
+                    File part = new File(cacheRoot(), sid + ".part");
+                    try {
+                        c = (HttpURLConnection) new URL(url).openConnection();
+                        c.setConnectTimeout(15000);
+                        c.setReadTimeout(60000);
+                        c.setRequestMethod("GET");
+                        c.setInstanceFollowRedirects(true);
+                        int code = c.getResponseCode();
+                        if (code != 200 && code != 206) throw new Exception("HTTP " + code);
+                        String ct = c.getContentType();
+                        InputStream in = c.getInputStream();
+                        FileOutputStream fo = new FileOutputStream(part, false);
+                        byte[] buf = new byte[64 * 1024];
+                        int r;
+                        while ((r = in.read(buf)) > 0) fo.write(buf, 0, r);
+                        fo.flush(); fo.close();
+                        try { in.close(); } catch (Exception ignored) { }
+                        if (!part.renameTo(dst)) throw new Exception("rename 失败");
+                        try {
+                            FileOutputStream tf = new FileOutputStream(new File(cacheRoot(), sid + ".type"), false);
+                            tf.write((ct == null ? "application/octet-stream" : ct).getBytes("UTF-8"));
+                            tf.close();
+                        } catch (Exception ignored) { }
+                    } catch (Exception e) {
+                        try { if (part.exists()) part.delete(); } catch (Exception ignored) { }
+                    } finally {
+                        if (c != null) try { c.disconnect(); } catch (Exception ignored) { }
+                        synchronized (sFetching) { sFetching.remove(sid); }
+                    }
+                }
+            }, "ddz-cache-fetch").start();
+            return "started";
+        }
+
+        @JavascriptInterface
+        public String cacheStats() {
+            File d = cacheRoot();
+            long bytes = 0; int count = 0;
+            File[] fs = d.listFiles();
+            if (fs != null) for (File f : fs) {
+                if (f == null || !f.isFile()) continue;
+                String n = f.getName();
+                if (n.endsWith(".part") || n.endsWith(".type") || n.equals(".nomedia")) continue;
+                count++; bytes += f.length();
+            }
+            return "{"count":" + count + ","bytes":" + bytes + "}";
+        }
+
+        @JavascriptInterface
+        public String cacheClear() {
+            File[] fs = cacheRoot().listFiles();
+            if (fs != null) for (File f : fs) {
+                if (f == null || !f.isFile()) continue;
+                String n = f.getName();
+                if (n.endsWith(".part") || n.endsWith(".type")) continue;
+                try { f.delete(); } catch (Exception ignored) { }
+            }
+            return "ok";
+        }
+
+        @JavascriptInterface
+        public String cacheRemove(final String id) {
+            File f = cacheFile(id);
+            if (f != null) try { f.delete(); } catch (Exception ignored) { }
+            return "ok";
+        }
 }
+
+    /* ---------------- v68 私有缓存：目录 / 本地服务 ---------------- */
+    private static volatile int sCachePort = 0;
+    private static final Set<String> sFetching = Collections.synchronizedSet(new HashSet<String>());
+
+    private File cacheRoot() {
+        File d = new File(getNoBackupFilesDir(), "ddz_media");
+        if (!d.exists()) d.mkdirs();
+        try {
+            File nm = new File(d, ".nomedia");
+            if (!nm.exists()) { FileOutputStream fo = new FileOutputStream(nm, false); fo.close(); }
+        } catch (Exception ignored) { }
+        return d;
+    }
+    private static String safeId(String id) {
+        if (id == null) return "";
+        return id.replaceAll("[^A-Za-z0-9_.-]", "_");
+    }
+    private File cacheFile(String id) {
+        String s = safeId(id);
+        return s.length() == 0 ? null : new File(cacheRoot(), s);
+    }
+    private void startPrivateCacheServer() {
+        try {
+            PrivateCacheServer srv = new PrivateCacheServer(cacheRoot());
+            sCachePort = srv.port();
+            srv.start();
+        } catch (Exception e) { sCachePort = 0; }
+    }
+
+    /* 只绑定 127.0.0.1 的极简 HTTP 服务：给 <video>/<img> 提供本地文件，
+       支持 Range（206），所以 1GB 视频可以快进；不暴露给局域网，也不写公共目录。 */
+    private static class PrivateCacheServer extends Thread {
+        private final File dir;
+        private final ServerSocket ss;
+        PrivateCacheServer(File d) throws Exception {
+            this.dir = d;
+            this.ss = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"));
+            setDaemon(true); setName("ddz-private-cache");
+        }
+        int port() { return ss.getLocalPort(); }
+        @Override public void run() {
+            while (!ss.isClosed()) {
+                try { handle(ss.accept()); }
+                catch (Exception ignored) { }
+            }
+        }
+        private String typeOf(File f) {
+            try {
+                File t = new File(dir, f.getName() + ".type");
+                if (t.isFile()) {
+                    FileInputStream fi = new FileInputStream(t);
+                    byte[] b = new byte[(int) t.length()];
+                    int off = 0;
+                    while (off < b.length) { int r = fi.read(b, off, b.length - off); if (r < 0) break; off += r; }
+                    fi.close();
+                    String s = new String(b, 0, off, "UTF-8").split(";")[0].trim();
+                    if (s.length() > 0) return s;
+                }
+            } catch (Exception ignored) { }
+            String n = f.getName().toLowerCase();
+            if (n.endsWith(".mp4")) return "video/mp4";
+            if (n.endsWith(".png")) return "image/png";
+            if (n.endsWith(".jpg")) return "image/jpeg";
+            if (n.endsWith(".gif")) return "image/gif";
+            return "application/octet-stream";
+        }
+        private void handle(Socket s) {
+            try {
+                s.setSoTimeout(15000);
+                BufferedReader br = new BufferedReader(new InputStreamReader(s.getInputStream(), "ISO-8859-1"));
+                String line = br.readLine();
+                if (line == null) { s.close(); return; }
+                String range = null, l;
+                while ((l = br.readLine()) != null && l.length() > 0) {
+                    String lo = l.toLowerCase();
+                    if (lo.startsWith("range:")) range = l.substring(6).trim();
+                }
+                String[] sp = line.split(" ");
+                String p = sp.length > 1 ? sp[1] : "";
+                String id = p.startsWith("/__ddz__/") ? p.substring(9) : "";
+                id = safeId(id.split("\?")[0]);
+                File f = id.length() == 0 ? null : new File(dir, id);
+                if (f == null || !f.isFile()) {
+                    OutputStream os = s.getOutputStream();
+                    os.write(("HTTP/1.1 404 Not Found
+Content-Length: 0
+Connection: close
+
+").getBytes("ISO-8859-1"));
+                    os.flush(); s.close(); return;
+                }
+                long size = f.length(), start = 0, end = size - 1;
+                int code = 200;
+                if (range != null && range.startsWith("bytes=")) {
+                    String[] rr = range.substring(6).split("-");
+                    try { start = Long.parseLong(rr[0]); } catch (Exception ignored) { }
+                    if (rr.length > 1 && rr[1].length() > 0) try { end = Long.parseLong(rr[1]); } catch (Exception ignored) { }
+                    if (end >= size) end = size - 1;
+                    if (start > end || start >= size) {
+                        OutputStream os = s.getOutputStream();
+                        os.write(("HTTP/1.1 416 Range Not Satisfiable
+Content-Range: bytes */" + size
+                                  + "
+Content-Length: 0
+Connection: close
+
+").getBytes("ISO-8859-1"));
+                        os.flush(); s.close(); return;
+                    }
+                    code = 206;
+                }
+                long len = end - start + 1;
+                OutputStream os = s.getOutputStream();
+                StringBuilder h = new StringBuilder();
+                h.append("HTTP/1.1 ").append(code).append(code == 206 ? " Partial Content" : " OK").append("
+");
+                h.append("Content-Type: ").append(typeOf(f)).append("
+");
+                h.append("Accept-Ranges: bytes
+");
+                h.append("Content-Length: ").append(len).append("
+");
+                if (code == 206) h.append("Content-Range: bytes ").append(start).append('-').append(end).append('/').append(size).append("
+");
+                h.append("Access-Control-Allow-Origin: *
+Cache-Control: private, max-age=31536000, immutable
+Connection: close
+
+");
+                os.write(h.toString().getBytes("ISO-8859-1"));
+                if (!"HEAD".equalsIgnoreCase(sp[0])) {
+                    RandomAccessFile raf = new RandomAccessFile(f, "r");
+                    raf.seek(start);
+                    byte[] buf = new byte[64 * 1024];
+                    long left = len;
+                    while (left > 0) {
+                        int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
+                        if (n <= 0) break;
+                        os.write(buf, 0, n);
+                        left -= n;
+                    }
+                    raf.close();
+                }
+                os.flush(); s.close();
+            } catch (Exception e) {
+                try { s.close(); } catch (Exception ignored) { }
+            }
+        }
+    }
 
     private void stopRecorder() {
         if (recorder != null) {
