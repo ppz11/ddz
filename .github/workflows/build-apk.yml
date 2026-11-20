@@ -44,6 +44,38 @@ jobs:
       - name: 同步前端到安卓
         run: npx cap sync android
 
+      # ---- v70：修复 Gradle 依赖仓库（官方仓库偶发不可达时由国内镜像兜底）----
+      - name: 修复依赖仓库（镜像兜底）
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          MIRRORS = [
+              "maven { url 'https://maven.aliyun.com/repository/google' }",
+              "maven { url 'https://maven.aliyun.com/repository/public' }",
+              "maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }",
+          ]
+          for p in ["android/build.gradle", "android/settings.gradle"]:
+              try:
+                  s = open(p, encoding="utf-8").read()
+              except FileNotFoundError:
+                  print("skip (not found):", p); continue
+              if "maven.aliyun.com" in s:
+                  print("already patched:", p); continue
+              blocks = list(re.finditer(r'repositories\s*\{', s))
+              if not blocks:
+                  print("no repositories block:", p); continue
+              out, pos = [], 0
+              for m in blocks:
+                  out.append(s[pos:m.end()])
+                  out.append("\n        " + "\n        ".join(MIRRORS))
+                  pos = m.end()
+              out.append(s[pos:])
+              open(p, "w", encoding="utf-8").write("".join(out))
+              print("patched", len(blocks), "repositories block(s) in", p)
+          PYEOF
+          echo "--- 仓库顺序确认（镜像在前，官方兜底在后）---"
+          grep -n "maven.aliyun.com\|google()\|mavenCentral()" android/build.gradle android/settings.gradle || true
+
       # ---- 覆盖图标（精致版「斗」图标）与应用名 ----
       - name: 覆盖图标与应用名
         run: |
@@ -214,7 +246,12 @@ jobs:
           [ "$MISS" = "0" ] && echo "✔ 原生能力校验全部通过" || { echo "原生能力校验失败"; exit 1; }
 
       - name: 编译 APK
-        run: cd android && ./gradlew assembleDebug --no-daemon
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon || {
+            echo "首次失败，刷新依赖后重试一次"
+            ./gradlew assembleDebug --no-daemon --refresh-dependencies
+          }
 
       - name: 重命名 APK
         run: |
