@@ -893,7 +893,7 @@ public class MainActivity extends BridgeActivity {
                 if (n.endsWith(".part") || n.endsWith(".type") || n.equals(".nomedia")) continue;
                 count++; bytes += f.length();
             }
-            return "{"count":" + count + ","bytes":" + bytes + "}";
+            return "{\"count\":" + count + ",\"bytes\":" + bytes + "}";
         }
 
         @JavascriptInterface
@@ -996,15 +996,13 @@ public class MainActivity extends BridgeActivity {
                 String[] sp = line.split(" ");
                 String p = sp.length > 1 ? sp[1] : "";
                 String id = p.startsWith("/__ddz__/") ? p.substring(9) : "";
-                id = safeId(id.split("\?")[0]);
+                int qi = id.indexOf('?');
+                if (qi >= 0) id = id.substring(0, qi);
+                id = safeId(id);
                 File f = id.length() == 0 ? null : new File(dir, id);
                 if (f == null || !f.isFile()) {
                     OutputStream os = s.getOutputStream();
-                    os.write(("HTTP/1.1 404 Not Found
-Content-Length: 0
-Connection: close
-
-").getBytes("ISO-8859-1"));
+                    os.write(("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").getBytes("ISO-8859-1"));
                     os.flush(); s.close(); return;
                 }
                 long size = f.length(), start = 0, end = size - 1;
@@ -1016,13 +1014,7 @@ Connection: close
                     if (end >= size) end = size - 1;
                     if (start > end || start >= size) {
                         OutputStream os = s.getOutputStream();
-                        os.write(("HTTP/1.1 416 Range Not Satisfiable
-Content-Range: bytes */" + size
-                                  + "
-Content-Length: 0
-Connection: close
-
-").getBytes("ISO-8859-1"));
+                        os.write(("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */" + size + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").getBytes("ISO-8859-1"));
                         os.flush(); s.close(); return;
                     }
                     code = 206;
@@ -1030,21 +1022,14 @@ Connection: close
                 long len = end - start + 1;
                 OutputStream os = s.getOutputStream();
                 StringBuilder h = new StringBuilder();
-                h.append("HTTP/1.1 ").append(code).append(code == 206 ? " Partial Content" : " OK").append("
-");
-                h.append("Content-Type: ").append(typeOf(f)).append("
-");
-                h.append("Accept-Ranges: bytes
-");
-                h.append("Content-Length: ").append(len).append("
-");
-                if (code == 206) h.append("Content-Range: bytes ").append(start).append('-').append(end).append('/').append(size).append("
-");
-                h.append("Access-Control-Allow-Origin: *
-Cache-Control: private, max-age=31536000, immutable
-Connection: close
-
-");
+                h.append("HTTP/1.1 ").append(code).append(code == 206 ? " Partial Content" : " OK").append("\r\n");
+                h.append("Content-Type: ").append(typeOf(f)).append("\r\n");
+                h.append("Accept-Ranges: bytes\r\n");
+                h.append("Content-Length: ").append(len).append("\r\n");
+                if (code == 206) h.append("Content-Range: bytes ").append(start).append('-').append(end).append('/').append(size).append("\r\n");
+                h.append("Access-Control-Allow-Origin: *\r\n");
+                h.append("Cache-Control: private, max-age=31536000, immutable\r\n");
+                h.append("Connection: close\r\n\r\n");
                 os.write(h.toString().getBytes("ISO-8859-1"));
                 if (!"HEAD".equalsIgnoreCase(sp[0])) {
                     RandomAccessFile raf = new RandomAccessFile(f, "r");
