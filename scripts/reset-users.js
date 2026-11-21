@@ -42,6 +42,8 @@ const next = {
   seq: db.seq || 1000,
   uploads: uploads,
   hidden: {}, secretHidden: {}, presenceLog: [],
+  /* v80：UID 永不复用 —— 即使清空所有账号，历史 UID 也不能再发给新用户 */
+  usedUids: db.usedUids || {},
   persons: persons,
   /* 收藏、隐私好友、位置、表情包等业务数据一律保留 */
   sfriends: db.sfriends || {},

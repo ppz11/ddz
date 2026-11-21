@@ -53,14 +53,14 @@ window.Secret = (function () {
       try { Net.send({ t: 'secret:rooms' }); } catch (e) { }
     });
     Net.on('secret:rooms', function (m) {
-      rooms = m.list || [];
+      rooms = m.rooms || m.list || [];   /* v78：服务端 rooms 才是会话对象数组 */
       if (pending && !curRid && rooms.length) {
         curRid = rooms[0].rid || rooms[0];
         Net.send({ t: 'secret:send', rid: curRid, msg: pending });
         pending = null; App.toast('已发送');
       }
       if (pending && !curRid) { pending = null; App.toast('会话已失效，请重新进入'); }
-      if (root && !typing) renderRooms(m.rooms || []);
+      if (root && !typing) renderRooms(rooms);
     });
     /* v40：好友空间会话同样即时刷已读，不用退出重进 */
     Net.on('chat:read', function (m) {
@@ -99,10 +99,14 @@ window.Secret = (function () {
     });
     Net.on('secret:msgs', function (m) {
       msgs = m.list || []; curRid = m.rid;
+      /* v82：第一条未读前画分隔线，直接滚到最新 */
+      sUnreadDividerId = String(m.firstUnreadId || '');
       curMe = m.me || curMe; curOther = m.other || curOther;
       if (m.myUids) myUids = m.myUids.map(String);
       Net.send({ t: 'secret:presence', inSecret: true });
       renderThread();
+      /* v81：用服务端标记已读前给出的第一条未读精确定位 */
+      sScrollToUnread(m.firstUnreadId);
     });
     Net.on('secret:read', function (m) {
       var ids = ((m && m.ids) || []).map(String);
@@ -149,6 +153,10 @@ window.Secret = (function () {
               (x.ts === nm.ts && x.kind === nm.kind && String(x.from) === String(nm.from))) { dup = true; break; }
         }
         if (!dup) { msgs.push(nm); renderThread(); }
+        /* v80：看见即已读（图片/视频/文件不用点开大图），回执按 pid 推给发送方 */
+        if (!isMineMsg(nm) && nm.id) {
+          try { Net.send({ t: 'secret:readack', rid: m.rid, ids: [String(nm.id)] }); } catch (e) { }
+        }
         Sfx.msg();
       }
       else Sfx.msg();
@@ -1049,7 +1057,7 @@ window.Secret = (function () {
     });
   }
 
-  function openThread(rid) { curRid = rid || 'friend'; Net.send({ t: 'secret:msgs', rid: curRid }); }
+  function openThread(rid) { sUnreadDividerId = ''; curRid = rid || 'friend'; Net.send({ t: 'secret:msgs', rid: curRid }); }
   function uidOf(u) { return typeof u === 'string' ? u : (u && u.uid); }
   function lastText(m) {
     if (m.kind === 'text') return m.text;
@@ -1059,6 +1067,26 @@ window.Secret = (function () {
     if (m.kind === 'file') return '[文件]';
     if (m.kind === 'sticker') return '[表情]';
     return '';
+  }
+  /* v82：好友空间同样改为「新消息分隔线 + 直接到最新」。
+     分隔线由 renderSMsgs() 依据 firstUnreadId 画在第一条未读前。 */
+  var sUnreadDividerId = '';
+  function sScrollToUnread(firstId) {
+    if (firstId) sUnreadDividerId = String(firstId);
+    var apply = function () {
+      var box = document.getElementById('s-msgs'); if (!box) return;
+      box.scrollTop = box.scrollHeight;
+    };
+    apply();
+    [60, 180, 400, 800, 1500].forEach(function (ms) { setTimeout(apply, ms); });
+    var box = document.getElementById('s-msgs');
+    if (box) box.querySelectorAll('img,video').forEach(function (im) {
+      if (im.complete || im.dataset.v82im) return;
+      im.dataset.v82im = '1';
+      ['load', 'loadeddata', 'error'].forEach(function (ev) {
+        im.addEventListener(ev, function () { setTimeout(apply, 0); }, { once: true });
+      });
+    });
   }
   /* ---------- 会话详情 ---------- */
   function renderThread() {
@@ -1122,7 +1150,9 @@ window.Secret = (function () {
     // 会话内返回：左滑 / 右滑 → 回列表（不重输暗号）
     Nav.push(backToList, 'secret-thread');
     renderSMsgs();
-    setTimeout(function () { b.scrollTop = b.scrollHeight; }, 60);
+    /* v81：滚动容器是 #s-msgs；原来对 #s-body 设 scrollTop 完全无效，
+       表现就是点开会话停在最早的消息、要一直往下翻。 */
+    sScrollToUnread(null);
   }
 
   /* 返回私密会话列表：只做本地渲染，不再走 secret:status（避免弹暗号） */
@@ -1341,7 +1371,9 @@ window.Secret = (function () {
       var mpick = sSelMode === 'msg'
         ? '<div class="pick' + (sSelMsgs.has(String(m.id)) ? ' on' : '') + '" data-smpick="' + m.id + '"></div>'
         : '';
-      return '<div class="msg ' + (mine ? 'me' : '') + (sSelMsgs.has(String(m.id)) ? ' picked' : '') + '" data-id="' + m.id + '">' +
+      var divider = (sUnreadDividerId && String(m.id) === sUnreadDividerId)
+        ? '<div class="unread-divider">以下为新消息</div>' : '';
+      return divider + '<div class="msg ' + (mine ? 'me' : '') + (sSelMsgs.has(String(m.id)) ? ' picked' : '') + '" data-id="' + m.id + '">' +
         mpick +
         '<div class="a">' + Avatar.svg(who.avatar, 32) + '</div>' +
         '<div class="bub" style="' + (mine ? 'background:#8b7fd4;color:#fff' : '') + '">' + body +

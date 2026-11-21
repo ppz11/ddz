@@ -1,0 +1,29 @@
+PASS 服务启动
+PASS 三个真人注册
+PASS UID 为 8 位数字
+PASS 三端 auth 成功
+PASS B 收到 3 条聊天
+PASS chat:history 返回 firstUnreadId
+PASS firstUnreadId = 第一条未读
+PASS history 里 3 条都已标记已读
+PASS 发送方收到 3 条已读回执
+PASS 二次打开只定位到新增未读
+PASS 三人快速匹配：A 收到 game（v80 会卡死）
+PASS 三人快速匹配：B 收到 game
+PASS 三人房 n=3 且 3 座位齐
+PASS let46 请求被归一为 trio54
+PASS room:invite 建好房且只有房主
+PASS 16 秒后没有自动补机器人开局
+PASS 补机器人后 3 座位齐
+PASS 房主点开始能发牌
+PASS chat.js 用 firstUnreadId 定位
+PASS chat.js 打开先兜底滚到底
+PASS chat.js 不再被 contacts 快照抹掉未读
+PASS secret.js 滚的是 #s-msgs
+PASS secret.js 不再滚 #s-body
+PASS 服务端的 secret:msgs 带 firstUnreadId
+PASS 邀请分支不再调 scheduleAutoFill
+PASS 46 张缺省值全部下线
+PASS 页面版本 v81
+
+=== TOTAL 27 PASS / 0 FAIL ===

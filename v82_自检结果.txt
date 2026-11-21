@@ -1,0 +1,66 @@
+===== v82 真实服务端 WS 端到端 =====
+PASS 主服务启动
+PASS 三个真人注册 / 8 位数字 UID
+PASS 三端 auth
+PASS 聊天 A→B 三条都收到
+PASS 打开会话返回 firstUnreadId
+PASS history 三条且都已读
+PASS 发送方收到 3 条已读回执
+PASS B→A 反向收发正常
+PASS 聊天界面加好友按 pid 落地
+PASS 好友空间加好友后生成唯一 pid 会话
+PASS 好友空间消息互通（3A 镜像到对方聊天）
+PASS 创建三人房（只有房主）
+PASS ① 开始游戏有空位 → 提示手动补位（不自动补）
+PASS 邀请页 45 秒内不自动补机器人
+PASS 给离线真人发邀请不报错
+PASS 离线真人上线后能看到邀请卡片
+PASS ② 大厅输入房间号 → 直接进入房间
+PASS ③ 会话里点邀请卡片 → 直接进入房间
+PASS 两真人 + 房主 满 3 座
+PASS 房主点开始 → 满座发牌 phase=bid
+PASS 三位真人都收到 game
+PASS 换身份返回新 8 位数字 UID
+PASS ⑤ 换 UID 后座位按 pid 保留（seat0 换成新 UID）
+PASS ⑤ 断线重连自动回到原牌桌/房间
+PASS ③ 房主退出后再进对战界面仍在原房间
+PASS ④ 旧 APK 发 let46 → 归一为三人 54 张（无 46 张模式）
+PASS 新房有空位时仍需手动补机器人
+PASS 手动补机器人只补位不开局
+PASS 补满后点开始才发牌
+PASS ② 三人快速匹配直接开局（补机器人）
+PASS 人机开局（全流程起点）
+PASS 叫分接口不报错（引擎推进正常）
+PASS 服务端日志无异常
+PASS 过期测试服务启动
+PASS ③ 10 分钟到期房间解散，卡片提示「房间已解散」
+PASS ③ 解散后 resume 返回 room:gone
+PASS 过期服务日志无异常
+
+==== v82 E2E 结果: 37 PASS / 0 FAIL ====
+
+===== v82 真实 Chromium DOM + 静态审查 =====
+PASS 聊天：恰好一条「以下为新消息」分隔线  {"dividers": 1, "before": true, "top": 649, "max": 649, "anchor": {"type": "bottom"}}
+PASS 聊天：分隔线在第一条未读之前  {"dividers": 1, "before": true, "top": 649, "max": 649, "anchor": {"type": "bottom"}}
+PASS 聊天：⑦ 直接滚到最新，不再停在第一条未读  {"dividers": 1, "before": true, "top": 649, "max": 649, "anchor": {"type": "bottom"}}
+PASS 聊天：无未读时不画分隔线且停最新  {"dividers": 0, "top": 616, "max": 616}
+PASS 聊天：未读数越界 / 用户曾手动上滑也不回第一条  {"top": 649, "max": 649, "firstTop": -637}
+PASS 好友空间：同样画一条分隔线  {"dividers": 1, "top": 528, "max": 528}
+PASS 好友空间：⑦ 直接滚到最新（滚的是真容器）  {"dividers": 1, "top": 528, "max": 528}
+PASS 静态：index.html 版本为 v82
+FAIL 静态：前端 JS 完全无 let46 / 46 张字样
+PASS 静态：服务端不再有 46 张模式，仅留一行旧规则兜底归一
+PASS 静态：大厅/牌桌玩法只有 trio54/duo37/cut37
+PASS 静态：两份引擎均无 let46 分支
+PASS 静态：两份 AI 均无 let46 分支
+PASS 静态 server.js：10 分钟保留
+PASS 静态 server.js：resume 分支
+PASS 静态 server.js：换 UID 座位改绑
+PASS 静态 server.js：按 pid 找回房间
+PASS 静态 app.js：进对战界面发 room:resume
+PASS 静态：聊天与好友空间都有分隔线渲染
+PASS 静态：开始游戏仍要求满座（手动补机器人）
+PASS 静态：快速匹配补机器人后直接开局
+PASS 静态：5 个 Java + workflow 与 v81 逐字节一致（不用重编译 APK）
+
+==== v82 Browser+Static: 21 PASS / 1 FAIL ====

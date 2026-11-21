@@ -146,10 +146,22 @@ function body(req, limit) {
     req.on('error', reject);
   });
 }
-/* v64：真人 UID 统一 8 位纯数字（好记、好复制），生成时避开已有账号 */
+/* v64：真人 UID 统一 8 位纯数字（好记、好复制）。
+   v80：UID 永不复用 —— 除了当前 db.users，还要避开「历史用过但已弃用」的 UID。
+   换身份留下的旧账号、account:reset 删掉的账号、清库前的账号，都记在 db.usedUids 里；
+   旧账号本身仍可用「ID 登录」显式登录（那是登录自己的历史身份，不是把 UID 重新分配）。 */
+function ensureUsedUids() {
+  if (!db.usedUids || typeof db.usedUids !== 'object') db.usedUids = {};
+  Object.keys(db.users || {}).forEach(function (k) { if (k) db.usedUids[k] = 1; });
+  db.usedUids['666888'] = 1;   /* 固定测试号 */
+  store.save();
+}
+ensureUsedUids();
 const uid = () => {
   let s;
-  do { s = String(10000000 + Math.floor(Math.random() * 90000000)); } while (db.users[s]);
+  do { s = String(10000000 + Math.floor(Math.random() * 90000000)); }
+  while (db.users[s] || (db.usedUids && db.usedUids[s]));
+  if (db.usedUids) db.usedUids[s] = 1;
   return s;
 };
 const tok = () => crypto.randomBytes(12).toString('hex');
@@ -243,6 +255,19 @@ function userByToken(t) {
   return null;
 }
 const pub = u => ({ uid: u.uid, nick: u.cur.nick, avatar: u.cur.avatar, coins: coinsOf(u) | 0, test: !!u.test });
+/* v78：展示用昵称/头像一律取「当前身份」，回退真人初始昵称。
+   person.nick 是建号时随机一次的固定值，换身份后不更新；v77 里消息 fromName、
+   好友卡片、好友空间会话标题全用它，导致换了昵称还显示旧名。 */
+function dispNick(u) { return (u && u.cur && u.cur.nick) || (u && u.nick) || '玩家'; }
+function dispAvatar(u) { return (u && u.cur && u.cur.avatar) || (u && u.avatar) || null; }
+function personDisplay(pid) {
+  const p = db.persons[pid];
+  if (!p) return { pid: pid, nick: '玩家', avatar: null, locOn: false };
+  const k = currentUidOfPid(pid), u = k && db.users[k];
+  return { pid: pid, nick: u ? dispNick(u) : (p.nick || '玩家'),
+           avatar: u ? (dispAvatar(u) || p.avatar || null) : (p.avatar || null),
+           locOn: !!p.locOn };
+}
 /* 战绩同一真人共享：随机 ID 变了也照样能看到 */
 function myGames(u) {
   const pid = personOf(u).pid;
@@ -350,10 +375,22 @@ const server = http.createServer(async (req, res) => {
           if (x !== fresh && !x.bot && !x.test && x.device === fresh.device) x.device = '';
         });
       }
-      /* 当前 WS 连接改绑到新 uid，别把自己踢下线 */
-      if (online.has(old.uid)) { const w = online.get(old.uid); online.delete(old.uid); online.set(fresh.uid, w); }
-      for (const [ws2, c] of clients) if (c && c.u === old.uid) c.u = fresh.uid;
+      /* 当前 WS 连接改绑到新 uid，别把自己踢下线。
+         v78：只改绑发起 reroll 的这一条连接。v77 把 clients 里所有同 uid 的连接
+         全改成新身份，多端登录时另一台设备会「被换身份」。 */
+      if (online.has(old.uid)) {
+        const w = online.get(old.uid);
+        online.delete(old.uid); online.set(fresh.uid, w);
+        const st = clients.get(w); if (st) st.u = fresh;
+      }
       store.save();
+      /* v82：打牌中途换 UID，房间座位按 pid 保留并立刻换成新身份 */
+      try { rebindSeats(fresh); } catch (e) { }
+      /* v79：换身份后立刻让所有人的联系人列表 / 大厅 / 本机路由表刷新。
+         以前只改绑 WS 就返回，旧 UID 在别人列表里还挂着「在线」、新 UID 要等对方
+         下次登录才冒出来，双方都换身份时就会互相看不到、发不到。 */
+      try { pushRoute(fresh); } catch (e) { }
+      try { broadcastLobby(); broadcastContacts(); broadcastFriendLists(); pushPresence(fresh); } catch (e) { }
       return json(res, 200, { uid: fresh.uid, token: fresh.token, me: pub(fresh), coins: coinsOf(fresh) | 0 });
     }
     if (p === '/api/me') {
@@ -637,7 +674,8 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/history') {
       const u = userByToken(url.searchParams.get('token'));
       if (!u) return json(res, 401, { err: 'no' });
-      return json(res, 200, { list: myGames(u) });
+      /* v84：46 张玩法已彻底删除；旧记录由 scripts/purge-let46.js 物理清库，这里双保险 */
+      return json(res, 200, { list: myGames(u).filter(g => g && g.rule !== 'let46') });
     }
     if (p === '/api/history/clear' && req.method === 'POST') {
       const u = userByToken(url.searchParams.get('token'));
@@ -655,6 +693,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/ads') return json(res, 200, { list: ADS.ALL });
 
+    /* v83：未知 /api/ 路径必须返回 404 JSON，不能回落到首页 HTML。
+       否则前端 fetch 拿到 index.html 会 JSON 解析失败，接口故障很难定位。 */
+    if (p.startsWith('/api/')) return json(res, 404, { err: 'api not found' });
     let file = null;
     if (p === '/' || p === '/index.html') file = path.join(PUBLIC, 'index.html');
     else if (p.startsWith('/shared/')) file = path.join(SHARED, path.basename(p));
@@ -696,7 +737,7 @@ function logLogin(u) {
     const x = db.presenceLog[i];
     if (x.uid === u.uid && !x.offline) { x.offline = Date.now(); break; }
   }
-  db.presenceLog.push({ uid: u.uid, pid: pid, nick: u.nick || '', login: Date.now(), offline: 0 });
+  db.presenceLog.push({ uid: u.uid, pid: pid, nick: dispNick(u) || '', login: Date.now(), offline: 0 });
   if (db.presenceLog.length > 300) db.presenceLog = db.presenceLog.slice(-300);
   store.save();
 }
@@ -743,10 +784,15 @@ wss.on('connection', ws => {
     if (st && st.u) {
       lastSeen.set(st.u.uid, Date.now());
       logOffline(st.u);
-      online.delete(st.u.uid);
+      /* v79：只删除「这条连接自己注册的那一项」。
+         /api/reroll 会把旧连接的 st.u 改绑成新 uid；若新连接已先 auth 注册了
+         同一个 uid，旧连接晚到的 close 无条件 delete 会把新连接踢成离线
+         ——表现就是「刚换完身份，别人看到我离线、消息收不到」。 */
+      if (online.get(st.u.uid) === ws) online.delete(st.u.uid);
       busy.delete(st.u.uid); callPeer.delete(st.u.uid);
       for (const [k, v] of callPeer) if (v === st.u.uid) callPeer.delete(k);
-      leaveRoom(st.u, true); broadcastLobby(); broadcastContacts();
+      /* v82：断线保留座位 10 分钟，重连按 pid 认回 */
+      leaveRoom(st.u, true); broadcastLobby(); broadcastContacts(); broadcastFriendLists();
     }
   });
 });
@@ -762,39 +808,235 @@ function seatCountOf(rule) { return DDZ.seatCount(rule === 'classic54' ? 'duo37'
 function newRoomId() { let s; do { s = String(Math.floor(100000 + Math.random() * 900000)); } while (rooms.has(s)); return s; }
 function makeRoom(rule) {
   if (rule === 'classic54') rule = 'duo37';
+  /* v82：旧双人玩法已彻底删除（引擎/界面/服务端均不再支持），所有用户都是新 APK，
+     未知或空规则一律用默认三人 54 张，不需要拒绝提示。 */
+  if (!rule || rule === 'let46') rule = 'trio54';
   /* v46：减牌玩法只支持二人；DDZ.seatCount('cut37') 恒为 2，三人房强制 trio54 */
   const gid = newRoomId();
   const n = seatCountOf(rule);
-  const room = { gid, rule, n, seats: new Array(n).fill(null), game: null, ts: Date.now(), botTimers: [] };
+  /* v83：activePids = 已进房且没点「离开房间」的真人 pid。
+     只要它非空就一直保留房间；清空那一刻起算 10 分钟解散。
+     leftPids 只用于「点了离开 → 再进对战界面不再自动加入」。 */
+  const room = { gid, rule, n, seats: new Array(n).fill(null), game: null, ts: Date.now(), botTimers: [],
+                 ownerPid: null, lingerUntil: 0,
+                 activePids: new Set(), leftPids: new Set(), emptySince: 0,
+                 lastActiveAt: Date.now(), allOfflineSince: 0,
+                 /* v84：presentPids = 当前停留在「对战界面前台」且没点离开的真人 pid。
+                    切到大厅/聊天/我的界面或切后台即从中移除；全员移除那一刻起算 10 分钟。 */
+                 presentPids: new Set(), knownPids: new Set(), awaySince: 0 };
   rooms.set(gid, room);
   return room;
 }
-function seatOf(room, u) { return room.seats.findIndex(s => s && s.uid === u.uid); }
+/* v82：座位按「真人 pid」绑定。换 UID / 断线重连后按 pid 仍能认回原座位，
+   并把座位上过期的 uid 换成当前登录身份（昵称/头像同步更新）。 */
+function pidOfSeat(s) {
+  if (!s || s.bot) return null;
+  try { return personOf(s).pid; } catch (e) { return null; }
+}
+function seatOf(room, u) {
+  let i = room.seats.findIndex(s => s && !s.bot && s.uid === u.uid);
+  if (i >= 0) return i;
+  let pid = null;
+  try { pid = personOf(u).pid; } catch (e) { }
+  if (!pid) return -1;
+  i = room.seats.findIndex(s => s && !s.bot && pidOfSeat(s) === pid);
+  if (i >= 0) room.seats[i] = u;   // 换身份后座位改绑到新 uid
+  return i;
+}
 function clearBotTimersOf(u) { const r = findRoom(u); if (r) clearBotTimers(r); }
 function clearBotTimers(room) { (room.botTimers || []).forEach(t => clearTimeout(t)); room.botTimers = []; }
-function leaveRoom(u, silent) {
+/* v82：房主退出 / 断线后房间保留 10 分钟，再次进对战界面自动回房；
+   10 分钟后解散，旧邀请卡片点开会明确提示「房间已解散」。
+   显式换局（快速匹配 / 重新建房 / 加入别的房）则立即解散自己的等待房，
+   避免旧房间号还能被点进来。 */
+/* 可用环境变量缩短，仅供自检脚本验证过期解散；线上默认 10 分钟 */
+const ROOM_LINGER_MS = Number(process.env.DDZ_ROOM_LINGER_MS) || 10 * 60 * 1000;
+function anyHumanOnline(room) {
+  return room.seats.some(s => {
+    if (!s || s.bot) return false;
+    if (online.has(s.uid)) return true;
+    const pid = pidOfSeat(s); const p = pid && db.persons[pid];
+    return !!(p && (p.uids || []).some(k => online.has(k)));
+  });
+}
+/* v83：把 seats 里还坐着的真人同步进 activePids。
+   只要重新坐回座位（建房 / 房间号加入 / 邀请卡片 / 快速匹配），就撤销「已离开」标记。
+   点了「离开房间」的人已从 seats 移除，不会被加回。 */
+function syncActive(room) {
+  if (!room.activePids) room.activePids = new Set();
+  if (!room.leftPids) room.leftPids = new Set();
+  if (!room.presentPids) room.presentPids = new Set();
+  if (!room.knownPids) room.knownPids = new Set();
+  room.seats.forEach(s => {
+    if (!s || s.bot) return;
+    const pid = pidOfSeat(s);
+    if (pid) {
+      const isNew = !room.knownPids.has(pid);
+      room.knownPids.add(pid);
+      room.leftPids.delete(pid);
+      room.activePids.add(pid);
+      /* v84：只有「新坐下」才补默认前台，切到别的界面发过 room:away 的人不会被覆盖 */
+      if (isNew) room.presentPids.add(pid);
+      room.lastActiveAt = Date.now();
+    }
+  });
+}
+/* v84：还有真人停留在「对战界面前台」（且没点离开房间）吗？ */
+function hasPresentHuman(room) {
+  if (!room.presentPids || room.presentPids.size === 0) return false;
+  for (const pid of room.presentPids) {
+    if (room.leftPids && room.leftPids.has(pid)) continue;
+    if (room.activePids && !room.activePids.has(pid)) continue;
+    return true;
+  }
+  return false;
+}
+/* v84 房间保留规则（用户最终口径）：
+   ① 等待阶段：任一没点离开的真人停留在对战界面前台 → 一直保留，不计时
+   ② 全员切到大厅/聊天/我的界面，或软件切后台 → 从那一刻起 10 分钟自动解散
+   ③ 任一真人切回对战界面 → 取消计时、自动回房（没点过离开的话）
+   ④ 对局进行中不因后台解散：打牌中途换 UID / 断线重连按 pid 保留座位 */
+function refreshRoomExpiry(room) {
+  if (room.game && room.game.phase !== 'over') {
+    room.awaySince = 0; room.emptySince = 0; room.lingerUntil = 0; room.allOfflineSince = 0;
+    clearTimeout(room._expireTimer);
+    return;
+  }
+  if (hasPresentHuman(room)) {
+    room.awaySince = 0; room.emptySince = 0; room.lingerUntil = 0; room.allOfflineSince = 0;
+    clearTimeout(room._expireTimer);
+    return;
+  }
+  if (!room.awaySince) {
+    room.awaySince = Date.now();
+    room.emptySince = room.awaySince;
+    room.lingerUntil = room.awaySince + ROOM_LINGER_MS;
+    scheduleExpire(room);
+  }
+}
+function dropRoom(room) {
+  clearTimeout(room._expireTimer);
+  clearBotTimers(room); clearPhaseTimer(room.gid);
+  rooms.delete(room.gid);
+}
+function scheduleExpire(room) {
+  clearTimeout(room._expireTimer);
+  const stamp = room.emptySince;
+  room._expireTimer = setTimeout(() => {
+    if (!rooms.has(room.gid)) return;
+    /* v82：只要期间被 resume 过（lingerUntil 归零）或重新续期，就不解散；
+       否则无论房主在不在别处在线，10 分钟到点一律解散。 */
+    if (!room.emptySince || room.emptySince !== stamp) return;
+    if (room.game && room.game.phase !== 'over') return;
+    if (hasPresentHuman(room)) return;
+    if (Date.now() < room.lingerUntil) return;
+    dropRoom(room);
+  }, ROOM_LINGER_MS + 500);
+}
+function leaveRoom(u, keep) {
+  let pid = null; try { pid = personOf(u).pid; } catch (e) { }
   rooms.forEach((room, gid) => {
     const i = seatOf(room, u);
-    if (i >= 0) {
-      clearBotTimers(room);
+    if (i < 0) return;
+    if (!keep) {
+      /* 显式换局（快速匹配 / 新建房 / 加入别的房）：立刻让出座位。
+         仍有别的真人在房里时只清自己；没人了按「旧房立即解散」处理。 */
+      const humans = room.seats.filter(s => s && !s.bot).length;
+      if (humans <= 1) { dropRoom(room); return; }
       room.seats[i] = null;
-      room.seats.forEach(s => { if (s && !s.bot) { const w = online.get(s.uid); if (w) send(w, { t: 'room:left', gid, who: u.uid }); } });
-      if (room.seats.every(s => !s || s.bot)) rooms.delete(gid);
+      if (pid) room.activePids.delete(pid);
+      if (room.ownerPid === pid) {
+        const next = room.seats.find(s => s && !s.bot);
+        room.ownerPid = next ? pidOfSeat(next) : null;
+      }
+      syncActive(room); refreshRoomExpiry(room); pushRoom(room);
+      return;
     }
+    /* v84：ws 断线不算「点离开房间」，座位与 activePids 全保留，
+       下次进对战界面按 pid 自动认回；但视为退出前台，若全员都不在前台即起算 10 分钟。 */
+    if (pid && room.presentPids) room.presentPids.delete(pid);
+    refreshRoomExpiry(room);
+    room.seats.forEach(s => {
+      if (s && !s.bot && s.uid !== u.uid) {
+        const w = online.get(s.uid);
+        if (w) send(w, { t: 'room:left', gid, who: u.uid, temporary: true });
+      }
+    });
   });
   const qi = queue.findIndex(q => q.u.uid === u.uid);
   if (qi >= 0) queue.splice(qi, 1);
+}
+/* v82：按真人 pid 找回保留房间（换过 UID 也认得）。 */
+function findRoomByPid(u) {
+  let pid = null; try { pid = personOf(u).pid; } catch (e) { }
+  if (!pid) return null;
+  for (const r of rooms.values()) {
+    /* v83：等待阶段点过「离开房间」就不再自动认回；对局中仍按 pid 恢复牌局 */
+    if (r.leftPids && r.leftPids.has(pid) && !r.game) continue;
+    if (r.ownerPid === pid) return r;
+    if (r.seats.some(s => s && !s.bot && pidOfSeat(s) === pid)) return r;
+  }
+  return null;
+}
+/* v82：重新进对战界面 / WS 重连 → 回到保留房间。
+   打牌中恢复整局状态，等待中恢复房间视图。 */
+function resumeRoom(u, ws) {
+  const room = findRoomByPid(u);
+  if (!room) return false;
+  let pid = null; try { pid = personOf(u).pid; } catch (e) { }
+  /* v83：等待阶段点过「离开房间」→ 不再自动加入；对局中仍按 pid 恢复 */
+  if (pid && room.leftPids && room.leftPids.has(pid) && !room.game) return false;
+  const i = seatOf(room, u);
+  if (i < 0) return false;
+  if (pid) {
+    room.leftPids.delete(pid); room.activePids.add(pid);
+    if (!room.presentPids) room.presentPids = new Set();
+    room.presentPids.add(pid);
+  }
+  room.awaySince = 0;
+  room.emptySince = 0; room.lingerUntil = 0; room.allOfflineSince = 0;
+  room.lastActiveAt = Date.now();
+  clearTimeout(room._expireTimer);
+  room.seats[i] = u;
+  if (room.game) pushGame(room);
+  else { pushRoom(room); send(ws, { t: 'room', ...roomView(room), you: i, resumed: true }); }
+  return true;
+}
+/* v82：切身份后把房间座位上的旧 uid 立刻换成新身份，打牌中途换 UID 不丢座位 */
+function rebindSeats(fresh) {
+  let pid = null; try { pid = personOf(fresh).pid; } catch (e) { }
+  if (!pid) return;
+  rooms.forEach(room => {
+    room.seats.forEach((s, i) => {
+      if (s && !s.bot && pidOfSeat(s) === pid && s.uid !== fresh.uid) room.seats[i] = fresh;
+    });
+    if (room.game) pushGame(room); else pushRoom(room);
+  });
 }
 function roomView(room) {
   return { gid: room.gid, rule: room.rule, n: room.n, seats: room.seats.map(pubOf), phase: room.game ? room.game.phase : 'wait' };
 }
 function pushRoom(room) {
+  /* v83：每次推房间视图都同步「还有谁没点离开」，避免漏标 / 忘记撤销 */
+  syncActive(room); refreshRoomExpiry(room);
   room.seats.forEach((s, i) => {
     if (!s || s.bot) return;
     const w = online.get(s.uid); if (!w) return;
     send(w, { t: 'room', ...roomView(room), you: i });
   });
 }
+/* v84 清扫：等待阶段只要没有真人停留在对战界面前台，awaySince 到点立即解散；
+   对局中不解散（按 pid 保留座位）。不依赖单个 setTimeout 的精度。 */
+const ROOM_SWEEP_MS = Math.min(5000, Math.max(500, Number(process.env.DDZ_ROOM_SWEEP_MS) || 5000));
+setInterval(() => {
+  const now = Date.now();
+  rooms.forEach(room => {
+    if (room.game && room.game.phase !== 'over') return;
+    if (hasPresentHuman(room)) { room.allOfflineSince = 0; return; }
+    if (!room.awaySince) { refreshRoomExpiry(room); return; }
+    if (now >= room.lingerUntil) dropRoom(room);
+  });
+}, ROOM_SWEEP_MS);
 function cardDTO(c) { return { id: c.id, r: c.r, s: c.s, v: c.v, red: c.red, joker: c.joker }; }
 function gameView(g, seat, room) {
   const isOver = g.phase === 'over';
@@ -882,7 +1124,7 @@ function pushResult(room) {
 function applyBidAndLog(g, seat, act, gid) {
   const r = DDZ.applyBid(g, seat, act);
   if (!r.err) {
-    /* v46：46 张也走叫分制（原来被 g.rule !== 'let46' 排除，日志分数恒为 0）；
+    /* v82：46 张模式已删除，叫分制统一生效；
        减牌玩法的「分数」就是减牌张数，act 记成 cut 供前端念「减 N 张」。 */
     const score = (act && act.type === 'bid') ? (Number(act.score) || 0)
       : (act && act.type === 'cut') ? (Number(act.count) || 0) : 0;
@@ -1089,6 +1331,39 @@ function scheduleAutoFill(room, ms) {
 
 /* ---------------- 消息 ---------------- */
 function saveMsg(m) { db.messages.push(m); if (db.messages.length > 6000) db.messages = db.messages.slice(-3000); store.save(); }
+/* v76：给联系人补真人 pid，前端据此判断是否已从聊天迁到好友空间。
+   v77：调用点既有 user 对象也有 uid 字符串，统一归一后再取联系人；
+   原来写死 u.uid，传字符串时 contactsOf(undefined) 会让 auth 分支直接抛错。 */
+function contactsWithPid(u) {
+  const owner = (u && typeof u === 'object') ? u.uid : String(u || '');
+  return contactsOf(owner).map(function (c) {
+    const uu = db.users[String(c.uid)];
+    return Object.assign({}, c, { pid: uu ? (uu.pid || null) : null });
+  });
+}
+function sFriendPids(me) {
+  return (db.sfriends && db.sfriends[me] ? db.sfriends[me] : [])
+    .map(f => f && f.pid).filter(Boolean);
+}
+function pushRoute(u) {
+  const me = personOf(u).pid;
+  const pids = sFriendPids(me);
+  /* v78：推给本机这个真人的所有在线连接（多端一致），不再只推 online 里那一条 */
+  for (const [w2, c] of clients) {
+    if (c && c.u && c.u.pid === me) send(w2, { t: 'route:list', pids });
+  }
+}
+/* v76：viewerPid 是否把 otherPid 加进了好友空间（1A 只按本机算）。 */
+function routeHas(viewerPid, otherPid) {
+  return sFriendPids(viewerPid).indexOf(otherPid) >= 0;
+}
+function currentUidOfPid(pid) {
+  const p = db.persons[pid];
+  if (!p) return null;
+  const us = (p.uids || []).slice();
+  for (let i = us.length - 1; i >= 0; i--) if (online.has(us[i])) return us[i];
+  return us[us.length - 1] || null;
+}
 
 /* 邀请卡片：在双方会话里落一条 kind:'invite' 的消息，
    对方即使当时离线，回头打开聊天也能看到并一键加入。 */
@@ -1105,12 +1380,22 @@ function sendInviteCard(from, to, room) {
     nick: (from.cur && from.cur.nick) || '玩家'
   };
   saveMsg(msg);
-  const w = online.get(to);
+  let w = online.get(to);
+  if (!w) {
+    /* v82：离线真人也能收到邀请。同一真人若还有别的 UID 在线就推过去；
+       全离线时卡片已落库，上线后 chat:history 会拉到并计入未读。 */
+    try {
+      const pid = personOf(target).pid;
+      const p = db.persons[pid];
+      const alt = p && (p.uids || []).find(k => k !== to && online.has(k));
+      if (alt) w = online.get(alt);
+    } catch (e) { }
+  }
   if (w) send(w, { t: 'chat', msg });
   // 邀请方自己也能看到「已发出邀请」，方便对照
   send(online.get(from.uid), { t: 'chat', msg: Object.assign({}, msg, { to: to, mine: true }) });
   const wc = online.get(from.uid);
-  if (wc) send(wc, { t: 'contacts', list: contactsOf(from.uid) });
+  if (wc) send(wc, { t: 'contacts', list: contactsWithPid(from.uid) });
 }
 /* ---------- 单向删除：只影响本人，对方完全不知道 ---------- */
 function hideOf(uid) {
@@ -1118,33 +1403,52 @@ function hideOf(uid) {
   if (!db.hidden[uid]) db.hidden[uid] = { msgs: {}, threads: {} };
   if (!db.hidden[uid].msgs) db.hidden[uid].msgs = {};
   if (!db.hidden[uid].threads) db.hidden[uid].threads = {};
+  /* v80：会话新起点（删除/重新发起的时刻）。老消息即使没被逐条隐藏，
+     也不允许出现在重新发起的新会话里。 */
+  if (!db.hidden[uid].epochs) db.hidden[uid].epochs = {};
   return db.hidden[uid];
 }
-function hiddenFor(uid) { return (db.hidden && db.hidden[uid]) || { msgs: {}, threads: {} }; }
+function hiddenFor(uid) {
+  const h = (db.hidden && db.hidden[uid]) || {};
+  return { msgs: h.msgs || {}, threads: h.threads || {}, epochs: h.epochs || {} };
+}
 function msgHidden(uid, id) { return !!hiddenFor(uid).msgs[String(id)]; }
 function hideMsgs(uid, ids) {
   const h = hideOf(uid);
   ids.forEach(id => { h.msgs[String(id)] = 1; });
   store.save();
 }
+/* v80：一条消息是否属于「uid a ↔ uid b」这个会话。
+   发给历史 UID 的消息服务端会把 to 改写成对方当前在线 UID，并留 origTo，
+   只按 from/to 精确匹配会查不到 —— 表现为「刚发的消息重开会话就消失」。 */
+function inPair(m, a, b) {
+  const f = String(m.from || ''), t = String(m.to || ''), o = String(m.origTo || '');
+  if (f === a && (t === b || o === b)) return true;
+  if (t === a && (f === b || o === b)) return true;
+  if (o === a && (f === b || t === b)) return true;
+  return false;
+}
 /* 删掉整个会话：把当前这些消息标记为「我这边不显示」，对方那边原封不动。
-   之后对方再发新消息，会话会自然重新出现（新消息不在隐藏名单里）。 */
+   v80：同时记 epoch，重新发起会话后老消息一律不复活。 */
 function hideThread(uid, withUid) {
   const h = hideOf(uid);
-  db.messages.forEach(m => {
-    if ((m.from === uid && m.to === withUid) || (m.from === withUid && m.to === uid)) h.msgs[String(m.id)] = 1;
-  });
-  h.threads[String(withUid)] = Date.now();
+  const now = Date.now();
+  db.messages.forEach(m => { if (inPair(m, String(uid), String(withUid))) h.msgs[String(m.id)] = 1; });
+  h.threads[String(withUid)] = now;
+  h.epochs[String(withUid)] = now;
   store.save();
 }
 function threadHiddenTs(uid, withUid) { return hiddenFor(uid).threads[String(withUid)] || 0; }
+function threadEpoch(uid, withUid) { return hiddenFor(uid).epochs[String(withUid)] || 0; }
 
 function chatBetween(a, b) {
-  return db.messages.filter(m => (m.from === a && m.to === b) || (m.from === b && m.to === a)).sort((x, y) => x.ts - y.ts).slice(-200);
+  a = String(a); b = String(b);
+  return db.messages.filter(m => inPair(m, a, b)).sort((x, y) => x.ts - y.ts).slice(-200);
 }
-/* 按「查看者」过滤掉他自己删掉的消息 */
+/* 按「查看者」过滤掉他自己删掉的消息，以及 epoch 之前的老消息 */
 function chatBetweenFor(a, b, viewer) {
-  return chatBetween(a, b).filter(m => !msgHidden(viewer, m.id));
+  const ep = threadEpoch(viewer, b);
+  return chatBetween(a, b).filter(m => !msgHidden(viewer, m.id) && (!ep || (m.ts || 0) > ep));
 }
 function roomOf(uid) {
   for (const r of rooms.values()) {
@@ -1253,13 +1557,11 @@ function delFriend(pid, fpid, via) {
   store.save();
   return { ok: true };
 }
-/* 把好友 pid 换成一个可聊天的 uid（优先取在线的那个） */
-function uidOfPid(pid) {
-  const p = db.persons[pid];
-  if (!p || !p.uids || !p.uids.length) return null;
-  for (const u of p.uids) if (db.users[u] && online.has(u)) return u;
-  return p.uids[p.uids.length - 1];
-}
+/* v80：好友卡片永远给「最新身份」的 UID。
+   currentUidOfPid 从 person.uids 末尾往前找在线的，否则取最后一个；
+   换身份时新 UID 总是追加在末尾。旧版从 uids 头部开始找在线，
+   旧身份若还挂着连接就会返回旧 UID，好友列表就更新不到新 UID。 */
+function uidOfPid(pid) { return currentUidOfPid(pid); }
 /* 好友卡片：昵称 / 头像 / 在线状态 */
 function friendCard(pid) {
   const p = db.persons[pid];
@@ -1269,8 +1571,8 @@ function friendCard(pid) {
   return {
     pid: pid,
     uid: uid || '',
-    nick: (u && u.nick) || p.nick || '玩家',
-    avatar: (u && u.avatar) || p.avatar || null,
+    nick: u ? dispNick(u) : (p.nick || '玩家'),
+    avatar: u ? (dispAvatar(u) || p.avatar || null) : (p.avatar || null),
     online: !!(uid && online.has(uid))
   };
 }
@@ -1298,6 +1600,12 @@ function findPeople(pid, q) {
     if (p.pid === pid) return;
     const nm = String(p.nick || '');
     if (nm && nm.indexOf(q) >= 0) push(p);
+  });
+  /* v78：换身份后当前昵称与 person.nick 不同，按昵称搜人也要能命中 */
+  Object.values(db.users).forEach(u => {
+    if (u.bot || !u.pid || u.pid === pid) return;
+    const nm = String((u.cur && u.cur.nick) || '');
+    if (nm && nm.indexOf(q) >= 0) push(db.persons[u.pid]);
   });
   if (!out.length) {
     Object.values(db.users).forEach(u => {
@@ -1344,6 +1652,20 @@ function contactsOf(u) {
     if (k === uid || !db.users[k] || db.users[k].bot || set.has(k) || hiddenTs(k)) return;
     set.set(k, Date.now());
   });
+  /* v79：所有登录过的真人用户，彼此在聊天界面都要能看到会话框（含离线）。
+     以前只列「聊过 / 同场打过 / 此刻在线」的人，对方一换身份或一离线，
+     会话框直接消失，离线状态也就无从看起。这里按 UID 全量纳入、
+     用 lastLogin 当排序权重；被本人删掉的会话仍不复活。 */
+  Object.keys(db.users).forEach(k => {
+    const x = db.users[k];
+    if (!x || x.bot || k === uid || set.has(k)) return;
+    const ht = hiddenTs(k);
+    /* v80：删掉的会话，若这个 UID 之后再没登录过，就永不复活；
+       只有该 UID 重新登录（lastLogin 晚于删除时刻）才以「空的新会话」重新出现，
+       老消息仍由 epoch + h.msgs 挡住。 */
+    if (ht && Number(x.lastLogin || 0) <= ht) return;
+    set.set(k, Number(x.lastLogin || x.createdAt || 0));
+  });
   /* 测试助手：只要没被删掉就始终在列表最前面，方便装机前试功能 */
   if (!echoHiddenFor(u)) {
     try {
@@ -1366,7 +1688,9 @@ function contactsOf(u) {
     .filter(([k]) => db.users[k] && k !== u && (!myPid || db.users[k].pid !== myPid) && (!db.users[k].bot || k === ECHO_UID))
     .map(([k, ts]) => ({ u: db.users[k], ts, online: online.has(k), room: roomOf(k) }))
     .sort((a, b) => (b.online - a.online) || (b.ts - a.ts))
-    .slice(0, 80)
+    /* v79：上限从 80 提到 2000 —— 用户明确要求「所有登录过的用户彼此都能看到会话框」。
+       真机用户量远小于此；真超过 2000 时按最近登录截断，避免 WebView 一次画太多 DOM。 */
+    .slice(0, 2000)
     .map(x => ({ ...pub(x.u), ts: x.ts, online: x.online, self: false, room: x.room,
       test: x.u.uid === ECHO_UID }));
   return list;
@@ -1386,17 +1710,41 @@ function sHideOf(pid) {
   if (!db.secretHidden[pid]) db.secretHidden[pid] = { msgs: {}, rooms: {} };
   if (!db.secretHidden[pid].msgs) db.secretHidden[pid].msgs = {};
   if (!db.secretHidden[pid].rooms) db.secretHidden[pid].rooms = {};
+  /* v80：按会话记「新会话起点」，删除/清空/重新发起后老消息（含主聊天合并进来的
+     legacy 旧记录）一律不再显示。 */
+  if (!db.secretHidden[pid].epochs) db.secretHidden[pid].epochs = {};
   return db.secretHidden[pid];
 }
-function sHiddenFor(pid) { return (db.secretHidden && db.secretHidden[pid]) || { msgs: {}, rooms: {} }; }
+function sEpochOf(pid) { return sHideOf(pid).epochs; }
+function sEpochTs(pid, rid) { return (sHiddenFor(pid).epochs || {})[String(rid)] || 0; }
+/* v80：从好友列表（重新）发起会话。删过才 bump epoch，首次创建保留历史。 */
+function reopenSecret(me, pid) {
+  const r = touchSecret(me, pid);
+  r.explicitOpen = true;
+  const sh = sHideOf(me), rid = String(r.rid);
+  if (sh.rooms[rid] || (r.closedFor && r.closedFor[me])) {
+    delete sh.rooms[rid];
+    if (r.closedFor) delete r.closedFor[me];
+    (r.msgs || []).forEach(function (x) { sh.msgs[String(x.id)] = 1; });
+    sEpochOf(me)[rid] = Date.now();
+  }
+  store.save();
+  return r;
+}
+function sHiddenFor(pid) {
+  const h = (db.secretHidden && db.secretHidden[pid]) || {};
+  return { msgs: h.msgs || {}, rooms: h.rooms || {}, epochs: h.epochs || {} };
+}
 function sMsgHidden(pid, id) { return !!sHiddenFor(pid).msgs[String(id)]; }
 function sHideMsgs(pid, ids) { const h = sHideOf(pid); ids.forEach(i => { h.msgs[String(i)] = 1; }); store.save(); }
 function sHideRooms(pid, rids) {
   const h = sHideOf(pid);
+  const now = Date.now();
   rids.forEach(rid => {
     const r = getSecretByRid(rid);
     if (r) (r.msgs || []).forEach(x => { h.msgs[String(x.id)] = 1; });
-    h.rooms[String(rid)] = Date.now();
+    h.rooms[String(rid)] = now;
+    h.epochs[String(rid)] = now;
   });
   store.save();
 }
@@ -1417,9 +1765,19 @@ function mySecretRooms(u) {
   } catch (e) { }
   return db.secretRooms.filter(r => {
     if ((r.pidMembers || r.members).indexOf(me) < 0) return false;
+    /* v78：好友空间只显示「本机已添加的好友」的会话。
+       反向镜像 touchSecret 会把没加好友的一方也写进 members，以前他这边
+       会凭空冒出一个会话；解除好友后旧会话也还赖着不走。 */
+    if (r.closedFor && r.closedFor[me]) return false;
+    const _ms = r.pidMembers || r.members;
+    const _otherPid = _ms.filter(x => x !== me)[0];
+    if (_otherPid !== ECHO_PID && !r.explicitOpen &&
+        sFriendPids(me).indexOf(_otherPid) < 0) return false;
     if (sh.rooms[String(r.rid)]) {
-      // 隐藏后又来了新消息（新消息不在隐藏名单里）→ 会话重新出现
-      const fresh = (r.msgs || []).some(x => !sMsgHidden(me, x.id));
+      /* v80：只有「删除之后到达的新消息」才让会话重新出现；
+         epoch 之前的旧消息不算，避免删了会话又被老记录顶回来。 */
+      const ep = sEpochTs(me, r.rid);
+      const fresh = (r.msgs || []).some(x => !sMsgHidden(me, x.id) && (x.ts || 0) > ep);
       if (!fresh) return false;
       delete sh.rooms[String(r.rid)];
     }
@@ -1429,11 +1787,13 @@ function mySecretRooms(u) {
       const ms = r.pidMembers || r.members;
       const otherPid = ms.filter(x => x !== me)[0];
       const op = db.persons[otherPid];
+      const ep = sEpochTs(me, r.rid);
+      const vis = (r.msgs || []).filter(x => !sMsgHidden(me, x.id) && (!ep || (x.ts || 0) > ep));
       return {
         rid: r.rid, otherPid, ts: r.ts, test: otherPid === ECHO_PID,
-        other: op ? pubPerson(op) : { pid: otherPid, nick: '好友', avatar: null },
-        last: (r.msgs || []).filter(x => !sMsgHidden(me, x.id)).slice(-1)[0] || null,
-        unread: r.msgs.filter(m => m.fromPid !== me && !m.read && !sMsgHidden(me, m.id)).length
+        other: personDisplay(otherPid),
+        last: vis.slice(-1)[0] || null,
+        unread: vis.filter(m => m.fromPid !== me && !m.read).length
       };
     })
     .sort((a, b) => b.ts - a.ts)
@@ -1464,7 +1824,7 @@ function personList(exceptPid) {
     const p = personOf(x);
     if (p.pid === exceptPid || seen.has(p.pid)) return;
     seen.add(p.pid);
-    out.push({ ...pubPerson(p), online: uidsOfPid(p.pid).some(k => online.has(k)) });
+    out.push({ ...personDisplay(p.pid), online: uidsOfPid(p.pid).some(k => online.has(k)) });
   });
   return out.sort((a, b) => (b.online - a.online) || a.nick.localeCompare(b.nick));
 }
@@ -1479,18 +1839,98 @@ function broadcastContacts() {
   online.forEach((w, uid) => {
     const x = db.users[uid];
     if (!x) return;
-    try { send(w, { t: 'contacts', list: contactsOf(uid) }); } catch (e) { }
+    try { send(w, { t: 'contacts', list: contactsWithPid(uid) }); } catch (e) { }
   });
+}
+/* v80：好友切换 UID / 昵称、上下线、增删好友时，把两套好友名单主动推给所有在线设备。
+   以前只在打开好友弹窗时拉一次，reroll 后别人的好友列表一直显示旧 UID/旧昵称，
+   「从好友列表发起会话」就会落到历史 UID 会话里。 */
+function broadcastFriendLists() {
+  online.forEach((w, k) => {
+    const x = db.users[k];
+    if (!x) return;
+    try {
+      const me = personOf(x).pid;
+      send(w, { t: 'friend:list', via: 'main', list: friendList(me, 'main') });
+      send(w, { t: 'friend:list', via: 'secret', list: friendList(me, 'secret') });
+    } catch (e) { }
+  });
+}
+/* v80：把好友空间会话列表（含未读角标）推给某个真人名下的所有在线设备。
+   收到消息/标记已读后立刻调用，未读数不用等手动刷新。 */
+function pushSecretRoomsToPid(pid) {
+  if (!pid || pid === ECHO_PID) return;
+  uidsOfPid(pid).forEach(function (k) {
+    const w = online.get(k), uu = db.users[k];
+    if (!w || !uu) return;
+    try {
+      const rs = mySecretRooms(uu);
+      send(w, { t: 'secret:rooms', rooms: rs, list: rs.map(function (x) { return x.rid; }) });
+    } catch (e) { }
+  });
+}
+/* v80：统一已读回执。
+   1) 推 chat:read 给「发送方真人」名下所有在线 UID（发送方换过身份也能收到）
+   2) 同步把镜像进好友空间的同一条消息标记已读，并推 secret:read
+   3) 给本机重推 contacts / secret:rooms，让未读角标立刻清零 */
+function ackRead(ids, viewerUid) {
+  const set = new Set(ids.map(String));
+  const senders = new Set();
+  db.messages.forEach(function (m) {
+    if (set.has(String(m.id)) && String(m.from) !== String(viewerUid)) {
+      m.read = true; m.readAt = Date.now(); senders.add(String(m.from));
+    }
+  });
+  db.secretRooms.forEach(function (r) {
+    let changed = false;
+    (r.msgs || []).forEach(function (x) {
+      if (set.has(String(x.id))) { x.read = true; x.readAt = Date.now(); changed = true; }
+    });
+    if (!changed) return;
+    const ms = r.pidMembers || r.members || [];
+    ms.forEach(function (pid) {
+      uidsOfPid(pid).forEach(function (k) {
+        const w2 = online.get(k); if (w2) send(w2, { t: 'secret:read', rid: r.rid, ids: ids });
+      });
+    });
+  });
+  senders.forEach(function (fromUid) {
+    const su = db.users[fromUid]; if (!su) return;
+    let pid = su.pid;
+    try { pid = personOf(su).pid; } catch (e) { }
+    uidsOfPid(pid).forEach(function (k) {
+      const w2 = online.get(k); if (w2) send(w2, { t: 'chat:read', with: viewerUid, ids: ids });
+    });
+  });
+  const wv = online.get(viewerUid), vu = db.users[viewerUid];
+  if (wv && vu) {
+    try { send(wv, { t: 'contacts', list: contactsWithPid(viewerUid) }); } catch (e) { }
+    try {
+      const rs = mySecretRooms(vu);
+      send(wv, { t: 'secret:rooms', rooms: rs, list: rs.map(function (x) { return x.rid; }) });
+    } catch (e) { }
+  }
+  store.save();
 }
 
 /* 上线脉冲：告知好友「有活动」，但通知栏由前端渲染为随机营销广告 */
 function pushPresence(u) {
   const ids = new Set();
+  const mePid = personOf(u).pid;
+  /* v79：secretRooms 的 members 存的是 pid 不是 uid。
+     原来拿 u.uid 去 indexOf 永远不命中，再把 pid 当 uid 去 sendTo 也永远发不出去，
+     好友空间好友收不到上线脉冲（表现为换了身份后对方状态更新慢）。 */
+  const addPid = pid => uidsOfPid(pid).forEach(k => { if (k) ids.add(k); });
   db.messages.forEach(m => {
     const o = m.from === u.uid ? m.to : (m.to === u.uid ? m.from : null);
-    if (o) ids.add(o);
+    if (o && db.users[o]) ids.add(o);
   });
-  db.secretRooms.forEach(r => { const ms = r.pidMembers || r.members || []; if (ms.indexOf(u.uid) >= 0) ms.forEach(k => { if (k !== u.uid) ids.add(k); }); });
+  db.secretRooms.forEach(r => {
+    const ms = r.pidMembers || r.members || [];
+    if (ms.indexOf(mePid) < 0) return;
+    ms.forEach(k => { if (k !== mePid) addPid(k); });
+  });
+  try { friendList(mePid, 'main').forEach(f => { if (f.uid) ids.add(String(f.uid)); }); } catch (e) { }
   ids.forEach(id => {
     if (id === u.uid) return;
     sendTo(id, { t: 'presence', ts: Date.now() });
@@ -1516,26 +1956,68 @@ function handle(ws, st, m) {
       lastSeen.delete(user.uid);
       let unread = 0;
       try {
+        const myPid = personOf(user).pid;
         for (const x of db.messages) {
-          if (x.to === user.uid && x.from !== user.uid && x.read === false && x.ts > since) unread++;
+          if (x.to !== user.uid || x.from === user.uid || x.read !== false || x.ts <= since) continue;
+          /* v78：已迁到好友空间的人，聊天界面的离线未读不该再算（否则红点/通知虚高） */
+          const fp = x.fromPid || (db.users[x.from] ? db.users[x.from].pid : null);
+          if (fp && routeHas(myPid, fp)) continue;
+          unread++;
         }
       } catch (e) { }
       if (unread > 0) send(ws, { t: 'offline:digest', n: unread, since: since });
       /* 一登录就把当前难度推给客户端，界面不会再显示本地初值 3 */
       send(ws, { t: 'bot:level', level: db.botLevel || 3 });
       broadcastLobby();
-      send(ws, { t: 'contacts', list: contactsOf(user.uid) });
+      send(ws, { t: 'contacts', list: contactsWithPid(user.uid) });
+      /* v79：重连 / 换身份后立刻把好友空间路由表推给本机。
+         以前只靠前端 1.2s 定时 + 30s 轮询，弱网或刚换完身份时
+         已迁走的好友会短暂闪回聊天列表、未读虚高。 */
+      try { send(ws, { t: 'route:list', pids: sFriendPids(personOf(user).pid) }); } catch (e) { }
       // 上线事件：只以「营销广告」形式出现在通知栏，绝不出现「xx已上线」
       pushPresence(user);
       broadcastContacts();
+      broadcastFriendLists();
+      /* v82：重连 / 换身份重登时自动回到保留的房间与牌局 */
+      try { resumeRoom(user, ws); } catch (e) { }
       break;
     }
     case 'lobby': broadcastLobby(); break;
+    case 'room:resume': {
+      /* 前端每次进对战界面发一次；没有保留房间就静默回 room:gone，不弹提示 */
+      if (!resumeRoom(u, ws)) send(ws, { t: 'room:gone' });
+      break;
+    }
+    /* v84：进/出对战界面、切后台时上报前台状态。
+       切到大厅/聊天/我的界面或 App 进后台 → room:away（开始计时）；
+       切回对战界面 → room:active（取消计时、自动回房）。 */
+    case 'room:active': {
+      let pid = null; try { pid = personOf(u).pid; } catch (e) { }
+      if (!pid) break;
+      rooms.forEach(room => {
+        if (!room.seats.some(s => s && !s.bot && pidOfSeat(s) === pid)) return;
+        if (room.leftPids && room.leftPids.has(pid) && !room.game) return;
+        if (!room.presentPids) room.presentPids = new Set();
+        room.presentPids.add(pid);
+        refreshRoomExpiry(room);
+      });
+      break;
+    }
+    case 'room:away': {
+      let pid = null; try { pid = personOf(u).pid; } catch (e) { }
+      if (!pid) break;
+      rooms.forEach(room => {
+        if (!room.presentPids) return;
+        room.presentPids.delete(pid);
+        refreshRoomExpiry(room);
+      });
+      break;
+    }
 
     /* ---- 对战 ---- */
     case 'match': {
-      leaveRoom(u);
-      const rule = m.rule || 'let46';
+      leaveRoom(u, false);
+      const rule = m.rule || 'trio54';
       // 快速匹配：先看有没有真人在等，有就配对；没有就立刻邀请在线玩家补位并开局，不干等
       const qi = queue.findIndex(q => q.rule === rule && q.u.uid !== u.uid);
       let room;
@@ -1543,6 +2025,8 @@ function handle(ws, st, m) {
         const other = queue.splice(qi, 1)[0];
         room = makeRoom(rule);
         room.seats[0] = other.u; room.seats[1] = u;
+        /* v81：三人房匹配到 1 位真人后仍有空座，不补位 tryStart 永远不成立 */
+        fillBots(room);
       } else {
         room = makeRoom(rule);
         room.seats[0] = u;
@@ -1554,8 +2038,8 @@ function handle(ws, st, m) {
     }
     case 'match:bot': {
       // 与人机对战：立刻开局，其余座位由机器人填充
-      leaveRoom(u);
-      const rule = m.rule || 'let46';
+      leaveRoom(u, false);
+      const rule = m.rule || 'trio54';
       const room = makeRoom(rule);
       room.seats[0] = u;
       fillBots(room);
@@ -1569,10 +2053,10 @@ function handle(ws, st, m) {
       // 已在同一规则的房间里则直接复用（配合「邀请在线好友」）
       let room = findRoom(u);
       if (room && room.game) room = null;
-      if (room && m.rule && room.rule !== m.rule) { leaveRoom(u); room = null; }
+      if (room && m.rule && room.rule !== m.rule) { leaveRoom(u, false); room = null; }
       if (!room) {
-        leaveRoom(u);
-        room = makeRoom(m.rule || 'let46');
+        leaveRoom(u, false);
+        room = makeRoom(m.rule || 'trio54');
         room.seats[0] = u;
       }
       clearBotTimers(room);
@@ -1648,7 +2132,7 @@ function handle(ws, st, m) {
         }
       }
       if (free < 0) return send(ws, { t: 'err', msg: '房间已满' });
-      leaveRoom(u);
+      leaveRoom(u, false);
       room.seats[free] = u;
       pushRoom(room);
       /* 不自动开局：等房主点「开始游戏」 */
@@ -1694,7 +2178,34 @@ function handle(ws, st, m) {
       pushRoom(room);
       break;
     }
-    case 'room:leave': clearBotTimersOf(u); leaveRoom(u); send(ws, { t: 'room:left', bye: true }); break;
+    /* v83「离开房间」按钮：只有这一步会让人不再自动被拉回房间。
+       等待阶段：让出座位 + 记 leftPids；房里还有别的真人就继续保留，
+       最后一个真人离开才开始 10 分钟倒计时。
+       对局中：保留座位（打牌中途换 UID / 断线重连按 pid 认回），只记标记。 */
+    case 'room:leave': {
+      let pid = null; try { pid = personOf(u).pid; } catch (e) { }
+      let room = null;
+      rooms.forEach(r => { if (seatOf(r, u) >= 0) room = r; });
+      send(ws, { t: 'room:left', bye: true });
+      if (!room) break;
+      if (room.game) { if (pid) room.leftPids.add(pid); break; }
+      const i = seatOf(room, u);
+      room.seats[i] = null;
+      if (pid) { room.leftPids.add(pid); room.activePids.delete(pid); if (room.presentPids) room.presentPids.delete(pid); }
+      if (room.ownerPid === pid) {
+        const next = room.seats.find(s => s && !s.bot);
+        room.ownerPid = next ? pidOfSeat(next) : null;
+      }
+      syncActive(room); refreshRoomExpiry(room);
+      pushRoom(room);
+      room.seats.forEach(s => {
+        if (s && !s.bot && s.uid !== u.uid) {
+          const w = online.get(s.uid);
+          if (w) send(w, { t: 'room:left', gid: room.gid, who: u.uid, temporary: true });
+        }
+      });
+      break;
+    }
 
     /* 邀请在线好友：没有房间时先按当前规则开好房，再发邀请 */
     /* 邀请 = 弹窗 + 聊天会话里一张可点击加入的卡片（落库，离线也能看到） */
@@ -1703,8 +2214,8 @@ function handle(ws, st, m) {
       if (!target || target.uid === u.uid) return send(ws, { t: 'err', msg: '玩家不存在' });
       let room = findRoom(u);
       if (!room || room.game) {
-        if (room && room.game) { leaveRoom(u); room = null; }
-        if (!room) { room = makeRoom(m.rule || 'let46'); room.seats[0] = u; }
+        if (room && room.game) { leaveRoom(u, false); room = null; }
+        if (!room) { room = makeRoom(m.rule || 'trio54'); room.seats[0] = u; }
       }
       pushRoom(room);
       send(ws, { t: 'room', ...roomView(room), you: 0, created: true });
@@ -1712,7 +2223,16 @@ function handle(ws, st, m) {
       if (w) send(w, { t: 'invite', by: pub(u), gid: room.gid, rule: room.rule });
       else send(ws, { t: 'toast', msg: '对方当前离线，已发送邀请' });
       sendInviteCard(u, m.to, room);
-      scheduleAutoFill(room, 15000);
+      /* v81：邀请真人期间不自动补机器人开局（会把好友挡在门外），只延时提示 */
+      clearBotTimers(room);
+      const t = setTimeout(() => {
+        if (!rooms.has(room.gid) || room.game) return;
+        if (room.seats.every(x => x)) return;
+        const w = online.get(room.seats[0] && room.seats[0].uid);
+        if (w) send(w, { t: 'room:wait', gid: room.gid,
+                   msg: '好友还没来：可点「补机器人」再点「开始游戏」' });
+      }, 45000);
+      room.botTimers.push(t);
       break;
     }
     /* 批量邀请真人好友进当前房间：
@@ -1748,7 +2268,16 @@ function handle(ws, st, m) {
       });
       send(ws, { t: 'toast', msg: onlineCnt ? ('已邀请 ' + onlineCnt + ' 位在线玩家') : '对方离线，已发送邀请卡片' });
       // 若还有空位且没人来，稍后自动补机器人，避免一直等
-      scheduleAutoFill(room, 15000);
+      /* v81：邀请真人期间不自动补机器人开局（会把好友挡在门外），只延时提示 */
+      clearBotTimers(room);
+      const t = setTimeout(() => {
+        if (!rooms.has(room.gid) || room.game) return;
+        if (room.seats.every(x => x)) return;
+        const w = online.get(room.seats[0] && room.seats[0].uid);
+        if (w) send(w, { t: 'room:wait', gid: room.gid,
+                   msg: '好友还没来：可点「补机器人」再点「开始游戏」' });
+      }, 45000);
+      room.botTimers.push(t);
       break;
     }
 
@@ -1869,25 +2398,80 @@ function handle(ws, st, m) {
     /* ---- 私信 ---- */
     case 'chat:history': {
       const list = chatBetweenFor(u.uid, m.with, u.uid);
-      /* 打开会话 = 看见即已读（含图片/视频预览，不要求点开大图）。
-         把被读到的消息 id 回执给发送方，他那边才能显示「已读」。 */
+      /* v81：先在标记已读之前记下第一条未读，前端据此精确滚到未读处 */
+      const firstUnreadId = (function () {
+        for (const x of list) if (String(x.from) !== String(u.uid) && !x.read) return String(x.id);
+        return null;
+      })();
+      /* v80：打开会话 = 看见即已读（图片/视频/文件只要在会话里出现就算看到，
+         不要求点开大图）。回执按「发送方真人」推，换过 UID 也能收到。 */
       const ids = [];
-      list.forEach(x => { if (x.to === u.uid && !x.read) { x.read = true; x.readAt = Date.now(); ids.push(x.id); } });
-      if (ids.length) {
-        store.save();
-        /* v40：对方可能多端在线，旧逻辑只推一个连接，另一端气泡一直停在「未读」 */
-        online.forEach((w2, uid2) => {
-          if (uid2 === m.with) send(w2, { t: 'chat:read', with: u.uid, ids: ids });
-        });
-      }
-      send(ws, { t: 'chat:history', with: m.with, list });
+      list.forEach(x => {
+        if (String(x.from) !== String(u.uid) && !x.read) { x.read = true; x.readAt = Date.now(); ids.push(x.id); }
+      });
+      if (ids.length) { store.save(); ackRead(ids, u.uid); }
+      send(ws, { t: 'chat:history', with: m.with, list, firstUnreadId });
+      break;
+    }
+    /* v80：会话正开着时实时到达的消息也要「看见即已读」。 */
+    case 'chat:readack': {
+      const ids = (Array.isArray(m.ids) ? m.ids : []).map(String).filter(Boolean);
+      if (!ids.length) break;
+      const hit = [];
+      db.messages.forEach(x => {
+        if (ids.indexOf(String(x.id)) >= 0 && String(x.from) !== String(u.uid) && !x.read) {
+          x.read = true; x.readAt = Date.now(); hit.push(String(x.id));
+        }
+      });
+      if (hit.length) { store.save(); ackRead(hit, u.uid); }
       break;
     }
     case 'chat': {
-      const msg = { id: mid(), from: u.uid, to: m.to, ts: Date.now(), read: false, ...m.msg };
+      /* v76：消息带上双方真人 pid，前端才能按「本机是否加好友」决定归属。
+         不影响原来的 uid 级存储与推送 —— 3A 要求对方仍在聊天界面收到。 */
+      const fromPid = personOf(u).pid;
+      const rawTo = String(m.to || '');
+      const toU = db.users[rawTo];
+      const toPid = toU ? (toU.pid || null) : null;
+      /* v79：对方换过身份时，rawTo 可能是历史 UID（已不在线）。
+         只按 online.get(rawTo) 投就会石沉大海；这里按真人 pid 找到当前在线的 UID 再投，
+         保证「两个人都换 UID」之后聊天 / 好友空间依然永远能直接收发。 */
+      let deliverTo = rawTo;
+      if (!online.has(rawTo) && toPid) {
+        const cur = currentUidOfPid(toPid);
+        if (cur && online.has(cur)) deliverTo = cur;
+      }
+      /* 身份字段放在展开之后：客户端消息里混入 from/to 也不能冒充发送者 */
+      const msg = Object.assign({}, m.msg || {}, {
+        id: mid(), from: u.uid, fromPid, toPid, to: deliverTo,
+        origTo: deliverTo !== rawTo ? rawTo : null,
+        ts: Date.now(), read: false
+      });
       saveMsg(msg);
-      send(ws, { t: 'chat', msg });
-      const w = online.get(m.to); if (w) send(w, { t: 'chat', msg });
+      /* 回显保留发送方原本填写的目标 UID，他打开的「历史 UID 会话」里能立刻看到，
+         也不会因为 to 被改写而给自己计一条未读。 */
+      send(ws, { t: 'chat', msg: Object.assign({}, msg, { to: rawTo, mine: true }) });
+      const w = online.get(deliverTo); if (w) send(w, { t: 'chat', msg });
+      /* v76 3A 反向镜像：接收方若把发送方加进了好友空间，他那边聊天界面已隐藏本会话，
+         必须同步进他的好友空间会话，否则「加了好友的一方收不到对方从聊天发来的消息」。
+         ridOf 对 pid 排序，所以 touchSecret(toPid, fromPid) 命中的就是同一会话。 */
+      try {
+        if (toPid && routeHas(toPid, fromPid)) {
+          const rr = touchSecret(toPid, fromPid);
+          if (rr && !(rr.msgs || []).some(x => String(x.id) === String(msg.id))) {
+            const smsg = Object.assign({}, msg, {
+              fromName: dispNick(u), fromAvatar: dispAvatar(u), mirrored: true
+            });
+            rr.msgs.push(smsg); rr.ts = Date.now(); store.save();
+            uidsOfPid(toPid).forEach(k => {
+              const w2 = online.get(k); if (w2) send(w2, { t: 'secret:msg', rid: rr.rid, msg: smsg });
+            });
+            /* v80：立刻刷新好友空间会话列表（含未读角标），
+               不然要等用户手动点开好友空间才知道有消息 —— 这就是「勉强收到」。 */
+            pushSecretRoomsToPid(toPid);
+          }
+        }
+      } catch (e) { }
       /* 发给「测试助手」→ 原样回一条，方便装机前在浏览器里试功能 */
       if (m.to === ECHO_UID) echoReply(ws, u, msg, 'chat');
       break;
@@ -1896,24 +2480,28 @@ function handle(ws, st, m) {
     case 'chat:del': {
       hideMsgs(u.uid, [m.id]);
       send(ws, { t: 'chat:deleted', id: m.id, with: m.with, mine: true });
-      send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      send(ws, { t: 'contacts', list: contactsWithPid(u) });
       break;
     }
     /* 单向删除整个会话：只清空自己这侧 */
     case 'chat:reopen': {
-      /* v41：从好友名单重新发起聊天 —— 只清「会话已删」标记，旧消息仍保持隐藏 */
+      /* v80：从好友名单重新发起 = 新会话：清「会话已删」标记并 bump epoch，
+         老消息（含 inPair 扩进来、或镜像产生的）一律不显示。 */
       const withUid = String(m.with || '');
       if (!withUid || !db.users[withUid]) return;
       const h = hideOf(u.uid);
-      if (h.threads) delete h.threads[withUid];
+      if (h.threads && h.threads[withUid]) {
+        delete h.threads[withUid];
+        h.epochs[withUid] = Date.now();
+      }
       store.save();
-      send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      send(ws, { t: 'contacts', list: contactsWithPid(u) });
       break;
     }
     case 'chat:delthread': {
       hideThread(u.uid, m.with);
       if (m.with === ECHO_UID) { u.echoHidden = true; store.save(); }
-      send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      send(ws, { t: 'contacts', list: contactsWithPid(u) });
       break;
     }
     /* 批量删除单条 / 多条消息（会话内选中后一次删掉） */
@@ -1924,7 +2512,7 @@ function handle(ws, st, m) {
       if (!ids.length || !withUid) return;
       hideMsgs(u.uid, ids);
       send(ws, { t: 'chat:deletedbatch', ids, with: withUid, mine: true });
-      send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      send(ws, { t: 'contacts', list: contactsWithPid(u) });
       break;
     }
     /* 批量删除整个会话（可一次删多个联系人） */
@@ -1936,10 +2524,10 @@ function handle(ws, st, m) {
       if (uids.indexOf(ECHO_UID) >= 0) { u.echoHidden = true; store.save(); }
       send(ws, { t: 'chat:threadsdeleted', uids, mine: true });
       /* v41：批量删除也要回推最新列表，否则前端还拿着旧 contacts 重绘 */
-      send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      send(ws, { t: 'contacts', list: contactsWithPid(u) });
       break;
     }
-    case 'contacts': send(ws, { t: 'contacts', list: contactsOf(u.uid) }); break;
+    case 'contacts': send(ws, { t: 'contacts', list: contactsWithPid(u) }); break;
     /* v41：管理员面板 —— 真实玩家登录 / 离线记录（口令与位置查看一致） */
     case 'owner:presence': {
       const P = process.env.OWNER_PIN || '6688';
@@ -1953,10 +2541,22 @@ function handle(ws, st, m) {
       break;
     }
 
+    /* v78：前端「刷新会话列表」一直在发 secret:rooms，但 v77 服务端没有这个分支，
+       请求永远没回音 → 好友空间偶尔空白、点刷新没反应。 */
+    case 'secret:rooms': {
+      const rs = mySecretRooms(u);
+      send(ws, { t: 'secret:rooms', rooms: rs, list: rs.map(x => x.rid) });
+      break;
+    }
     /* ---------- 好友名单（主界面 / 隐私空间 各一套，互不互通） ---------- */
     case 'friend:list': {
       const me = personOf(u).pid;
       send(ws, { t: 'friend:list', via: m.via === 'secret' ? 'secret' : 'main', list: friendList(me, m.via) });
+      break;
+    }
+    /* v76：返回本机「已加进好友空间的真人 pid」清单（1A 只按本机算）。 */
+    case 'route:list': {
+      send(ws, { t: 'route:list', pids: sFriendPids(personOf(u).pid) });
       break;
     }
     case 'friend:search': {
@@ -1981,16 +2581,25 @@ function handle(ws, st, m) {
       const card = friendCard(target);
       send(ws, { t: 'toast', msg: card ? ('已添加好友：' + card.nick) : '已添加好友' });
       send(ws, { t: 'friend:list', via: via, list: friendList(me, via) });
-      if (via === 'main') send(ws, { t: 'contacts', list: contactsOf(u.uid) });
-      else { try { send(ws, { t: 'secret:rooms', rooms: mySecretRooms(u) }); } catch (e) { } }
+      if (via === 'main') send(ws, { t: 'contacts', list: contactsWithPid(u) });
+      else {
+        /* v80：加回已删过会话的好友 = 重新发起新会话，老消息不复活 */
+        try { reopenSecret(me, target); } catch (e) { }
+        const rs = mySecretRooms(u);
+        send(ws, { t: 'secret:rooms', rooms: rs, list: rs.map(x => x.rid) });
+      }
+      pushRoute(u);            /* 好友变更后本机聊天界面立刻按新路由重画 */
+      broadcastFriendLists();  /* v80：两台设备/两个界面的好友名单一起更新 */
       break;
     }
     /* 从好友卡片直接开一个私密会话（不存在就建） */
     case 'secret:open': {
       const me = personOf(u).pid;
       if (!db.persons[m.pid]) return send(ws, { t: 'err', msg: '玩家不存在' });
-      const r = touchSecret(me, m.pid);
-      send(ws, { t: 'secret:rooms', rooms: mySecretRooms(u) });
+      /* v80：删过会话再发起 = 全新会话（老信息含 legacy 一律不显示） */
+      reopenSecret(me, m.pid);
+      const rs = mySecretRooms(u);
+      send(ws, { t: 'secret:rooms', rooms: rs, list: rs.map(x => x.rid) });
       break;
     }
     case 'friend:del': {
@@ -1998,8 +2607,18 @@ function handle(ws, st, m) {
       const via = m.via === 'secret' ? 'secret' : 'main';
       delFriend(me, m.pid, via);
       send(ws, { t: 'friend:list', via: via, list: friendList(me, via) });
-      if (via === 'main') send(ws, { t: 'contacts', list: contactsOf(u.uid) });
-      else { try { send(ws, { t: 'secret:rooms', rooms: mySecretRooms(u) }); } catch (e) { } }
+      if (via === 'main') send(ws, { t: 'contacts', list: contactsWithPid(u) });
+      else {
+        try {
+          /* v78：解除好友 = 退回聊天界面，好友空间里这个会话也不再显示 */
+          const rr = getSecretByRid(ridOf(me, String(m.pid || '')));
+          if (rr) { rr.closedFor = rr.closedFor || {}; rr.closedFor[me] = Date.now(); store.save(); }
+          const rs = mySecretRooms(u);
+          send(ws, { t: 'secret:rooms', rooms: rs, list: rs.map(x => x.rid) });
+        } catch (e) { }
+      }
+      pushRoute(u);            /* 好友变更后本机聊天界面立刻按新路由重画 */
+      broadcastFriendLists();  /* v80：两台设备/两个界面的好友名单一起更新 */
       break;
     }
     /* 重新生成测试会话（聊天 + 好友空间各一个），用于装机前试功能 */
@@ -2015,7 +2634,7 @@ function handle(ws, st, m) {
       try { delete sHideOf(personOf(u).pid).rooms[String(r.rid)]; } catch (e) { }
       // 只在自己这边清空，不动别人的
       store.save();
-      send(ws, { t: 'contacts', list: contactsOf(u.uid) });
+      send(ws, { t: 'contacts', list: contactsWithPid(u) });
       send(ws, { t: 'secret:ok', has: !!personOf(u).secretPin, rooms: mySecretRooms(u) });
       send(ws, { t: 'toast', msg: '测试会话已重新生成' });
       break;
@@ -2034,6 +2653,9 @@ function handle(ws, st, m) {
           });
         }
         delete db.users[uid];
+        /* v80：UID 永不复用 —— 账号删了也要把 UID 留在 usedUids 里 */
+        if (!db.usedUids) db.usedUids = {};
+        db.usedUids[uid] = 1;
         online.delete(uid);
         store.save();
       } catch (e) { }
@@ -2249,21 +2871,55 @@ function handle(ws, st, m) {
       const ms = r.pidMembers || r.members;
       const otherPid = ms.filter(x => x !== me)[0];
       const op = db.persons[otherPid];
+      const ep = sEpochTs(me, r.rid);
+      /* v80：看见即已读（含图片/视频/文件，不要求点开大图）。
+         统一走 ackRead：同步标记聊天侧镜像消息，并按真人推回执，换 UID 也收得到。 */
+      let firstUnreadId = null;
+      (r.msgs || []).forEach(x => {
+        if (!firstUnreadId && x.fromPid !== me && !x.read && !sMsgHidden(me, x.id) && (!ep || (x.ts || 0) > ep))
+          firstUnreadId = String(x.id);
+      });
       const readIds = [];
-      r.msgs.forEach(x => { if (x.fromPid !== me && !x.read) { x.read = true; x.readAt = Date.now(); readIds.push(x.id); } });
-      if (readIds.length) {
-        store.save();
-        /* 回执给对方名下所有在线设备：他发出的消息现在显示「已读」 */
-        const op2 = db.persons[otherPid];
-        if (op2) (op2.uids || []).forEach(k => {
-          const w2 = online.get(k); if (w2) send(w2, { t: 'secret:read', rid: r.rid, ids: readIds });
-        });
+      (r.msgs || []).forEach(x => {
+        if (x.fromPid !== me && !x.read && !sMsgHidden(me, x.id) && (!ep || (x.ts || 0) > ep)) {
+          x.read = true; x.readAt = Date.now(); readIds.push(x.id);
+        }
+      });
+      if (readIds.length) { store.save(); ackRead(readIds, u.uid); }
+      let list = (r.msgs || []).filter(x => !sMsgHidden(me, x.id) && (!ep || (x.ts || 0) > ep));
+      /* v76 2A：加好友之前的聊天旧记录一并进好友空间（只读合并，不迁移物理数据）。
+         v80：删除会话/清空/重新发起后，epoch 之前的旧记录一律不合并进来。 */
+      try {
+        const myUids = (personOf(u).uids || []).map(String);
+        const otherUids = (op && op.uids ? op.uids : []).map(String);
+        const legacy = (db.messages || []).filter(x => {
+          if (msgHidden(u.uid, x.id) || (ep && (x.ts || 0) <= ep)) return false;
+          const f = String(x.from || ''), t = String(x.to || ''), o = String(x.origTo || '');
+          const mine = function (v) { return myUids.indexOf(v) >= 0; };
+          const theirs = function (v) { return otherUids.indexOf(v) >= 0; };
+          return (mine(f) && (theirs(t) || theirs(o))) || (theirs(f) && (mine(t) || mine(o) || String(x.origTo || '') === String(u.uid)));
+        }).map(x => Object.assign({}, x, {
+          _legacy: true,
+          fromPid: myUids.indexOf(String(x.from)) >= 0 ? me : otherPid,
+          fromName: myUids.indexOf(String(x.from)) >= 0 ? dispNick(u) : personDisplay(otherPid).nick,
+          fromAvatar: myUids.indexOf(String(x.from)) >= 0 ? dispAvatar(u) : personDisplay(otherPid).avatar
+        }));
+        const ids = {};
+        list.forEach(x => { ids[String(x.id)] = 1; });
+        legacy.forEach(x => { if (!ids[String(x.id)]) list.push(x); });
+        list.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      } catch (e) { }
+      list = list.slice(-300);
+      if (!firstUnreadId) {
+        for (const x of list) {
+          if (x.fromPid !== me && !x.read) { firstUnreadId = String(x.id); break; }
+        }
       }
-      const list = (r.msgs || []).filter(x => !sMsgHidden(me, x.id)).slice(-300);
-      send(ws, { t: 'secret:msgs', rid: r.rid, list: list,
-        me: pubPerson(personOf(u)),
+      send(ws, { t: 'secret:msgs', rid: r.rid, list: list, firstUnreadId,
+        me: personDisplay(me),
         myUids: (personOf(u).uids || []).slice(),
-        other: op ? pubPerson(op) : { pid: otherPid, nick: '好友', avatar: null } });
+        other: personDisplay(otherPid) });
+      pushSecretRoomsToPid(me);   /* v80：打开会话后未读角标立刻清零 */
       break;
     }
     case 'secret:send': {
@@ -2273,23 +2929,61 @@ function handle(ws, st, m) {
       /* 服务端身份字段放在展开之后：客户端消息里若混进 from 会覆盖发送者，
          表现就是「自己发的消息随机显示成对方发的」。 */
       const msg = { ...(m.msg || {}), id: mid(), from: u.uid, fromPid: me,
-        fromName: meP.nick, fromAvatar: meP.avatar, ts: Date.now(), read: false };
+        fromName: dispNick(u), fromAvatar: dispAvatar(u), ts: Date.now(), read: false };
       r.msgs.push(msg); r.ts = Date.now();
       if (r.msgs.length > 2000) r.msgs = r.msgs.slice(-1000);
       store.save();
       // 推给会话双方：对方真人（他名下所有在线 ID 都能收到）+ 自己的其他在线设备
       const ms = r.pidMembers || r.members;
+      const otherPid = ms.filter(x => x !== me)[0];
       ms.forEach(pid => {
+        /* v78：对方没把发送方加进好友空间时，他只在「聊天」界面收发（3A），
+           服务端已正向镜像成 chat；这里再推 secret:msg 会让他两边各显示一份。 */
+        if (pid !== me && pid !== ECHO_PID && !routeHas(pid, me)) return;
         uidsOfPid(pid).forEach(k => { const w = online.get(k); if (w) send(w, { t: 'secret:msg', rid: r.rid, msg }); });
       });
+      /* v76 3A 正向镜像：对方若没把发送方加进好友空间，他仍只在「聊天」界面收发。
+         好友空间与聊天是两套独立存储，不镜像这条消息他就永远看不到。 */
+      try {
+        if (otherPid && otherPid !== ECHO_PID && !routeHas(otherPid, me)) {
+          const ou = currentUidOfPid(otherPid);
+          if (ou) {
+            const mirror = Object.assign({}, msg, { to: ou, toPid: otherPid, mirrored: true });
+            saveMsg(mirror);
+            uidsOfPid(otherPid).forEach(k => {
+              const w2 = online.get(k); if (w2) send(w2, { t: 'chat', msg: mirror });
+              if (w2) { try { send(w2, { t: 'contacts', list: contactsWithPid(k) }); } catch (e) { } }
+            });
+          }
+        }
+      } catch (e) { }
+      /* v80：新消息到达后，双方好友空间会话列表（含未读角标）立刻刷新 */
+      ms.forEach(pid => { if (pid && pid !== ECHO_PID) pushSecretRoomsToPid(pid); });
       /* 对方是「测试助手」→ 原样回一条 */
       if (ms.indexOf(ECHO_PID) >= 0) echoReply(ws, u, m.msg || {}, 'secret');
+      break;
+    }
+    /* v80：好友空间会话开着时，实时到达的消息「看见即已读」 */
+    case 'secret:readack': {
+      const r = getSecret(m.rid, u); if (!r) break;
+      const me = personOf(u).pid;
+      const ids = (Array.isArray(m.ids) ? m.ids : []).map(String).filter(Boolean);
+      if (!ids.length) break;
+      const hit = [];
+      (r.msgs || []).forEach(x => {
+        if (ids.indexOf(String(x.id)) >= 0 && x.fromPid !== me && !x.read) {
+          x.read = true; x.readAt = Date.now(); hit.push(String(x.id));
+        }
+      });
+      if (hit.length) { store.save(); ackRead(hit, u.uid); }
       break;
     }
     /* 单向清空：只把我这边的记录隐藏，对方那边原封不动
        （不能删物理文件，否则对方的语音/图片会失效） */
     case 'secret:clear': {
       const r = getSecret(m.rid, u); if (!r) return;
+      /* v80：清空 = 老消息（含主聊天 legacy）永不复活，但会话框与好友关系保留 */
+      sEpochOf(personOf(u).pid)[String(m.rid)] = Date.now();
       sHideMsgs(personOf(u).pid, (r.msgs || []).map(x => String(x.id)));
       send(ws, { t: 'secret:msgs', rid: r.rid, list: [],
         me: pubPerson(personOf(u)), other: { pid: '', nick: '好友', avatar: null } });
@@ -2329,7 +3023,8 @@ function handle(ws, st, m) {
       send(ws, { t: 'secret:ok', has: !!personOf(u).secretPin, rooms: mySecretRooms(u) });
       break;
     }
-    case 'history': send(ws, { t: 'history', list: myGames(u) }); break;
+    /* v84：46 张玩法已彻底删除，WS 战绩也不再下发 */
+    case 'history': send(ws, { t: 'history', list: myGames(u).filter(g => g && g.rule !== 'let46') }); break;
     case 'history:del': {
       db.games = db.games.filter(g => g.id !== m.id && g.gid !== m.id); store.save();
       send(ws, { t: 'history', list: myGames(u) });

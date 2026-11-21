@@ -3,10 +3,10 @@ window.App = (function () {
   var me = null, page = 'home', rule = 'trio54';
   /* 隐私伪装默认关闭：开启后会话内容会被伪装成「邀请你开局」，
      语音/图片/视频/文件将无法正常显示，只有需要防偷看时才手动打开 */
-  /* 四个开关各管各的：
-     sound = 整个 App 打开时有没有声音（关了则全静音，含牌桌）
+  /* 四个开关各管各的（v77 口径）：
+     sound = 界面音效：大厅/对战/聊天/我的/好友空间的点击与提示音
      voice = 出牌/叫分/加倍时的语音播报
-     bgm   = 牌桌背景音乐（只管打牌场景）
+     bgm   = 背景音乐：只管对战/打牌界面，大厅与其它页面一律不播
      vibe  = 牌桌震动（只管打牌场景）
      callVibe = 语音/视频来电时震动
      callRing = 语音/视频来电时铃声（关了则退回通知栏广告，不响铃）
@@ -21,7 +21,7 @@ window.App = (function () {
     /* v64：出牌震动强度（毫秒），设置页滑动条可调 10~200 */
     vibeMs: 60
   };
-  var createCfg = { mode: 'duo', rule: 'duo37' };
+  var createCfg = { mode: 'trio', rule: 'trio54' };  /* v81：默认三人 */
 
   /* ============================================================
    * v74 全局自定义资源：背景音乐 / 牌面雪碧图
@@ -45,6 +45,35 @@ window.App = (function () {
     if (bd) bd.style.display = b ? '' : 'none';
     if (fd) fd.style.display = f ? '' : 'none';
   }
+  /* v76：自定义牌面不能直接拿 http 绝对地址做 CSS background-image。
+     APK 的 WebView 页面跑在 localhost，跨域/混合内容会让背景整片空白，
+     而 face-on 又把文字角标隐藏了 —— 截图里「一排暗色空框」就是这么来的。
+     改成取字节 → 带 image/png 的 Blob → blob: 同源 URL，和表情同一条已验证链路。
+     加载失败一律退回默认文字牌面，绝不留下无字无图的空牌。 */
+  var FACE_OBJ = null, FACE_KEY = '', FACE_FAIL = false;
+  function resolveFace(raw, ver) {
+    if (!raw) {
+      FACE_OBJ = null; FACE_KEY = ''; FACE_FAIL = false;
+      try { Game.setFace(null, ver); } catch (e) { }
+      return;
+    }
+    var key = raw + '@' + ver;
+    if (FACE_KEY === key && FACE_OBJ) { try { Game.setFace(FACE_OBJ, ver); } catch (e) { } return; }
+    fetch(raw, { credentials: 'omit', cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+      .then(function (b) {
+        var img = /^image\//.test(b.type) ? b : new Blob([b], { type: 'image/png' });
+        var obj = URL.createObjectURL(img);
+        try { if (FACE_OBJ) URL.revokeObjectURL(FACE_OBJ); } catch (e) { }
+        FACE_OBJ = obj; FACE_KEY = key; FACE_FAIL = false;
+        try { Game.setFace(obj, ver); } catch (e) { }
+      })['catch'](function (e) {
+        FACE_FAIL = true; FACE_KEY = '';
+        try { console.warn('[face] load fail', e); } catch (e2) { }
+        try { Game.setFace(null, ver); } catch (e2) { }
+        try { toast('自定义牌面加载失败，已暂时恢复默认牌面'); } catch (e2) { }
+      });
+  }
   function applyCustom(c) {
     if (!c) return;
     var old = 0;
@@ -52,11 +81,11 @@ window.App = (function () {
     if (cVer(c) < old) return;
     var customBgm = !!(c.bgm && c.bgm.url);
     var bgmUrl = customBgm ? Net.abs(c.bgm.url) : builtinBgmUrl();
-    var faceUrl = c.face && c.face.url ? Net.abs(c.face.url) : null;
+    var faceRaw = c.face && c.face.url ? Net.abs(c.face.url) : null;
     try { Sfx.setCustomBgm(bgmUrl, cVer(c)); } catch (e) { }
-    try { Game.setFace(faceUrl, cVer(c)); } catch (e) { }
-    try { localStorage.setItem(CUSTOM_LS, JSON.stringify({ ver: cVer(c), bgm: customBgm, face: !!faceUrl })); } catch (e) { }
-    paintCustomTips(customBgm, !!faceUrl);
+    resolveFace(faceRaw, cVer(c));
+    try { localStorage.setItem(CUSTOM_LS, JSON.stringify({ ver: cVer(c), bgm: customBgm, face: !!faceRaw })); } catch (e) { }
+    paintCustomTips(customBgm, !!faceRaw);
   }
   function syncCustom() {
     try { Net.api('/api/custom').then(function (c) { applyCustom(c); })['catch'](function () { }); } catch (e) { }
@@ -707,7 +736,7 @@ window.App = (function () {
     Sfx.unlock();
     Orient.portrait();
     if (settings.voice) Sfx.setVoice(true);
-    if (settings.bgm) { Sfx.setBgm(true); Sfx.bgm(); }
+    Sfx.setBgm(!!settings.bgm);   /* v76：不再直接 startBgm，交给 setBgm + setBgmAllowed 判定 */
     /* v74：进 App 立即拉一次全局资源，之后每 20 秒兜底同步 */
     setTimeout(syncCustom, 900);
     setInterval(syncCustom, 20000);
@@ -900,7 +929,7 @@ window.App = (function () {
     var mine = (me && me.uid) || '';
     var list = (allUsers.length ? allUsers : onlineUsers).filter(function (u) { return u.uid !== mine; });
     if (!list.length) {
-      box.innerHTML = '<div class="empty">暂无其他玩家<br>开房后系统会自动邀请在线玩家上桌</div>';
+      box.innerHTML = '<div class="empty">暂无其他玩家<br>进牌桌后点「邀请好友」，或点「补机器人」再开局</div>';
       return;
     }
     box.innerHTML = list.map(function (u) {
@@ -1110,13 +1139,32 @@ window.App = (function () {
     if (p === 'home') { Net.send({ t: 'lobby' }); }
     /* v65：创建页不再拉在线列表 */
     // 对战页：真的在打牌时显示牌桌，否则显示「空牌桌 + 开局入口」（仍然是对战页的样子）
-    if (p === 'play') { showPlayShell(); paintPlayEmptyMe(); }
+    if (p === 'play') {
+      showPlayShell(); paintPlayEmptyMe();
+      /* v84：进对战界面 = 回到前台，取消房间 10 分钟计时并自动回房 */
+      try { Net.send({ t: 'room:active' }); } catch (e) { }
+      try { Net.send({ t: 'room:resume' }); } catch (e) { }
+    } else {
+      /* v84：切到大厅/聊天/我的界面 = 退出前台，房间开始计时 */
+      try { Net.send({ t: 'room:away' }); } catch (e) { }
+    }
     // 牌桌按用户偏好决定朝向（默认横屏），其它页面一律竖屏
     if (p === 'play') Orient.applyTable(); else Orient.portrait();
     try { Orient.updateOrientBtn(); } catch (e) { }
     // 背景音乐跟场景走：牌桌用节奏更强的曲子
     try { Sfx.setScene(p === 'play' ? 'table' : 'hall'); } catch (e) { }
+    /* v77：背景音乐只在「对战/打牌(play)」界面播；
+       大厅/聊天/我的/好友空间一律不播。音效开关管这几个页面的界面音，
+       两个开关互不干扰：关音效不影响打牌音乐，关背景音乐不影响大厅音效。 */
+    try { Sfx.setBgmAllowed(p === 'play'); } catch (e) { }
   }
+  /* v84：软件切后台 / 回前台也要上报，否则后台挂着房间永不计时 */
+  document.addEventListener('visibilitychange', function () {
+    try {
+      if (document.hidden) Net.send({ t: 'room:away' });
+      else if (page === 'play') Net.send({ t: 'room:active' });
+    } catch (e) { }
+  });
 
   /* 对战页空态：没在对局中时，显示与大厅/我的同款卡片式布局 */
   function showPlayShell() {
@@ -1137,13 +1185,13 @@ window.App = (function () {
     var sv = JSON.parse(localStorage.getItem('ddz_auth') || '{}');
     // 注意：Net.api 内部已经 .json() 过了，这里不能再调一次 r.json()
     Net.api('/api/history?token=' + sv.token).then(function (r) {
-      hist = (r && r.list) || []; renderHistory();
+      hist = ((r && r.list) || []).filter(function (g) { return g && g.rule !== 'let46'; });
+    renderHistory();
     }).catch(function () {});
   }
   var histOpen = false;   // 战绩是否展开（默认只显示第一条）
   function ruleName(r) {
-    return r === 'trio54' ? '三人经典' : (r === 'cut37' ? '减牌竞叫'
-      : (r === 'let46' ? '46 张叫分' : '37 张叫分'));
+    return r === 'trio54' ? '三人经典' : (r === 'cut37' ? '减牌竞叫' : '37 张叫分');
   }
   function renderHistory() {
     var sv = JSON.parse(localStorage.getItem('ddz_auth') || '{}');
@@ -1365,7 +1413,11 @@ window.App = (function () {
     Net.on('invite', onInvited);
     Net.on('room:chat', function (m) { Game.onTableChat(m); });
     Net.on('room:left', function (m) {
-      if (m.bye) return;
+      /* v83：自己点了「离开房间」→ 回大厅并清掉牌桌；
+         之后每次进对战界面都不会再被自动拉回这个等待房间。 */
+      if (m.bye) { try { Game.reset(); } catch (e) {} go('home'); return; }
+      /* v83：别人暂时离线 / 主动离开，房间仍在 → 只提示，不把我的牌桌踢回大厅 */
+      if (m.temporary) { toast('有玩家离开，房间仍为你保留'); return; }
       toast('对手离开了房间');
       Game.reset(); Game.onRoom({ gid: '' }); go('home');
     });
@@ -1380,7 +1432,7 @@ window.App = (function () {
       Net.send({ t: 'contacts' });
     });
     Net.on('secret:invited', function (m) { Notifier.notifyIfHidden('invite:' + (m.rid || Date.now())); });
-    Net.on('history', function (m) { hist = m.list || []; renderHistory(); });
+    Net.on('history', function (m) { hist = (m.list || []).filter(function (g) { return g && g.rule !== 'let46'; }); renderHistory(); });
   }
 
   document.addEventListener('DOMContentLoaded', function () {

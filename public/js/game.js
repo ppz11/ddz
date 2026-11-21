@@ -1,6 +1,6 @@
 /* ===================== 牌桌界面与交互（支持双人 / 三人 / 在线玩家补位） ===================== */
 window.Game = (function () {
-  var S = null, sel = {}, gid = null, rule = 'let46', dealAnim = false, mySeat = 0;
+  var S = null, sel = {}, gid = null, rule = 'trio54', dealAnim = false, mySeat = 0;
   /* v72：本地记录我最近一次动作，服务端 lastSeat 不写「过/不叫/加倍」，
      以前我在出牌区点过牌什么都不显示。 */
   var myAct = null;
@@ -24,7 +24,7 @@ window.Game = (function () {
     }
     return (col / 12 * 100).toFixed(4) + '% ' + (row / 4 * 100).toFixed(4) + '%';
   }
-  function setFace(u, ver) {
+  function commitFace(u, ver) {
     faceUrl = u || null; faceVer = ver || 0;
     try {
       document.body.classList.toggle('face-on', !!faceUrl);
@@ -32,6 +32,21 @@ window.Game = (function () {
       else document.body.style.removeProperty('--face-url');
     } catch (e) { }
     try { if (S) { render(); renderHand(); } } catch (e) { }
+  }
+  function setFace(u, ver) {
+    u = u || null;
+    if (u && u !== faceUrl) {
+      /* v76 双保险：图没真正 decode 成功就别切 face-on，否则文字角标被隐藏、
+         背景又加载不出来 → 整手牌变成一排空框。失败时保留原状。 */
+      var probe = new Image(), target = u;
+      probe.onload = function () { commitFace(target, ver); };
+      probe.onerror = function () {
+        try { console.warn('[face] decode failed, keep default'); } catch (e) { }
+      };
+      probe.src = u;
+      return;
+    }
+    commitFace(u, ver);
   }
   /* 服务端广播的真人玩家名单（lobby.all），供「邀请在线好友」选择框使用。
      以前「邀请在线玩家」直接补一个机器人，真人根本没被通知到。 */
@@ -611,10 +626,9 @@ window.Game = (function () {
     if (!g || tipShownFor === g) return;
     tipShownFor = g;
     var r = (m && m.rule) || rule;
-    var txt = r === 'trio54' ? '三人经典 · 54 张 · 叫分 1~3 分 + 加倍 · 农民一方出完即胜'
+  var txt = r === 'trio54' ? '三人经典 · 54 张 · 叫分 1~3 分 + 加倍 · 农民一方出完即胜'
       : r === 'cut37' ? '双人减牌 · 37 张 · 竞叫减 N 张定地主 · 农民剩 ≤N 张即胜 · 无主动加倍，春天/炸弹照常翻倍'
-        : r === 'let46' ? '双人 46 张 · 叫分 1~3 分 + 加倍 · 先出完手牌者胜'
-          : '双人 37 张 · 叫分 1~3 分 + 加倍 · 先出完手牌者胜';
+        : '双人 37 张 · 叫分 1~3 分 + 加倍 · 先出完手牌者胜';
     /* 首次进入房间用弹窗（带关闭按钮），看得清也好关 */
     if (App.firstTipOf) {
       App.firstTipOf('本局玩法', txt, function () { });
@@ -1103,7 +1117,9 @@ window.Game = (function () {
     /* 流程改为：先邀请真人 → 人不满再补机器人 → 点「开始游戏」才发牌。
        之前是「补满即开局」，房主还在邀请好友时牌已经发下去了。 */
     var isOwner = mySeat === 0;
-    var btns = '<button class="btn ghost" onclick="Game.leave()">离开房间</button>';
+    /* v83：点了「离开房间」之后，再切到对战界面不会自动加入这个等待房间；
+       只是切界面 / 断线重连则仍会自动回房。 */
+    var btns = '<button class="btn ghost" title="离开后不再自动回到本房间" onclick="Game.leave()">离开房间</button>';
     if (isOwner) {
       /* 文案统一 4 个字以内 + 不换行，高度才整齐；
          「补机器人」这个名字会暴露对手是机器人，改叫「随机邀请在线玩家」。 */
@@ -1276,7 +1292,7 @@ window.Game = (function () {
         '<br>数字是地主声称「能在农民剩 N 张之前出完」的门槛</div>';
       return '<div class="bidwrap" style="flex-wrap:wrap">' + tip2 + b + '</div>';
     }
-    /* v46：46 张 / 37 张 / 三人 54 张统一走叫分制，不再有「抢地主让牌」按钮。 */
+    /* v82：37 张 / 三人 54 张统一走叫分制，不再有「抢地主让牌」按钮。 */
     {
       if (S.bidTurn !== mySeat) return waitTxt('等待其他玩家叫分…');
       /* v45：后叫的人只能比当前最高分更高，不能叫一样的分。
@@ -1356,7 +1372,7 @@ window.Game = (function () {
       : (act === 'grab' ? { type: 'grab' }
         : (act === 'nograb' ? { type: 'pass' }
           : (Number(act) > 0 ? { type: 'bid', score: Number(act) } : { type: 'pass' })));
-    /* v46：46 张也走叫分制，必须一起校验严格递增；减牌走自己的选项校验 */
+    /* v82：叫分制统一校验严格递增；减牌走自己的选项校验 */
     if (a.type === 'bid' && S && !S.cutMode) {
       var hi = (S.bidHighest != null) ? S.bidHighest : (S.bid ? S.bid.score : 0);
       var sc = Number(a.score) || 0;
@@ -1472,7 +1488,7 @@ window.Game = (function () {
     box.onclick = function (e) { if (e.target === box) close(); };
   }
   function fillAll() {
-    var n = myRoom ? myRoom.n : 2;
+    var n = myRoom ? myRoom.n : 3;   /* v81：默认三人 */
     var filled = myRoom ? myRoom.seats.filter(Boolean).length : 1;
     /* auto:false → 只补位，不自动开局，等房主点「开始游戏」 */
     for (var i = 0; i < n - filled; i++) Net.send({ t: 'room:joinbot', gid: gid, auto: false });

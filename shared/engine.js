@@ -1,14 +1,13 @@
 /* ============================================================
  *  斗地主核心规则引擎（服务端 / 前端共用同一份）
- *  支持四种玩法：
- *    let46     二人 46 张（去掉 3、4），叫分抢地主 + 加倍，先出完者胜
+ *  支持三种玩法（v82：旧双人玩法已彻底删除）：
  *    duo37     二人 37 张（54 张随机去掉 17 张），叫分抢地主 + 加倍，先出完者胜
  *    cut37     二人 37 张「减牌竞叫」：竞叫减 N 张定地主，农民剩 <=N 张即胜；
  *              不设玩家主动加倍，但春天/反春天/炸弹照常翻倍，基础倍数 1
  *    trio54    三人 54 张，叫分抢地主 + 加倍，农民一方出完即胜
  *
  *  v46 规则（逐条与用户确认后实现）：
- *   · 三人只有 54 张；二人可选 46 张 / 37 张；37 张建房时选「叫分加倍」或「减牌」
+ *   · 三人只有 54 张；二人可选 37 张，建房时选「叫分加倍」或「减牌」
  *   · 叫分 1~3 分，每人仅一次机会，后叫者必须严格高于当前最高分；叫满 3 分提前定庄
  *   · 加倍权只属于「叫分提前结束、从头到尾没轮到叫分」的玩家；一人 x2、两人 x4
  *     轮到叫分但选了不叫、以及叫过分的玩家，都不能加倍
@@ -33,7 +32,6 @@
     rnd = rnd || Math.random;
     var cards = [], id = 0;
     RANKS.forEach(function (r) {
-      if (rule === 'let46' && (r === '3' || r === '4')) return;
       SUITS.forEach(function (s) {
         cards.push({ id: 'c' + (id++), r: r, s: s, v: RANK_VAL[r], red: (s === 'H' || s === 'D') });
       });
@@ -415,7 +413,7 @@
       openCard: openCard, firstBidder: openSeat,
       phase: 'bid', bid: null, landlord: -1, bidTurn: openSeat, bidSeq: [],
       doubleSeats: [], doubleIdx: 0, doubled: [],
-      grabCount: 0, letCount: rule === 'let46' ? 1 : 0, multiplier: 1,
+      grabCount: 0, letCount: 0, multiplier: 1,
       /* v46 减牌竞叫状态 */
       cutHigh: 0, cutBidder: -1, cutTarget: 0, cutSeq: [],
       turn: -1, last: null, lastSeat: [], passFlag: 0, bidPasses: 0, roundFresh: false,
@@ -456,7 +454,7 @@
       /* 一旦有人不叫，本局立刻定庄，不再往下轮 */
       return finishCut(g);
     }
-    /* v46：46 张也走叫分制（用户第 11 条：选叫分加倍就跟 46 张和 54 张一样）。
+    /* v82：叫分制统一生效（三人 54 张 / 双人 37 张），
        只有减牌玩法走上面的独立分支。 */
     if (g.rule !== 'cut37') {
       // 叫分制：每人一次机会，从明牌者开始轮流；叫 3 分立即定地主
@@ -503,31 +501,7 @@
       g.bidTurn = (seat + 1) % n;
       return { ok: true };
     }
-    // let46 让牌玩法
-    if (g.landlord < 0) {
-      if (act.type === 'bid') {
-        g.landlord = seat; g.letCount = 1; g.grabCount = 0;
-        g.bidTurn = 1 - seat;
-        g.bidSeq.push({ seat: seat, act: 'bid' });
-        return { ok: true, needGrab: 1 - seat };
-      }
-      g.bidSeq.push({ seat: seat, act: 'pass' });
-      if (g.bidSeq.length >= 2) return { redeal: true };
-      g.bidTurn = 1 - seat;
-      return { ok: true };
-    }
-    if (act.type === 'grab') {
-      if (seat === g.landlord) return { err: '不能抢自己的地主' };
-      if (g.grabCount >= 4) return { err: '已达最大抢地主次数' };
-      g.landlord = seat; g.grabCount++;
-      g.letCount = 1 + g.grabCount;
-      g.multiplier = [1, 1, 2, 3, 4, 5][g.grabCount] || g.grabCount;
-      g.bidTurn = 1 - seat;
-      g.bidSeq.push({ seat: seat, act: 'grab' });
-      return { ok: true, needGrab: 1 - seat };
-    }
-    g.bidSeq.push({ seat: seat, act: 'pass' });
-    return finishBid(g);
+    return { ok: true };
   }
 
   /* ---------------- 加倍 ----------------
@@ -592,7 +566,7 @@
         .map(function (b) { return b.seat; });
       g.doubleSeats = [];
     }
-    /* v46：46 张也走叫分制，不再有「抢地主让牌」定庄。
+    /* v82：叫分制统一，不再有「抢地主让牌」定庄。
        所有非减牌玩法统一由最高叫分者当地主。 */
     if (!g.bid) return { redeal: true };
     g.landlord = g.bid.by;
@@ -700,8 +674,7 @@
   function farmerTarget(g) {
     if (g.rule === 'cut37')
       return g.landlord < 0 ? 0 : Math.max(0, g.hands[1 - g.landlord].length - g.cutTarget);
-    if (g.rule !== 'let46' || g.landlord < 0) return 0;
-    return Math.max(0, g.hands[1 - g.landlord].length - g.letCount);
+    return 0;
   }
 
   return {

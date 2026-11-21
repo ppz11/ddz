@@ -2837,6 +2837,10 @@ body.kb-on #tabbar{visibility:visible!important;display:flex!important}
 .pc.imgface{background-repeat:no-repeat;background-size:1300% 500%;background-color:transparent;
   border:0;box-shadow:0 3px 8px rgba(0,0,0,.45);color:transparent}
 .pc.imgface .rk,.pc.imgface .su,.pc.imgface .big,.pc.imgface .ctr{display:none}
-body.face-on .pc.back{background-image:var(--face-url);background-position:16.6667% 100%;
+body.face-on .pc.back{background-image:var(--face-url);background-size:1300% 500%;background-repeat:no-repeat;background-position:16.6667% 100%;
   background-size:1300% 500%;background-repeat:no-repeat;background-color:transparent}
 body.face-on .pc.back::after{display:none}
+
+/* v82：打开会话时「以下为新消息」分隔线，聊天与好友空间共用 */
+.unread-divider{display:flex;align-items:center;gap:8px;margin:6px 2px;color:#f3c96b;font-size:11px;letter-spacing:1px;text-align:center;white-space:nowrap}
+.unread-divider::before,.unread-divider::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(243,201,107,.55),transparent)}

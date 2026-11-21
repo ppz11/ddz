@@ -1,0 +1,78 @@
+PASS 真实 server.js 启动
+PASS 5 个真人注册 / 8 位纯数字 UID
+PASS UID 互不相同
+PASS 连发 20 个新号 UID 不复用
+PASS 五端 WS auth 成功
+PASS 所有登录过的用户彼此看得到会话框
+PASS 在线优先排在离线前面
+PASS 下线后在线状态及时更新
+PASS 聊天 A→B 三条都收到
+PASS 打开会话返回 firstUnreadId
+PASS history 三条且都已读
+PASS 发送方收到已读回执
+PASS B→A 反向收发正常
+PASS 聊天界面加好友按 pid 落地
+PASS 好友空间生成唯一 pid 会话
+PASS 好友空间 → 对方聊天界面互通（3A）
+PASS 创建三人等待房（只有房主）
+PASS ① 开始游戏有空位 → 提示手动补位（不自动补）
+PASS 邀请页不自动补机器人开局
+PASS 大厅输入房间号 → 直接进入房间
+PASS 会话里点邀请卡片 → 直接进入房间
+PASS 两真人 + 房主满 3 座
+PASS 房主点开始 → 满座发牌 phase=bid
+PASS 三位真人都收到 game
+PASS 换身份返回新 8 位数字 UID
+PASS ★ 打牌中途换 UID 座位按 pid 保留
+PASS ★ 断线重连自动回到原牌桌
+PASS 三人快速匹配直接开局
+PASS 人机对战直接开局
+PASS 叫分接口不报错（引擎可推进）
+PASS v83 新建等待房
+PASS 第二位真人通过房间号加入
+PASS ★ 房间内还有真人 → 超时也不解散，进对战界面自动回房
+PASS ★ 等待界面点离开 → 本人收到 room:left bye
+PASS ★ 点过离开后再进对战界面 → 不自动加入（room:gone）
+PASS ★ 没点离开的真人 → 仍自动加入房间
+PASS ★ 只要还有一个真人在，房间就一直保留
+PASS ★ 重新加入房间可撤销离开标记
+PASS ★ 撤销后进对战界面又自动回房
+PASS ★ 没点离开时断线重连也自动回房
+PASS ★ 最后一个真人离开后 10 分钟解散 → 卡片提示房间已解散
+PASS ★ 解散后 resume 返回 room:gone
+PASS ★ 真人没点离开但全员掉线超时 → 兜底解散（防僵尸房）
+PASS 房主转去快速匹配 → 旧等待房立即解散
+PASS 旧 let46 请求归一为三人 54 张（46 张模式已删）
+PASS /api/custom 200 且含 ver
+PASS /api/stickers 返回 JSON packs
+PASS 内置背景音乐可访问
+PASS 1GB 分片路由存在（裸请求 401 而非 404）
+PASS 不存在的 API 返回 404
+PASS /api/history 200 且不含 let46 战绩
+PASS index.html 版本标记 v84
+PASS 静态：背景音乐只在 play 界面
+PASS 静态：未读分隔线 + 到最新
+PASS 静态：牌面走 blob 链路
+PASS 静态：媒体缓存仍在
+PASS 静态：战绩 let46 前端也不展示
+PASS 静态：服务端战绩 let46 已过滤
+PASS 静态：等待界面每个真人都有离开房间按钮
+PASS 静态：前端 bye 处理回大厅
+PASS 静态：房间保留字段齐全
+PASS 静态：46 张玩法引擎已删
+PASS v84 新建等待房（用于 away 计时）
+PASS ★ 全员切走界面/后台 → 10 分钟自动解散（没点离开也散）
+PASS ★ 切回对战界面 → 取消计时、房间保留、自动回房
+PASS ★ 还有真人在对战界面前台 → 一人切走也不解散
+PASS ★ purge-let46 物理删除 games 里 2 条 let46
+PASS ★ purge-let46 不误删正常战绩、清理 history
+PASS ★ purge-let46 生成备份文件
+PASS ★ purge-let46 幂等（二次执行 0 条）
+PASS 静态：v84 前台命令 room:active / room:away
+PASS 静态：v84 hasPresentHuman + 清扫按前台判定
+PASS 静态：前端切走发 away / 切回发 active
+PASS 静态：WS history 也过滤 let46
+PASS 静态：物理删除脚本随包
+PASS 服务端日志无异常
+
+===== v84 PACKAGE-BODY VERIFY RESULT: 76 PASS / 0 FAIL =====

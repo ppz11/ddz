@@ -1,0 +1,11 @@
+PASS 有未读时定位到第一条未读（不是最开始）  {"top": 595, "max": 595, "d": 522, "anchor": {"type": "unread", "id": "m18", "n": 3}}
+PASS 第一条未读在可视区内（无需下翻）  {"d": 522}
+PASS 未读很多时能跳到未读处（m5 场景另测）
+PASS 无未读时停在最新消息  {"top": 595, "max": 595, "anchor": {"type": "bottom"}}
+PASS n 越界时退化为最新，不滚回第一条  {"top": 595, "max": 595, "firstDelta": -583}
+PASS history 未到达时先停在最新（兜底）  {"top": 595, "max": 595}
+PASS 大量未读时停在第一条未读（不是最开始/不是底部）  {"top": 264, "max": 595, "d": 8}
+PASS 好友空间滚的是真正的消息容器且未读可见  {"top": 300, "max": 300, "outerTop": 0}
+PASS 好友空间外层不再被误设 scrollTop  {"top": 300, "max": 300, "outerTop": 0}
+
+=== BROWSER 9 PASS / 0 FAIL ===

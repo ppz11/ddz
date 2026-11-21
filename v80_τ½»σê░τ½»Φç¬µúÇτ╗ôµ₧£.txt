@@ -1,0 +1,55 @@
+PASS 真实 server.js 启动
+PASS UID 为 8 位纯数字
+PASS 三个 UID 互不相同
+PASS 三人 WS 登录成功
+PASS 所有登录过的用户彼此看得到会话框
+PASS 真实在线用户都标在线（测试助手/固定号标离线）
+PASS 在线排在离线前面
+PASS C 下线后状态及时变离线
+PASS 在线优先排序（含离线）
+PASS 聊天界面按 UID 加好友，好友卡片指向当前 UID 与 pid
+PASS B 也把 A 加为聊天好友（不迁移路由，保持 3A 场景）
+PASS 好友空间添加好友 = 添加真人 pid，路由表更新
+PASS 好友空间好友列表按 pid 存
+PASS 本机聊天列表隐藏已迁好友空间的人
+PASS B 在聊天界面发，A 在好友空间收到 secret:msg（不是勉强）
+PASS 好友空间未读角标随消息及时 +1
+PASS A 聊天界面按路由过滤、不重复显示
+PASS 打开好友空间会话能看到合并来的聊天消息
+PASS 打开会话后未读角标及时清零
+PASS B 收到 A 的已读回执（ackRead 按真人 pid 推）
+PASS A 在好友空间发，B 在聊天界面真的收到（正向镜像，含视频类型）
+PASS A 自己收到好友空间回显
+PASS B 打开聊天会话能查到好友空间发来的消息
+PASS B 已读回执同步回好友空间（聊天↔好友空间双向）
+PASS 会话开着时实时图片消息到达好友空间
+PASS 图片不用点开大图，看见即已读并回执给发送方
+PASS A 切换身份生成新 UID
+PASS A 换 UID 后，B 的好友列表自动更新为新 UID
+PASS 好友卡片仍指向同一真人 pid（不新建人）
+PASS A 新连接拿到原好友空间路由（pid 不变）
+PASS B 聊天界面出现 A 的新 UID 会话框
+PASS A 的历史 UID 会话框仍保留（按 UID 组织，不合并）
+PASS 发给历史 UID 的消息按 pid 直达 A 的新 UID
+PASS B 换 UID 后 A 的好友列表也自动更新
+PASS 双方都换 UID 后仍互相直达
+PASS 发给历史 UID 的消息重开会话仍查得到（inPair/origTo）
+PASS 删除的 UID 会话未再登录 → 不复活
+PASS 删除会话不删除好友关系（好友列表仍有该 pid）
+PASS 从好友列表重新发起 → 新会话框出现
+PASS 重新发起的新会话不显示任何老信息
+PASS 删除的 UID 再次登录 → 以空的新会话重新出现
+PASS 复活的新会话仍不含老消息
+PASS 好友空间删除会话后会话框消失
+PASS 好友空间删除会话不删除好友关系
+PASS 从好友关系列表重新发起 → 好友空间出现新会话（仍是同一个 pid/rid）
+PASS 好友空间按 pid 组织：同一真人只有一个会话框
+PASS 重新发起的好友空间会话不显示老信息（含 legacy 旧聊天）
+PASS 解除好友后路由退回聊天界面
+PASS 退回聊天界面后仍能正常收发（前端不再过滤）
+PASS 新注册不会拿到历史/被重置的 UID
+PASS 40 个新 UID 互不重复
+PASS db.usedUids 持久化全部历史 UID（含测试号/被重置号）
+PASS 服务端 WS 处理无异常
+
+==== RESULT 53 PASS / 0 FAIL ====

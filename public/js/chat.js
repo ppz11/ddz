@@ -1,6 +1,6 @@
 /* ===================== 私信聊天（文字/语音/图片/视频/文件/表情） ===================== */
 window.Chat = (function () {
-  var contacts = [], cur = null, msgs = [], unread = {}, panel = null;
+  var contacts = [], allContacts = [], cur = null, msgs = [], unread = {}, panel = null;
   var readAck = new Set();   /* v40：回执到达时不在该会话，也要记住，下次渲染直接显示已读 */
   /* v41：会话滚动锚点 —— 进入时跳到第一条未读，用户一动手就停止自动纠正 */
   var scrollAnchor = null, userMoved = false, anchorToken = 0;
@@ -15,6 +15,27 @@ window.Chat = (function () {
     var n = 0; Object.keys(unread).forEach(function (k) { n += (Number(unread[k]) || 0); });
     try { App.updateChatDot(n); } catch (e) { }
   }
+  /* v78：路由表变化时立刻重算聊天列表，并清掉已迁走会话的未读残留。
+     v77 里路由生效前到达的 chat 会先给 unread +1，路由生效后没人清，
+     就是「明明没有未读，聊天图标却总显示 1」的真因。 */
+  function applyRoute() {
+    contacts = (allContacts || []).filter(function (c) {
+      return !(window.ChatRoute && ChatRoute.has(c.pid));
+    });
+    (allContacts || []).forEach(function (c) {
+      if (window.ChatRoute && ChatRoute.has(c.pid)) delete unread[U(c.uid)];
+    });
+    /* v72：服务端的 unread 只在「本地还没有这条记录」时作初值；
+       正在看的会话一律 0，绝不让服务端回灌覆盖刚刚清掉的已读。 */
+    contacts.forEach(function (c) {
+      var k = U(c.uid);
+      if (k === U(cur)) { unread[k] = 0; return; }
+      /* v81：服务端快照只作初值。本地累计（含刚到的新消息）优先，
+         否则「明明有未读」会被一次旧的 contacts 广播抹掉。 */
+      if (!(k in unread)) unread[k] = Number(c.unread) > 0 ? Number(c.unread) : 0;
+    });
+    renderList(); paintThreadState(); syncDot();
+  }
   function prefetchMsg(m) {
     if (!m || !m.url) return;
     try { if (window.MediaCache && MediaCache.prefetch) MediaCache.prefetch(m.url); } catch (e) { }
@@ -24,16 +45,10 @@ window.Chat = (function () {
 
   function init() {
     Net.on('contacts', function (m) {
-      contacts = m.list || [];
-      /* v72：服务端的 unread 只在「本地还没有这条记录」时作初值；
-         正在看的会话一律 0，且绝不让服务端回灌覆盖刚刚清掉的已读。 */
-      contacts.forEach(function (c) {
-        var k = U(c.uid);
-        if (k === U(cur)) { unread[k] = 0; return; }
-        if (!(k in unread) && Number(c.unread) > 0) unread[k] = Number(c.unread);
-        if (readAt[k] && Number(c.unread) > 0) unread[k] = 0;
-      });
-      renderList(); paintThreadState(); syncDot();
+      /* v76 1A：只按【本机】算 —— 本机加进好友空间的人，聊天列表里隐藏。
+         v78：留一份原始列表，路由一变就能立刻重算，不必等服务端再推一次 contacts。 */
+      allContacts = m.list || [];
+      applyRoute();
     });
     /* 好友名单：主界面专用，与隐私空间完全隔离 */
     Net.on('friend:list', function (m) {
@@ -43,6 +58,9 @@ window.Chat = (function () {
     Net.on('friend:search', function (m) { paintFriends(m.list || [], 'search'); });
     Net.on('chat', function (m) {
       var msg = m.msg || {};
+      /* v76 1A/3A：已迁到好友空间的人，本机聊天界面不再收、不计未读、不弹通知。
+         服务端消息照存照推，对方（未加好友）仍在他自己的聊天界面正常看到。 */
+      if (window.ChatRoute && (ChatRoute.has(msg.fromPid) || ChatRoute.has(msg.toPid))) return;
       /* 后台积压补投 / 重连重发会重复投递同一条，先按 id 去重 */
       var mk = U(msg.id || (msg.from + '|' + msg.ts));
       if (seenChat.has(mk)) return; seenChat.add(mk);
@@ -51,17 +69,31 @@ window.Chat = (function () {
       prefetchMsg(msg);
       // 通知栏永远只推送斗地主营销广告，绝不泄露真实内容
       if (U(msg.from) !== U(App.me().uid)) Notifier.notifyIfHidden(mk);
-      var inThread = cur && (U(msg.from) === U(cur) || U(msg.to) === U(cur));
+      /* v79：自己发的消息回显不算未读（以前发到对方历史 UID 时，
+         服务端改写 to 会让 inThread 落空，于是给「自己」计一条未读，
+         就是「明明没有未读却显示 1」的残留来源之一）。 */
+      var isMine = U(msg.from) === U(App.me().uid);
+      var inThread = cur && (U(msg.from) === U(cur) || U(msg.to) === U(cur) || U(msg.origTo) === U(cur));
       if (inThread) {
         pushMsg(msg);   /* v41：滚动由 pushMsg 按「是否在底部」自行决定 */
         unread[U(cur)] = 0;
+        /* v80：会话开着时实时到达的消息也是「看见即已读」——
+           图片/视频/文件只要在会话里渲染出来就算看到，不要求点开大图。 */
+        if (!isMine && msg.id) {
+          try { Net.send({ t: 'chat:readack', ids: [String(msg.id)], with: cur }); } catch (e) { }
+        }
         Sfx.msg();
       }
-      else {
+      else if (!isMine) {
         var k = U(msg.from);
         unread[k] = (Number(unread[k]) || 0) + 1;
         Sfx.msg();
         if (App.disguise()) App.toast(ADS.randomFeed()); else App.toast('收到新消息');
+      }
+      /* v79：对方刚换 UID / contacts 广播慢一拍时，消息到了但列表还没有会话框，
+         立刻补拉一次联系人，保证「会话框 + 在线状态 + 红点」一起出现。 */
+      if (!isMine && !(allContacts || []).some(function (c) { return U(c.uid) === U(msg.from); })) {
+        try { Net.send({ t: 'contacts' }); } catch (e) { }
       }
       renderList(); syncDot();
     });
@@ -70,10 +102,11 @@ window.Chat = (function () {
       if (cur && m.with && U(m.with) !== U(cur)) return;
       clearTimeout(histTimer); histTimer = null; histTry = 0;
       msgs = m.list || [];
+      /* v82：第一条未读前画「以下为新消息」分隔线，直接滚到最新 */
+      unreadDividerId = String(m.firstUnreadId || '');
       /* v72：历史包只负责整表重建，串台包已在上面拦掉 */
       renderMsgs();
-      /* v41：history 到达后统一设锚点，多次重试直到容器/图片尺寸稳定 */
-      scrollToUnread();
+      scrollToUnread(m.firstUnreadId);
       syncDot();
     });
     Net.on('chat:read', function (m) {
@@ -116,7 +149,9 @@ window.Chat = (function () {
   }
 
   function ruleText(r) {
-    return r === 'trio54' ? '三人经典' : (r === 'let46' ? '让牌玩法' : '经典玩法');
+    /* v82：旧双人玩法已彻底删除，旧卡片兜底成三人经典 */
+    return r === 'trio54' ? '三人经典'
+      : (r === 'cut37' ? '减牌竞叫' : '双人 37 张');
   }
   /* 文件类型图标：按后缀显示，不再一律是 📄 */
   var ICON = {
@@ -311,7 +346,7 @@ window.Chat = (function () {
   function open(uid) {
     uid = U(uid);
     lastUnread = Number(unread[uid]) || 0;
-    cur = uid; unread[uid] = 0; readAt[uid] = Date.now(); msgs = [];
+    cur = uid; unread[uid] = 0; readAt[uid] = Date.now(); msgs = []; unreadDividerId = '';
     clearTimeout(histTimer); histTry = 0; histFor = uid;
     syncDot();
     var c = contacts.filter(function (x) { return String(x.uid) === String(uid); })[0] || friendCache[String(uid)] || {};
@@ -342,6 +377,9 @@ window.Chat = (function () {
     /* v41：每次开会话重置滚动状态；手势监听只绑一次 */
     userMoved = false; scrollAnchor = null; anchorToken++;
     bindScrollGuards();
+    /* v81：history 未到达 / 串台被拦时，先停在最新，绝不出现「点开是最开始的消息」 */
+    var mb0 = document.getElementById('msgs');
+    if (mb0) { try { mb0.scrollTop = mb0.scrollHeight; } catch (e) { } }
     document.getElementById('th-back').onclick = close;
     /* 会话内「管理」：一键进入消息多选删除；长按单条消息也能删除 */
     var mg = document.getElementById('th-manage');
@@ -444,7 +482,13 @@ window.Chat = (function () {
 
   function renderMsgs() {
     var box = document.getElementById('msgs'); if (!box) return;
-    box.innerHTML = msgs.map(msgHtml).join('');
+    var html = '';
+    msgs.forEach(function (x) {
+      if (unreadDividerId && String(x.id) === unreadDividerId)
+        html += '<div class="unread-divider">以下为新消息</div>';
+      html += msgHtml(x);
+    });
+    box.innerHTML = html;
     bindMsgNodes(box);
     /* v72：进入/刷新会话即把全部图片/视频/文件/语音入队缓存（不再跳过视频大文件）。
         命中本地一个网络字节都不发，外部软件扫不到缓存。 */
@@ -738,7 +782,7 @@ window.Chat = (function () {
     return esc(m.text || '');
   }
 
-  var lastUnread = 0;
+  var lastUnread = 0, unreadDividerId = '';
   function bindScrollGuards() {
     var b = document.getElementById('msgs');
     if (!b || b.dataset.v41scroll) return;
@@ -756,9 +800,18 @@ window.Chat = (function () {
     var topOf = function (box) {
       if (anc.type !== 'unread') return box.scrollHeight;
       var all = box.querySelectorAll('.msg');
-      var el = all[Math.max(0, all.length - anc.n)];
+      var el = anc.id ? box.querySelector('.msg[data-id="' + anc.id + '"]') : null;
+      if (!el && anc.n > 0) {
+        /* v81：n 只是兜底。未读数超过可见历史时直接到最新，
+           绝不因为 n 过大而滚回第一条（「点开是最开始的消息」的真因之一）。 */
+        if (anc.n >= all.length) return box.scrollHeight;
+        var idx = Math.max(0, Math.min(all.length - 1, all.length - anc.n));
+        el = all[idx];
+      }
       if (!el) return box.scrollHeight;
-      return Math.max(0, el.offsetTop - box.offsetTop - 8);
+      /* 相对差值不受 offsetParent / flex / contain 影响 */
+      var d = el.getBoundingClientRect().top - box.getBoundingClientRect().top;
+      return Math.max(0, box.scrollTop + d - 8);
     };
     b.scrollTop = topOf(b);
     /* 容器刚建好时高度常为 0，图片/视频加载后还会变高：
@@ -784,10 +837,13 @@ window.Chat = (function () {
     scrollAnchor = { type: 'bottom' };
     applyAnchor(++anchorToken, !userMoved);
   }
-  /* 进入会话：有未读就停在第一条未读，没有就停在最底部最新消息 */
-  function scrollToUnread() {
+  /* v82：用户确认改为「新消息分隔线 + 直接到最新」。
+     分隔线由 renderMsgs() 依据 firstUnreadId 画在第一条未读前，
+     这里只负责滚到底部；图片/视频加载导致高度变化仍由 applyAnchor 多轮兜底。 */
+  function scrollToUnread(firstId) {
     userMoved = false;
-    scrollAnchor = lastUnread > 0 ? { type: 'unread', n: lastUnread } : { type: 'bottom' };
+    if (firstId) unreadDividerId = String(firstId);
+    scrollAnchor = { type: 'bottom' };
     applyAnchor(++anchorToken, true);
   }
 
@@ -1275,7 +1331,7 @@ window.Chat = (function () {
     });
   }
 
-  return { init: init, renderList: renderList, open: open, close: close, get cur() { return cur; }, sendFile: sendFile,
+  return { init: init, renderList: renderList, applyRoute: applyRoute, open: open, close: close, get cur() { return cur; }, sendFile: sendFile,
     view: view, saveToDevice: saveToDevice, exitSel: exitSel, isSel: function () { return !!selMode; },
     __bubble: bubble,
     __openThread: function (uid) { try { open(uid); } catch (e) { } },

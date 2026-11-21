@@ -278,16 +278,6 @@
        阈值随难度提高，且紧急局面下一律不失误、不藏牌、不挑次优。 */
     var urgent = oppLast <= (L.id >= 4 ? 4 : (L.id >= 3 ? 3 : 2));
     var mustStop = !isLandlord && oppLast <= (L.id >= 4 ? 5 : 4);
-    if (g.rule === 'let46') {
-      var oppLens = [];
-      g.hands.forEach(function (h, idx) {
-        if (idx === seat) return;
-        if (isLandlord || idx === g.landlord) oppLens.push(h.length);
-      });
-      var few = oppLens.length ? Math.min.apply(null, oppLens) : 99;
-      if (!isLandlord && few <= (g.letCount || 0) + 1) { urgent = true; mustStop = true; }
-      if (isLandlord && few <= (g.letCount || 0)) urgent = true;
-    }
 
     // 一手走完
     var finish = can.filter(function (x) { return x.ids.length === hand.length; });

@@ -11,6 +11,11 @@ window.Sfx = (function () {
   var customBgm = null, customEl = null, customBgmVer = 0;
   /* 后台状态：切后台 → 停 BGM + 挂起 AudioContext；回前台 → 恢复 */
   var hidden = false, wasPlaying = false;
+  /* v77：背景音乐只在「对战/打牌」界面播；大厅/聊天/我的/好友空间一律不播。
+     音效开关只管界面点击音，与 BGM 彻底解耦：bgmOn 不引用 on，
+     on 也不启停 BGM。初始 false，由 App.go() 进入打牌页时显式放行，
+     避免登录瞬间在大厅先响一下再被停掉。 */
+  var bgmAllowed = false;
   /* v63：从后台回到前台后，先保持静音，直到用户下一次真实触摸才恢复。
      原来 toForeground 会无条件 startBgm + resume speechSynthesis，
      WebView 在后台暂停的播报队列/排队定时器会在回来那一刻集中放出来，
@@ -50,7 +55,7 @@ window.Sfx = (function () {
     if (hidden) return;
     hidden = true;
     resumeQuiet = true;
-    wasPlaying = !!(bgmSrc && bgmOn && on);
+    wasPlaying = !!(bgmSrc && bgmOn && bgmAllowed);
     stopBgm();
     /* 把排队中的牌型播报一并清掉，别让它在后台/回前台后补播 */
     try { clearPendingSay(); } catch (e) { }
@@ -465,7 +470,7 @@ window.Sfx = (function () {
    * 实时循环：按拍子直接发声，任何环境都能响。 */
   var liveTimer = null, liveStep = 0, liveT0 = 0;
   function liveTick() {
-    if (hidden || !bgmOn || !on) return;
+    if (hidden || !bgmOn || !bgmAllowed) return;
     var cfg = SCENE[scene] || SCENE.hall;
     var s = liveStep % 8;                       // 一小节 8 个八分音符
     var D = duckOn ? 0.3 : 1;                   // 炸弹/出牌时压低
@@ -505,14 +510,15 @@ window.Sfx = (function () {
   function startBgm() {
     if (hidden || resumeQuiet) return;
     if (!bgmOn || hidden) return;
+    if (!bgmAllowed) { stopBgm(); return; }
     /* v74：牌桌场景有自定义音乐时，不再启动程序化合成 */
-    /* v75：自定义/内置 BGM 大厅也播，不再只限牌桌 */
+    /* v77：自定义/内置 BGM 只在打牌页放行（由 bgmAllowed 控制） */
     if (customBgm) { stopLiveBgm(); startCustomBgm(); return; }
     var c = ac(); if (!c) return;
     if (bgmSrc || liveTimer) return;
     if (bgmBufs[scene]) { bgmBuf = bgmBufs[scene]; return playBuf(); }
     /* 总闸：只要主音效关了 / 在后台，任何途径都不许起音乐 */
-    if (!on || !bgmOn || hidden) { stopBgm(); return; }
+    if (!bgmOn || hidden || !bgmAllowed) { stopBgm(); return; }
     /* 先起实时循环，保证立刻有声音；离线渲染完成后再换成更细腻的版本 */
     startLiveBgm();
     var myScene = scene;
@@ -536,14 +542,13 @@ window.Sfx = (function () {
   function setScene(s) {
     s = (s === 'table') ? 'table' : 'hall';
     if (s === scene && (bgmSrc || customEl)) return;
-    /* v75：同一首自定义/内置 BGM 跨场景连续播放，切大厅/牌桌都不重头 */
-    if (customBgm && customEl && s !== scene) { scene = s; return; }
+    /* v77：大厅不播 BGM，离页即停；不再保留 v75 的「跨场景连续播放」分支，
+       那个分支会先 return 导致离开打牌页时音乐多响一拍。 */
     scene = s;
-    /* 主音效开关关掉后，切换界面绝不能再起音乐 —— 原来这里漏了 !on 判断 */
-    if (!bgmOn || hidden) { stopBgm(); return; }
-    /* 大厅背景音乐属于「界面声音」，受总音效开关管；
-       牌桌背景音乐只认「牌桌背景音乐」开关。 */
-    if (scene !== 'table' && !on) { stopBgm(); return; }
+    /* v77：BGM 只认「背景音乐开关 + 打牌页 + 前后台状态」，绝不引用音效开关 on。
+       v76 残留的那条「非牌桌且音效关就停音乐」联动判断已删除：
+       关掉音效后切界面不该掐掉打牌音乐。 */
+    if (!bgmOn || hidden || !bgmAllowed || s !== 'table') { stopBgm(); return; }
     stopBgm();
     bgmBuf = bgmBufs[scene] || null;
     startBgm();
@@ -561,7 +566,7 @@ window.Sfx = (function () {
       bgmSrc.start(0);
     } catch (e) { bgmSrc = null; }
   }
-  /* v75：自定义/内置 BGM 在大厅与牌桌都播；关开关 / 切后台一律停掉 */
+  /* v77：自定义/内置 BGM 只在打牌页播；关开关 / 离开打牌页 / 切后台一律停掉 */
   function stopCustomBgm() {
     if (customEl) {
       try { customEl.pause(); customEl.removeAttribute('src'); customEl.load(); } catch (e) { }
@@ -569,7 +574,7 @@ window.Sfx = (function () {
     }
   }
   function startCustomBgm() {
-    if (!customBgm || customEl || hidden || resumeQuiet || !bgmOn || !on) return;
+    if (!customBgm || customEl || hidden || resumeQuiet || !bgmOn || !bgmAllowed) return;
     try {
       customEl = new Audio(customBgm);
       customEl.loop = true;
@@ -585,9 +590,9 @@ window.Sfx = (function () {
     var changed = (u || null) !== customBgm;
     customBgm = u || null; customBgmVer = ver || 0;
     if (changed) { stopCustomBgm(); stopBgm(); }
-    if (customBgm && bgmOn && on && !hidden && !resumeQuiet) {
+    if (customBgm && bgmOn && bgmAllowed && !hidden && !resumeQuiet) {
       if (!customEl) startCustomBgm();
-    } else if (bgmOn && on && !hidden && !resumeQuiet) startBgm();
+    } else if (bgmOn && bgmAllowed && !hidden && !resumeQuiet) startBgm();
   }
   function stopBgm() {
     if (bgmSrc) { try { bgmSrc.stop(); } catch (e) { } bgmSrc = null; }
@@ -596,6 +601,13 @@ window.Sfx = (function () {
     bgmGain = null;
   }
   var duckOn = false;
+  function setBgmAllowed(v) {
+    var nv = !!v;
+    if (nv === bgmAllowed) return;
+    bgmAllowed = nv;
+    if (!bgmAllowed) stopBgm();
+    else if (bgmOn && !hidden && !resumeQuiet) startBgm();
+  }
   function duck(on2) {                              // 出牌/炸弹时压低音乐
     duckOn = !!on2;
     if (bgmGain) {
@@ -613,22 +625,25 @@ window.Sfx = (function () {
   }
 
   var S = {
-    unlock: function () { ac(); if (on && bgmOn && !hidden) startBgm(); },
+    unlock: function () { ac(); if (bgmOn && bgmAllowed && !hidden) startBgm(); },
     /* 总音效开关只管「主界面 / 好友空间」的界面声音。
        牌桌背景音乐、出牌语音播报各归各的开关，互不影响。 */
-    set: function (v) {
-      on = !!v;
-      if (!on) {
-        if (scene !== 'table') stopBgm();
-      } else if (bgmOn && !hidden && (scene === 'table' || on)) startBgm();
-    },
+    /* v76：「音效」只管界面点击/提示音，绝不启停背景音乐。 */
+    set: function (v) { on = !!v; },
     setVoice: function (v) { voiceOn = !!v; if (!v) { try { speechSynthesis.cancel(); } catch (e) { } } },
     setTune: setTune, getTune: getTune,
-    setBgm: function (v) { bgmOn = !!v; if (v && on && !hidden) startBgm(); else stopBgm(); },
+    /* v77：「背景音乐」只管打牌界面的 BGM，不看音效开关。 */
+    setBgm: function (v) {
+      bgmOn = !!v;
+      if (bgmOn && bgmAllowed && !hidden && !resumeQuiet) startBgm(); else stopBgm();
+    },
+    setBgmAllowed: setBgmAllowed,
+    /* v76 自检钩子：只读，方便确认两个开关真的互不串 */
+    __state: function () { return { on: on, bgmOn: bgmOn, bgmAllowed: bgmAllowed, hasCustomEl: !!customEl, hasBgmSrc: !!bgmSrc }; },
     /* 看门狗：牌桌页被原生旋转/切后台打断后，音乐常常起不来。
        只要开关是开的又不在后台，就把它重新拉起来。 */
     ensure: function () {
-      try { if (!bgmOn || hidden) return; if (scene !== 'table' && !on) return; ac(); if (!bgmSrc && !liveTimer) startBgm(); } catch (e) { }
+      try { if (!bgmOn || hidden || !bgmAllowed) return; ac(); if (!bgmSrc && !liveTimer && !customEl) startBgm(); } catch (e) { }
     },
     setScene: setScene, cardDrop: cardDrop, setCustomBgm: setCustomBgm,
     bgm: startBgm, stopBgm: stopBgm, duck: duck,
@@ -711,12 +726,12 @@ window.Sfx = (function () {
       if (resumeQuiet) {
         /* 用户真的摸了一下屏幕，才解除回前台静音并恢复原本在放的 BGM */
         resumeQuiet = false;
-        if (wasPlaying && bgmOn && on && !hidden) startBgm();
+        if (wasPlaying && bgmOn && bgmAllowed && !hidden) startBgm();
         wasPlaying = false;
       }
       var c = ac();
       if (c && c.state === 'suspended' && !hidden) c.resume();
-      if (!unlocked) { unlocked = true; if (bgmOn && on && !hidden) startBgm(); }
+      if (!unlocked) { unlocked = true; if (bgmOn && bgmAllowed && !hidden) startBgm(); }
     } catch (e) { }
   }
   try {
