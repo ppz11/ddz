@@ -132,10 +132,28 @@ window.Notifier = (function () {
     return false;
   }
 
+  /* v75：状态查询 + 一键自检。
+     native  = 是否装在 APK 的原生桥里
+     push    = 前台保活服务的 WebSocket 状态（connected / connecting / closed / stopped）
+     perm    = 浏览器环境的 Notification.permission（原生环境看系统通知权限） */
+  function status() {
+    var x = nat(), push = 'stopped', perm = 'n/a';
+    try { if (x && x.wsState) push = x.wsState() || 'unknown'; } catch (e) { }
+    try { if (typeof Notification !== 'undefined') perm = Notification.permission; } catch (e) { }
+    return { native: !!x, push: push, perm: perm, enabled: enabled };
+  }
+  function selfTest() {
+    try { request(); } catch (e) { }
+    try { startPush(); } catch (e) { }
+    /* 前台也强制发一条：这是用户主动点的自检，不走 notifyIfHidden 的隐藏判断 */
+    notify('selftest:' + Date.now());
+    return status();
+  }
+
   return {
     request: request, notify: notify, notifyIfHidden: notifyIfHidden,
     setEnabled: setEnabled, isEnabled: isEnabled, setAlert: setAlert,
     setBadge: setBadge, clearBadge: clearBadge, badgeCount: badgeCount,
-    startPush: startPush
+    startPush: startPush, status: status, selfTest: selfTest
   };
 })();

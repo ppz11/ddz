@@ -7,6 +7,8 @@ window.Sfx = (function () {
   /* 出牌语音播报的语速 / 音调：设置页滑钮可调，试听听到的就是调后的效果 */
   var tRate = 1.08, tPitch = 1.0;
   var bgmSrc = null, bgmGain = null, bgmBuf = null, bgmCtx = null;
+  /* v74 自定义牌桌背景音乐：<audio> 循环，与程序化合成互斥 */
+  var customBgm = null, customEl = null, customBgmVer = 0;
   /* 后台状态：切后台 → 停 BGM + 挂起 AudioContext；回前台 → 恢复 */
   var hidden = false, wasPlaying = false;
   /* v63：从后台回到前台后，先保持静音，直到用户下一次真实触摸才恢复。
@@ -503,6 +505,9 @@ window.Sfx = (function () {
   function startBgm() {
     if (hidden || resumeQuiet) return;
     if (!bgmOn || hidden) return;
+    /* v74：牌桌场景有自定义音乐时，不再启动程序化合成 */
+    /* v75：自定义/内置 BGM 大厅也播，不再只限牌桌 */
+    if (customBgm) { stopLiveBgm(); startCustomBgm(); return; }
     var c = ac(); if (!c) return;
     if (bgmSrc || liveTimer) return;
     if (bgmBufs[scene]) { bgmBuf = bgmBufs[scene]; return playBuf(); }
@@ -530,7 +535,9 @@ window.Sfx = (function () {
   /* 切换场景（大厅 / 牌桌）：牌桌换更快节奏的曲子，让打牌有「牌房」氛围 */
   function setScene(s) {
     s = (s === 'table') ? 'table' : 'hall';
-    if (s === scene && bgmSrc) return;
+    if (s === scene && (bgmSrc || customEl)) return;
+    /* v75：同一首自定义/内置 BGM 跨场景连续播放，切大厅/牌桌都不重头 */
+    if (customBgm && customEl && s !== scene) { scene = s; return; }
     scene = s;
     /* 主音效开关关掉后，切换界面绝不能再起音乐 —— 原来这里漏了 !on 判断 */
     if (!bgmOn || hidden) { stopBgm(); return; }
@@ -554,9 +561,38 @@ window.Sfx = (function () {
       bgmSrc.start(0);
     } catch (e) { bgmSrc = null; }
   }
+  /* v75：自定义/内置 BGM 在大厅与牌桌都播；关开关 / 切后台一律停掉 */
+  function stopCustomBgm() {
+    if (customEl) {
+      try { customEl.pause(); customEl.removeAttribute('src'); customEl.load(); } catch (e) { }
+      customEl = null;
+    }
+  }
+  function startCustomBgm() {
+    if (!customBgm || customEl || hidden || resumeQuiet || !bgmOn || !on) return;
+    try {
+      customEl = new Audio(customBgm);
+      customEl.loop = true;
+      customEl.preload = 'auto';
+      customEl.volume = duckOn ? 0.072 : 0.24;
+      var pr = customEl.play();
+      if (pr && pr['catch']) pr['catch'](function () { });  /* 等用户触摸，unlock() 会再拉起 */
+    } catch (e) { customEl = null; }
+  }
+  function setCustomBgm(u, ver) {
+    /* v75：每 20 秒的全局资源轮询会重复调用本函数，地址没变就绝不重启音乐，
+       否则一进大厅每 20 秒歌就从头放一遍。 */
+    var changed = (u || null) !== customBgm;
+    customBgm = u || null; customBgmVer = ver || 0;
+    if (changed) { stopCustomBgm(); stopBgm(); }
+    if (customBgm && bgmOn && on && !hidden && !resumeQuiet) {
+      if (!customEl) startCustomBgm();
+    } else if (bgmOn && on && !hidden && !resumeQuiet) startBgm();
+  }
   function stopBgm() {
     if (bgmSrc) { try { bgmSrc.stop(); } catch (e) { } bgmSrc = null; }
     stopLiveBgm();
+    stopCustomBgm();
     bgmGain = null;
   }
   var duckOn = false;
@@ -566,6 +602,7 @@ window.Sfx = (function () {
       var target = (SCENE[scene] || SCENE.hall).vol;
       try { bgmGain.gain.value = duckOn ? target * 0.3 : target; } catch (e) { }
     }
+    if (customEl) { try { customEl.volume = duckOn ? 0.072 : 0.24; } catch (e) { } }
   }
   /* 出牌提示音：拍牌声 + 短促滑音，出牌/对手出牌都用它，耳朵能立刻分辨 */
   function cardDrop(strong) {
@@ -593,7 +630,7 @@ window.Sfx = (function () {
     ensure: function () {
       try { if (!bgmOn || hidden) return; if (scene !== 'table' && !on) return; ac(); if (!bgmSrc && !liveTimer) startBgm(); } catch (e) { }
     },
-    setScene: setScene, cardDrop: cardDrop,
+    setScene: setScene, cardDrop: cardDrop, setCustomBgm: setCustomBgm,
     bgm: startBgm, stopBgm: stopBgm, duck: duck,
     announce: announce, speak: speakText, ttsInfo: ttsInfo, nativeTtsReady: nativeTtsReady,
     /* v43：播报「过」之前清掉排队中的上一手牌型，避免念出上上家的牌 */

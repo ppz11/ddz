@@ -481,6 +481,30 @@ window.Chat = (function () {
          '</div></div></div></div>';
   }
   /* 绑定可复用：renderMsgs 传整个容器，pushMsg 传只包含新节点的包裹层 */
+  /* v73：缓存完成后把气泡内的媒体切到私有缓存地址；blob 地址不能拼查询串，
+     其余加一个时间戳强制 GIF 从第一帧重播。只处理同一条 .msg，不误伤别条。 */
+  function refreshBubbleMedia(tip, url) {
+    try {
+      var msg = tip.closest ? tip.closest('.msg') : null;
+      if (!msg || !window.MediaCache) return;
+      var local = MediaCache.get ? MediaCache.get(url) : null;
+      if (!local) return;
+      var target = local;
+      if (!/^(blob|data):/i.test(target))
+        target = target + (target.indexOf('?') >= 0 ? '&' : '?') + 'v73=' + Date.now();
+      msg.querySelectorAll('.thumb img,.bub img').forEach(function (im) {
+        if (im.dataset.v73done) return;
+        im.dataset.v73done = '1';
+        im.onerror = null;
+        im.src = target;
+      });
+      var vd = msg.querySelector('.thumb video');
+      if (vd && !/^(blob|data):/i.test(local)) {
+        try { vd.src = local; vd.load(); } catch (e) { }
+      }
+    } catch (e) { }
+  }
+
   function bindMsgNodes(root) {
     /* v72：逐条订阅缓存进度，DOM 被重绘时旧订阅自动作废 */
     try {
@@ -490,6 +514,9 @@ window.Chat = (function () {
           if (!el.parentNode) return;
           el.textContent = done ? '已缓存' : (pct > 0 ? ('缓存 ' + pct + '%') : '缓存中…');
           el.className = 'cache-tip' + (done ? ' done' : '');
+          /* v73：缓存完成那一刻把这条消息里的动图/视频切到本地地址并重新播放。
+             以前只改文字，动图停在直链首帧 → 「缓存完了没自动播」。 */
+          if (done) refreshBubbleMedia(el, u);
         });
       });
     } catch (e) { }
@@ -764,7 +791,19 @@ window.Chat = (function () {
     applyAnchor(++anchorToken, true);
   }
 
-  function send(obj) { Net.send(Object.assign({ t: 'chat', to: cur }, { msg: obj })); }
+  /* v73：自己一发消息就无条件回到最新。
+     旧逻辑 userMoved 被手势置 true 后永不复位，pushMsg 的
+     「atBottom || !userMoved」就再也不滚 —— 表现为发完新消息还要手动往下拖。 */
+  function forceBottom() {
+    userMoved = false; scrollAnchor = { type: 'bottom' };
+    var b = document.getElementById('msgs');
+    if (b) { try { b.scrollTop = b.scrollHeight; } catch (e) { } }
+    try { applyAnchor(++anchorToken, true); } catch (e) { }
+  }
+  function send(obj) {
+    forceBottom();
+    Net.send(Object.assign({ t: 'chat', to: cur }, { msg: obj }));
+  }
 
   function sendText() {
     var el = document.getElementById('c-input');
@@ -1089,6 +1128,14 @@ window.Chat = (function () {
   function saveToDevice(url, name) {
     url = String(url || '');
     if (!url) return App.toast('文件地址为空');
+    /* v73：已缓存优先从私有缓存复制并显式扫描，文件管理立刻可见 */
+    try {
+      if (window.DDZNative && typeof window.DDZNative.saveCached === 'function'
+          && window.MediaCache && MediaCache.cacheId) {
+        var rid = window.DDZNative.saveCached(String(MediaCache.cacheId(url)), String(name || 'file'));
+        if (String(rid).indexOf('ok') === 0) { App.toast('已保存到下载目录'); return; }
+      }
+    } catch (e) { }
     var u = url.indexOf('dl=1') >= 0 ? url : (url + (url.indexOf('?') >= 0 ? '&' : '?') + 'dl=1');
     var fn = String(name || 'file').replace(/[\\/:*?"<>|]/g, '_');
     if (window.DDZNative && typeof window.DDZNative.saveFile === 'function') {

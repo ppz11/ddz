@@ -79,12 +79,16 @@
             <circle cx="50" cy="50" r="46" fill="none" stroke="#f3c96b" stroke-width="2" opacity=".5"/>
             <text x="50" y="66" font-size="44" text-anchor="middle" fill="#f3c96b" opacity=".9">♠</text>
           </svg>
-          <h3>1V1 极速对局</h3>
-          <p>联网真人对战 · 两种玩法任选 · 一局三分钟</p>
+          <h3>极速对局</h3>
+          <p>联网真人对战 · 三种玩法任选 · 一局三分钟</p>
         </div>
         <div class="mode">
-          <div class="m on" data-rule="duo37">
-            <div class="tag">推荐</div>
+          <div class="m on wide" data-rule="trio54">
+            <div class="tag">推荐 · 默认</div>
+            <h4>三人斗地主</h4>
+            <p>54 张 · 经典叫分加倍<br>三人对局 · 农民配合</p>
+          </div>
+          <div class="m" data-rule="duo37">
             <h4>叫分加倍</h4>
             <p>37 张 · 叫分抢地主<br>先出完手牌者获胜</p>
           </div>
@@ -117,7 +121,8 @@
               <div class="etit">牌桌已就位，等你开局</div>
               <div class="esub">选一个玩法直接开局，或输入好友的房间号加入</div>
               <div class="emode" id="pe-mode">
-                <div class="em on" data-rule="duo37"><b>37 张</b><span>叫分加倍</span></div>
+                <div class="em on wide" data-rule="trio54"><b>三人</b><span>经典 54 张</span></div>
+                <div class="em" data-rule="duo37"><b>37 张</b><span>叫分加倍</span></div>
                 <div class="em" data-rule="cut37"><b>37 张</b><span>减牌竞叫</span></div>
               </div>
               <div class="erow">
@@ -249,11 +254,22 @@
         <div class="rowset tune">音调<b id="lb-pitch">1.00</b><input type="range" id="sl-pitch" min="0.5" max="1.8" step="0.02" value="1.00"></div>
         <div class="rowset" id="row-preview" style="cursor:pointer">🔊 试听提示音<span style="color:#5c6b66;font-size:11px">叫分/加倍/出牌</span></div>
         <div class="rowset">背景音乐<button class="sw on" id="sw-bgm"><i></i></button></div>
+        <!-- v74：房主自定义全局资源。上传一次，服务端广播给所有在线玩家 -->
+        <div class="rowset" id="row-bgmup" style="cursor:pointer">🎵 上传背景音乐<span style="color:#5c6b66;font-size:11px" id="bgm-tip">内置《欢乐斗地主》</span></div>
+        <input type="file" id="bgm-file" accept="audio/*" style="display:none">
+        <div class="rowset" id="row-bgmdel" style="cursor:pointer;display:none;color:#9fc0b4;font-size:11px">↩ 恢复默认背景音乐</div>
+        <div class="rowset" id="row-facup" style="cursor:pointer">🃏 自定义牌面<span style="color:#5c6b66;font-size:11px" id="face-tip">默认</span></div>
+        <input type="file" id="face-file" accept="image/png,image/jpeg" style="display:none">
+        <div class="rowset" id="row-facedel" style="cursor:pointer;display:none;color:#9fc0b4;font-size:11px">↩ 恢复默认牌面</div>
+        <a class="rowset" href="face-template-labeled.png" download="牌面模板_带标注.png" style="cursor:pointer;text-decoration:none;color:inherit">📥 下载牌面模板（带格子标注）<span style="color:#5c6b66;font-size:11px">2340×1260 PNG</span></a>
+        <div style="font-size:10px;color:#5c6b66;padding:0 12px 6px;line-height:1.6">上传后所有在线玩家自动更新。牌面是「一张」13 列 × 5 行、每格 180×252 的 PNG；按模板把 54 张牌贴进格子即可，详见《自定义牌面_一步一步》</div>
         <div class="rowset">对手动作震动<button class="sw on" id="sw-vibe"><i></i></button></div>
         <div class="rowset tune">震动强度<b id="lb-vibems">60ms</b><input type="range" id="sl-vibems" min="10" max="200" step="10" value="60"></div>
         <div class="rowset" id="row-vibetest" style="cursor:pointer">📳 试震一下<span style="color:#5c6b66;font-size:11px">按当前强度</span></div>
         <div style="font-size:10px;color:#5c6b66;padding:0 12px 4px">叫分 / 加倍 / 不出 / 出牌都震，只有自己的操作不震</div>
         <div class="rowset tune">媒体缓存<b id="lb-cache">…</b><button id="btn-clearcache" style="background:#1d3a33;color:#9fe8cf;border:1px solid #2c5a4c;border-radius:6px;padding:2px 8px;font-size:11px">清除</button></div>
+        <div class="rowset" id="row-notifytest" style="cursor:pointer">🔔 通知自检（发一条测试通知）<span style="color:#5c6b66;font-size:11px" id="notify-tip">未检测</span></div>
+        <div style="font-size:10px;color:#5c6b66;padding:0 12px 4px">通知栏显示的是斗地主广告，不显示真实消息；自检可确认通知权限与后台保活是否正常</div>
 <div class="rowset">新消息提示音<button class="sw on" id="sw-newsound"><i></i></button></div>
         <div class="rowset">新消息震动<button class="sw on" id="sw-newvibe"><i></i></button></div>
         <div class="rowset">来电震动<button class="sw on" id="sw-callvibe"><i></i></button></div>
@@ -316,65 +332,49 @@
 })();
 
 /* ============================================================
- * v72 软键盘避让（重写）
+ * v73 软键盘避让（再次重写）
  * ------------------------------------------------------------
- * 旧版把 #app.style.bottom 抬高 kb 像素：#app 是 flex 列容器，一抬
- * 整个页面连 #tabbar 一起上移 —— 真机上表现为「大厅/对战/聊天/我的
- * 四个按钮跑到键盘上方、页面顶部空出一大片」，输入框还是被挡。
- * 现在 #app 与 #tabbar 完全不动，只把 .composer / .tc-bar 固定到
- * 键盘上沿；键盘收起时原样恢复。
+ * v72 用 position:fixed + bottom:var(--kb) 把输入条「钉」到键盘上沿，
+ * 但 Android WebView（尤其带「点击说话」工具条的定制输入法）里
+ * visualViewport.height / offsetTop 并不可靠：算出 0 输入条被键盘盖住，
+ * 算出过大值又会把输入条顶到页面最上方；body.kb-on 还把四个 tab 藏了。
+ * 现在：#app 与 #tabbar 一律不动（用户要求四个按钮留在原位），
+ * 会话 / 打牌聊天都用 flex 列布局，键盘弹起时视口自然缩小，
+ * 输入条作为最后一项自然贴在键盘上沿。只对极端情况做相对自身的
+ * translateY 兜底，且上限 55% 视口高度，绝不可能顶飞。
  * ============================================================ */
 (function () {
-  var vv = window.visualViewport, baseH = 0, last = 0, poll = null;
-  function baseOf() {
-    var h = vv ? vv.height : (window.innerHeight || 0);
-    if (!baseH || h > baseH) baseH = h;
-    return baseH;
-  }
-  baseOf();
-  window.addEventListener('orientationchange', function () { baseH = 0; baseOf(); setTimeout(fit, 300); });
-  function fit() {
-    var kb = 0;
-    if (vv) {
-      var h = vv.height;
-      if (h > baseH) baseH = h;
-      kb = Math.max(0, baseH - h - (vv.offsetTop || 0));
-    } else {
-      kb = Math.max(0, (screen.height || 0) - (window.innerHeight || 0));
-    }
+  var vv = window.visualViewport, last = 0;
+  function lift() {
+    var ih = window.innerHeight || 0, kb = 0;
+    try {
+      var vh = vv ? (vv.height + (vv.offsetTop || 0)) : ih;
+      kb = Math.max(0, ih - vh);
+    } catch (e) { kb = 0; }
     if (kb < 90) kb = 0;
+    if (kb > Math.round(ih * 0.55)) kb = Math.round(ih * 0.55);   /* 防止顶到页顶 */
     if (kb === last) return;
     last = kb;
-    var app = document.getElementById('app');
-    if (app) app.style.setProperty('--kb', kb + 'px');   /* 不动 bottom，页面绝不位移 */
-    try { document.body.classList.toggle('kb-on', !!kb); } catch (e) { }
     try {
-      document.querySelectorAll('.thread,.tchat').forEach(function (el) {
-        el.classList.toggle('kb', !!kb);
+      document.querySelectorAll('.thread .composer,.tchat .tc-bar').forEach(function (el) {
+        el.style.setProperty('--v73lift', kb ? ('translateY(-' + kb + 'px)') : 'none');
       });
     } catch (e) { }
   }
-  if (vv) {
-    try { vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); } catch (e) { }
+  function schedule() {
+    [0, 80, 180, 320, 550, 900].forEach(function (ms) { setTimeout(lift, ms); });
   }
-  window.addEventListener('resize', fit);
-  /* 带「点击说话」工具条的定制输入法不触发 vv.resize：聚焦后持续轮询补抬 */
+  if (vv) {
+    try { vv.addEventListener('resize', schedule); vv.addEventListener('scroll', lift); } catch (e) { }
+  }
+  window.addEventListener('resize', schedule);
   document.addEventListener('focusin', function (e) {
     var t = e.target;
-    if (t && t.matches && t.matches('input,textarea,[contenteditable="true"]')) {
-      clearInterval(poll);
-      var n = 0;
-      poll = setInterval(function () { fit(); if (++n > 14) clearInterval(poll); }, 80);
-      setTimeout(fit, 220); setTimeout(fit, 550); setTimeout(fit, 900);
-      try { setTimeout(function () { if (t.scrollIntoView) t.scrollIntoView({ block: 'end' }); }, 260); } catch (x) { }
-    }
+    if (t && t.matches && t.matches('input,textarea,[contenteditable="true"]')) schedule();
   }, true);
-  document.addEventListener('focusout', function () {
-    setTimeout(function () {
-      var a = document.activeElement;
-      if (!a || !/INPUT|TEXTAREA/.test(a.tagName || '')) { clearInterval(poll); fit(); }
-    }, 180);
-  }, true);
+  document.addEventListener('focusout', function () { setTimeout(lift, 160); }, true);
+  window.addEventListener('orientationchange', function () { last = -1; setTimeout(lift, 350); });
+  lift();
 })();
 </script>
 </body>

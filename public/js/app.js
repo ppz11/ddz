@@ -1,6 +1,6 @@
 /* ===================== 主应用 ===================== */
 window.App = (function () {
-  var me = null, page = 'home', rule = 'duo37';
+  var me = null, page = 'home', rule = 'trio54';
   /* 隐私伪装默认关闭：开启后会话内容会被伪装成「邀请你开局」，
      语音/图片/视频/文件将无法正常显示，只有需要防偷看时才手动打开 */
   /* 四个开关各管各的：
@@ -22,6 +22,64 @@ window.App = (function () {
     vibeMs: 60
   };
   var createCfg = { mode: 'duo', rule: 'duo37' };
+
+  /* ============================================================
+   * v74 全局自定义资源：背景音乐 / 牌面雪碧图
+   * 房主在「我的 → 设置」上传一次 → 服务端写 data/custom.json
+   * → WS 广播给所有在线玩家 + 每 20 秒轮询兜底（弱网 / 重连 / 后上线）
+   * 版本号 ver 单调递增，乱序到达的旧广播不会覆盖新状态。
+   * ============================================================ */
+  var CUSTOM_LS = 'ddz_custom_v1';
+  /* v75：随包内置的《欢乐斗地主》——没上传自定义时就是它；
+     点「恢复默认背景音乐」也回到它，而不是回到程序合成的曲子。 */
+  var BUILTIN_BGM = 'assets/bgm-default.mp3';
+  function builtinBgmUrl() {
+    try { return new URL(BUILTIN_BGM, location.href).href; } catch (e) { return BUILTIN_BGM; }
+  }
+  function cVer(c) { return (c && c.ver) || 0; }
+  function paintCustomTips(b, f) {
+    var bt = document.getElementById('bgm-tip'), ft = document.getElementById('face-tip');
+    if (bt) bt.textContent = b ? '已自定义' : '内置《欢乐斗地主》';
+    if (ft) ft.textContent = f ? '已自定义' : '默认';
+    var bd = document.getElementById('row-bgmdel'), fd = document.getElementById('row-facedel');
+    if (bd) bd.style.display = b ? '' : 'none';
+    if (fd) fd.style.display = f ? '' : 'none';
+  }
+  function applyCustom(c) {
+    if (!c) return;
+    var old = 0;
+    try { old = JSON.parse(localStorage.getItem(CUSTOM_LS) || '{}').ver || 0; } catch (e) { }
+    if (cVer(c) < old) return;
+    var customBgm = !!(c.bgm && c.bgm.url);
+    var bgmUrl = customBgm ? Net.abs(c.bgm.url) : builtinBgmUrl();
+    var faceUrl = c.face && c.face.url ? Net.abs(c.face.url) : null;
+    try { Sfx.setCustomBgm(bgmUrl, cVer(c)); } catch (e) { }
+    try { Game.setFace(faceUrl, cVer(c)); } catch (e) { }
+    try { localStorage.setItem(CUSTOM_LS, JSON.stringify({ ver: cVer(c), bgm: customBgm, face: !!faceUrl })); } catch (e) { }
+    paintCustomTips(customBgm, !!faceUrl);
+  }
+  function syncCustom() {
+    try { Net.api('/api/custom').then(function (c) { applyCustom(c); })['catch'](function () { }); } catch (e) { }
+  }
+  function uploadCustom(kind, file) {
+    if (!file) return;
+    toast('正在上传，请稍候…');
+    var sv = JSON.parse(localStorage.getItem('ddz_auth') || '{}');
+    Net.upload(file, kind, 0).then(function (r) {
+      if (r.err) throw new Error(r.err);
+      return Net.api('/api/custom/set', { token: sv.token, kind: kind, url: r.url, name: file.name });
+    }).then(function (c) {
+      if (c.err) { toast(c.err); return; }
+      applyCustom(c); toast('已更新，所有在线玩家自动生效');
+    })['catch'](function (e) { toast('上传失败：' + (e && e.message ? e.message : e)); });
+  }
+  function clearCustom(kind) {
+    var sv = JSON.parse(localStorage.getItem('ddz_auth') || '{}');
+    Net.api('/api/custom/set', { token: sv.token, kind: kind, url: '' }).then(function (c) {
+      if (c.err) { toast(c.err); return; }
+      applyCustom(c); toast('已恢复默认');
+    })['catch'](function (e) { toast('操作失败：' + (e && e.message ? e.message : e)); });
+  }
   var contacts = [], onlineUsers = [], allUsers = [], fakeOnline = 0, invited = new Set();
   var hist = [];
 
@@ -130,6 +188,15 @@ window.App = (function () {
   function saveToDevice(url, name) {
     url = String(url || '');
     if (!url) return toast('文件地址为空');
+    /* v73：已缓存 → 原生直接从私有缓存复制，按魔数补扩展名/MIME 并显式扫描，
+       保存完立刻能在文件管理 / 相册里看到；不依赖 DownloadManager 猜类型。 */
+    try {
+      if (window.DDZNative && typeof window.DDZNative.saveCached === 'function'
+          && window.MediaCache && MediaCache.cacheId) {
+        var rid = window.DDZNative.saveCached(String(MediaCache.cacheId(url)), String(name || 'file'));
+        if (String(rid).indexOf('ok') === 0) { toast('已保存到下载目录'); return; }
+      }
+    } catch (e) { }
     var u = url.indexOf('dl=1') >= 0 ? url : (url + (url.indexOf('?') >= 0 ? '&' : '?') + 'dl=1');
     var fn = String(name || 'file').replace(/[\\/:*?"<>|]/g, '_');
     if (!(window.DDZNative && typeof window.DDZNative.saveFile === 'function')) {
@@ -483,6 +550,8 @@ window.App = (function () {
   /* ---------- 启动 ---------- */
   function boot() {
     loadSettings();
+    /* v75：不等 900ms 的网络同步，进 App 就用随包内置的音乐，大厅立刻有声 */
+    try { applyCustom({ ver: 0 }); } catch (e) { }
     // 若用户曾在诊断框里手动改过地址，这里优先使用（免重新编译）
     try {
       var ov = localStorage.getItem('ddz_server_override');
@@ -639,6 +708,9 @@ window.App = (function () {
     Orient.portrait();
     if (settings.voice) Sfx.setVoice(true);
     if (settings.bgm) { Sfx.setBgm(true); Sfx.bgm(); }
+    /* v74：进 App 立即拉一次全局资源，之后每 20 秒兜底同步 */
+    setTimeout(syncCustom, 900);
+    setInterval(syncCustom, 20000);
     document.getElementById('login').classList.add('hidden');
     document.getElementById('main').classList.remove('hidden');
     var sv = JSON.parse(localStorage.getItem('ddz_auth') || '{}');
@@ -928,6 +1000,21 @@ window.App = (function () {
       this.classList.toggle('on', settings.bgm); saveSettings();
       toast(settings.bgm ? '背景音乐已开启' : '背景音乐已关闭');
     };
+    /* v74：自定义背景音乐 / 牌面，四个入口 */
+    var bf = document.getElementById('bgm-file'), br = document.getElementById('row-bgmup');
+    if (br && bf) {
+      br.onclick = function () { bf.click(); };
+      bf.onchange = function () { if (bf.files && bf.files[0]) uploadCustom('bgm', bf.files[0]); bf.value = ''; };
+    }
+    var ff = document.getElementById('face-file'), fr = document.getElementById('row-facup');
+    if (fr && ff) {
+      fr.onclick = function () { ff.click(); };
+      ff.onchange = function () { if (ff.files && ff.files[0]) uploadCustom('face', ff.files[0]); ff.value = ''; };
+    }
+    var bd = document.getElementById('row-bgmdel'); if (bd) bd.onclick = function () { clearCustom('bgm'); };
+    var fd = document.getElementById('row-facedel'); if (fd) fd.onclick = function () { clearCustom('face'); };
+    var st0 = null; try { st0 = JSON.parse(localStorage.getItem(CUSTOM_LS) || '{}'); } catch (e) { }
+    if (st0) paintCustomTips(!!st0.bgm, !!st0.face);
     /* 语速 / 音调：拖动即时生效，点「试听提示音」听到的就是调后的效果 */
     bindTune('sl-rate', 'lb-rate', 'rate', 1.08);
     bindTune('sl-pitch', 'lb-pitch', 'pitch', 1.0);
@@ -1235,6 +1322,29 @@ window.App = (function () {
 
   /* ---------- WS 路由 ---------- */
   function wire() {
+    /* v75：通知自检放在 wire，登录页就能点，不依赖登录后才跑的 bindTabs */
+    /* v75：通知自检 —— 点一下立刻发一条系统通知，同时显示原生通道/权限状态。
+       用来一次性确认：通知权限给了没、前台服务起来没、通知栏能不能看见。 */
+    function notifyStatusText(s) {
+      if (!s) return '未检测';
+      if (s.native) return '原生通道：' + (s.push || 'unknown') + (s.enabled ? '' : '（已关闭）');
+      return '浏览器通知：' + (s.perm || 'unknown');
+    }
+    function paintNotifyStatus() {
+      var tip = document.getElementById('notify-tip');
+      if (!tip) return;
+      try { tip.textContent = notifyStatusText(Notifier.status()); } catch (e) { tip.textContent = '未检测'; }
+    }
+    var nts = document.getElementById('row-notifytest');
+    if (nts) nts.onclick = function () {
+      try {
+        var s = Notifier.selfTest();
+        paintNotifyStatus();
+        toast('已发一条测试通知，请下拉通知栏查看');
+      } catch (e) { toast('自检失败：' + (e && e.message ? e.message : e)); }
+    };
+    setTimeout(paintNotifyStatus, 1200);
+    Net.on('custom', function (m) { applyCustom(m); });   /* v74 服务端资源变更即时广播 */
     Net.on('lobby', function (m) { paintOnline(m.users || [], { fakeOnline: m.fakeOnline }); });
     Net.on('contacts', function (m) {
       contacts = m.list || [];
@@ -1334,6 +1444,7 @@ window.App = (function () {
     invitePlay: invitePlay,
     joinRoom: joinRoom,
     updateChatDot: updateChatDot,
+    syncCustom: syncCustom, applyCustom: applyCustom,   /* v74 自检钩子 + 外部手动同步 */
     loginWithToken: function (tok) {
       var r0 = Net.api('/api/login', { token: tok });
       var afterFn = window.__ddzAfterLogin;

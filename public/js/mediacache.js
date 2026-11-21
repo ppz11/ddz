@@ -27,6 +27,29 @@ window.MediaCache = (function () {
   var CHUNK_PREFIX = '\u0001';        /* 分片 key 前缀，stats 时跳过 */
   var DB_NAME = 'ddz_media_v1', STORE = 'files';
 
+  /* ---------- v73：缓存 key 归一化（幂等） ----------
+     会话气泡 data-cache / warmChat 传的是 m.url = "/api/file/u1147"；
+     bubble() 与 App.viewMedia 传的是 Net.abs(m.url) =
+     "http://101.201.106.149:8080/api/file/u1147"。两者直接当 key，
+     缓存写在 A、播放查 B —— 这正是「提示已缓存，点开却 0:00/0:00」的根因。
+     统一取 pathname+search（忽略 origin / ?dl=1），绝对与相对必然同 key。 */
+  function keyOf(url) {
+    var s = String(url || '');
+    if (/^(data|blob):/i.test(s)) return s;
+    try {
+      var u = new URL(s, location.href);
+      var q = u.search.replace(/([?&])dl=1(&|$)/, '$1').replace(/\?$/, '').replace(/&$/, '');
+      return u.pathname + q;
+    } catch (e) { return s; }
+  }
+  function kUrls(list) { return (list || []).map(function (u) { return keyOf(u); }); }
+  function kMsgs(list) {
+    return (list || []).map(function (m) {
+      if (m && m.url) { var o = {}; for (var k in m) o[k] = m[k]; o.url = keyOf(m.url); return o; }
+      return m;
+    });
+  }
+
   var mem = new Map();        /* url -> objectURL */
   var pending = new Map();    /* url -> Promise  */
   var queue = [], running = 0, MAX_RUN = 2;
@@ -340,10 +363,20 @@ window.MediaCache = (function () {
 
   /* 无原生（PC 浏览器 / 尚未重编译的旧 APK）：沿用 v67 的内存 + IndexedDB 缓存。
      这条路径受 WebView 存储配额约束，大文件建议 ≤200MB。 */
+  /* v73：所有对外入口先把地址归一化，内部 key 与网络请求都用同一个值
+     （相对 /api/file/xxx 在当前页面 origin 下 fetch 完全正确）。 */
   var idbApi = {
-    get: get, cached: cached, resolve: resolve, fetchURL: fetchURL,
-    prefetch: prefetch,    warm: warm, warmChat: warmChat, warmStickers: warmStickers,
-    watch: watchIDB, stats: stats, clear: clear,
+    get: function (u) { return get(keyOf(u)); },
+    cached: function (u) { return cached(keyOf(u)); },
+    resolve: function (u) { return resolve(keyOf(u)); },
+    fetchURL: function (u) { return fetchURL(keyOf(u)); },
+    prefetch: function (u) { return prefetch(keyOf(u)); },
+    warm: function (l) { return warm(kUrls(l)); },
+    warmChat: function (l) { return warmChat(kMsgs(l)); },
+    warmStickers: warmStickers,
+    watch: function (u, cb) { return watchIDB(keyOf(u), cb); },
+    stats: stats, clear: clear,
+    key: keyOf, cacheId: function (u) { return keyOf(u); },
     size: function () { return mem.size; },
     queued: function () { return queue.length; }
   };
@@ -368,7 +401,7 @@ window.MediaCache = (function () {
 
   var inflight = {};
   function nId(url) {
-    var s = String(url || ''), h = 5381;
+    var s = keyOf(url), h = 5381;   /* v73：绝对/相对同 id */
     for (var i = 0; i < s.length; i++) h = (((h << 5) + h) + s.charCodeAt(i)) | 0;
     return 'f' + (h >>> 0).toString(16) + '_' + s.length.toString(36);
   }
@@ -436,6 +469,8 @@ window.MediaCache = (function () {
   return {
     get: function (url) { return nLocal(url); },
     cached: function (url) { return Promise.resolve(nLocal(url)); },
+    key: keyOf,
+    cacheId: function (url) { return nId(url); },
     /* 未命中时立刻返回服务器直链边下边播，同时后台补缓存；
        下一次点开就是本地地址，0 等待。 */
     resolve: function (url) {

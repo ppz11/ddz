@@ -48,6 +48,21 @@ const MAX_CHUNKS   = Math.ceil(MAX_UPLOAD / CHUNK_SIZE);  /* 256 片 */
 const safeUploadId = s => /^[A-Za-z0-9_-]{6,64}$/.test(String(s || '')) ? String(s) : '';
 const partsDir = upId => path.join(store.DATA_DIR, 'uploads', '.parts', upId);
 
+/* v74 全局自定义资源（背景音乐 / 牌面）：单独存 data/custom.json，
+   清用户库脚本只动 db.json，不会误删房主上传的资源。 */
+const CUSTOM_FILE = path.join(store.DATA_DIR, 'custom.json');
+function readCustom() {
+  try { return JSON.parse(fs.readFileSync(CUSTOM_FILE, 'utf8')); }
+  catch (e) { return { ver: 0, bgm: null, face: null }; }
+}
+function writeCustom(c) {
+  c.ver = Date.now();
+  try { fs.mkdirSync(store.DATA_DIR, { recursive: true }); fs.writeFileSync(CUSTOM_FILE, JSON.stringify(c)); } catch (e) { }
+  /* 立即广播给所有在线客户端；客户端还有 20 秒轮询兜底 */
+  try { for (const ws2 of clients.keys()) send(ws2, { t: 'custom', ver: c.ver, bgm: c.bgm, face: c.face }); } catch (e) { }
+  return c;
+}
+
 /* ============================================================
  *  TURN 中继（语音 / 视频通话跨网络必备）
  *
@@ -467,6 +482,24 @@ const server = http.createServer(async (req, res) => {
         return fs.createReadStream(out.tar).pipe(res);
       } catch (e) { return json(res, 500, { err: '导出失败：' + e.message }); }
     }
+    /* ============================================================
+     * v74 全局自定义资源：GET 查询 / POST 设置（需登录 token）
+     * url 来自已有 /api/upload 或 /api/upload/finish，落在 data/uploads/。
+     * 传空 url = 恢复默认。设置成功后向所有在线 WS 广播 custom。
+     * ============================================================ */
+    if (p === '/api/custom') return json(res, 200, readCustom());
+    if (p === '/api/custom/set' && req.method === 'POST') {
+      const b = JSON.parse((await body(req, 64 * 1024)).toString() || '{}');
+      const u = userByToken(b.token);
+      if (!u) return json(res, 401, { err: '登录已失效，请重进游戏' });
+      const kind = String(b.kind || '');
+      if (kind !== 'bgm' && kind !== 'face') return json(res, 400, { err: 'kind 不对' });
+      const c = readCustom();
+      const link = String(b.url || '');
+      c[kind] = link ? { url: link, name: String(b.name || ''), by: u.uid, at: Date.now() } : null;
+      writeCustom(c);
+      return json(res, 200, c);
+    }
     /* 服务器统一表情包：房主上传一次，所有玩家登录后自动拉取到同样的包 */
     if (p === '/api/stickers') return json(res, 200, { packs: StickerStore.list() });
     if (p === '/api/stickers/pack' && req.method === 'POST') {
@@ -861,6 +894,16 @@ function applyBidAndLog(g, seat, act, gid) {
   return r;
 }
 
+/* v75：把真实打出的牌记进 g.seenCards，供机器人「记牌」判断顶张。
+   只追加一个普通字段，不参与引擎任何判定；重启后新局自动为空。 */
+function rememberPlay(g, hand, ids) {
+  if (!g || !hand) return;
+  var set = {}; (ids || []).forEach(function (id) { set[id] = 1; });
+  var seen = (g.seenCards = g.seenCards || []);
+  hand.forEach(function (c) { if (set[c.id]) seen.push({ v: c.v, id: c.id }); });
+  if (seen.length > 200) g.seenCards = seen.slice(-200);
+}
+
 /* 机器人驱动 */
 function scheduleBots(room) {
   clearBotTimers(room);
@@ -879,9 +922,8 @@ function botAct(room, seat) {
   const who = room.seats[seat]; if (!who || !who.bot) return;
   try {
     if (g.phase === 'double') {
-      // 机器人加倍策略：手牌越有把握越倾向加倍
-      const strong = (g.hands[seat] || []).filter(c => c.v >= 15 || c.v === 14).length;
-      const yes = strong >= 2 || (g.hands[seat] || []).some(c => c.v >= 16);
+      /* v75：改用 AI 的手牌强度 + 炸弹/王炸判断，牌不够硬不乱加倍 */
+      const yes = !!AI.double(g, seat);
       DDZ.applyDouble(g, seat, yes);
       noteAct(g, seat, yes ? 'double' : 'nodouble', 'double');
       pushGame(room);
@@ -908,9 +950,11 @@ function botAct(room, seat) {
       pushGame(room);
     } else if (g.phase === 'play') {
       const a = AI.play(g, seat);
+      const handBefore = g.hands[seat].slice();
       const r = DDZ.applyPlay(g, seat, a.ids || []);
 
             if (!r.err) {
+              rememberPlay(g, handBefore, a.ids || []);
 
               g.evtSeq = (g.evtSeq || 0) + 1;
 
@@ -1789,8 +1833,10 @@ function handle(ws, st, m) {
     case 'game:play': {
       const room = findRoom(u); if (!room || !room.game) return;
       const seat = seatOf(room, u);
+      const handBefore = room.game.hands[seat].slice();
       const r = DDZ.applyPlay(room.game, seat, m.ids || []);
       if (r.err) return send(ws, { t: 'err', msg: r.err });
+      rememberPlay(room.game, handBefore, m.ids || []);
       const pg = room.game, played = (m.ids || []).length > 0;
       pg.evtSeq = (pg.evtSeq || 0) + 1;
       pg.actEvt = { by: seat, act: played ? 'play' : 'pass', seq: pg.evtSeq, gid: room.gid };

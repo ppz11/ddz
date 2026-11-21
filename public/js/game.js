@@ -9,6 +9,30 @@ window.Game = (function () {
   var tcMsgs = [], tcOpen = false, tcRec = null, tcChunks = [], tcStream = null, tcStart = 0, tcCancel = false;
 
   var SUIT = { S: '♠', H: '♥', C: '♣', D: '♦' };
+  /* v74 自定义牌面：单张 13 列 × 5 行雪碧图 PNG（2340×1260，每格 180×252）。
+     第 1~4 行 = ♠ ♥ ♣ ♦；每行 A 2 3 4 5 6 7 8 9 10 J Q K；
+     第 5 行 = 小王(列1) / 大王(列2) / 牌背(列3)。 */
+  var faceUrl = null, faceVer = 0;
+  var FACE_R = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+  var FACE_S = { S:0, H:1, C:2, D:3 };
+  function facePos(c) {
+    var row = 0, col = 0;
+    if (c.joker) { row = 4; col = c.joker === 'big' ? 1 : 0; }
+    else {
+      row = (FACE_S[c.s] == null ? 0 : FACE_S[c.s]);
+      col = FACE_R.indexOf(String(c.r)); if (col < 0) col = 0;
+    }
+    return (col / 12 * 100).toFixed(4) + '% ' + (row / 4 * 100).toFixed(4) + '%';
+  }
+  function setFace(u, ver) {
+    faceUrl = u || null; faceVer = ver || 0;
+    try {
+      document.body.classList.toggle('face-on', !!faceUrl);
+      if (faceUrl) document.body.style.setProperty('--face-url', 'url("' + faceUrl + '")');
+      else document.body.style.removeProperty('--face-url');
+    } catch (e) { }
+    try { if (S) { render(); renderHand(); } } catch (e) { }
+  }
   /* 服务端广播的真人玩家名单（lobby.all），供「邀请在线好友」选择框使用。
      以前「邀请在线玩家」直接补一个机器人，真人根本没被通知到。 */
   var roster = [];
@@ -57,6 +81,10 @@ window.Game = (function () {
   }
   function cardHTML(c, cls) {
     if (!c) return '';
+    if (faceUrl) {
+      return '<div class="pc imgface ' + (c.red ? 'red' : 'black') + ' ' + (cls || '') + '" data-id="' + c.id +
+        '" style="background-image:url(\'' + faceUrl + '\');background-position:' + facePos(c) + '"></div>';
+    }
     var col = c.red ? 'red' : 'black';
     if (c.joker) {
       var small = cls && (cls.indexOf('mini') >= 0 || cls.indexOf('tiny') >= 0);
@@ -633,6 +661,16 @@ window.Game = (function () {
   }
 
   /* ---------------- 渲染 ---------------- */
+  /* v75：叫分 / 加倍 / 出牌统一取「当前该谁行动」。
+     引擎在 bid 阶段用 bidTurn、double 阶段用 doubleTurn，play 才用 turn；
+     旧代码只认 turn，所以叫分/加倍时左右两家和我方都不亮金框。 */
+  function turnSeat(s) {
+    if (!s) return -1;
+    if (s.phase === 'bid') return (typeof s.bidTurn === 'number') ? s.bidTurn : -1;
+    if (s.phase === 'double') return (typeof s.doubleTurn === 'number') ? s.doubleTurn : -1;
+    if (s.phase === 'play') return (typeof s.turn === 'number') ? s.turn : -1;
+    return -1;
+  }
   /* 身份徽标：地主用皇冠、农民用麦穗。
      以前只有「地主/农民」四个小字，混在昵称后面根本分辨不出来，
      现在是带底色的一块，一眼能看到谁是谁。 */
@@ -718,7 +756,7 @@ window.Game = (function () {
         var need = Math.max(0, cnt - S.cutTarget);
         needTxt = '剩 ' + cnt + ' · 再出 ' + need + ' 张胜';
       }
-      var act = (S.phase === 'play' && S.turn === i) ? ' act' : '';
+      var act = (turnSeat(S) === i) ? ' act' : '';
       /* v51：昵称 + 身份上下一列；叫分加倍结果 + 剩张数上下另一列。
          左侧玩家副列在右，右侧玩家副列在左（CSS 用 row-reverse 翻过来）。 */
       return '<div class="ts' + act + (cls ? ' ' + cls : '') + '">' +
@@ -727,20 +765,20 @@ window.Game = (function () {
           '<div class="ts-main"><div class="nm">' + (u ? esc(shortName(u, '空位')) : '空位') + '</div>' + roleTag(i) + '</div>' +
           '<div class="ts-side">' + bidTag(i) + '<div class="cnt">' + needTxt + '</div></div>' +
         '</div>' +
-        (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
+        (act && S.phase === 'play' ? '<div class="clock"><b>' + left + '</b></div>' : '') +
         '</div>';
     }
     /* 我在右侧时的信息块（两人场用） */
     function mySeatHTML() {
       var cnt = S.counts[me];
-      var act = (S.phase === 'play' && S.turn === me) ? ' act' : '';
+      var act = (turnSeat(S) === me) ? ' act' : '';
       return '<div class="ts me' + act + '">' +
         '<div class="av">' + Avatar.svg(meU && meU.avatar, 26) + '</div>' +
         '<div class="ts-i">' +
           '<div class="ts-main"><div class="nm">' + esc(shortName(meU, '我')) + '</div>' + roleTag(me) + '</div>' +
           '<div class="ts-side">' + bidTag(me) + '<div class="cnt">剩 ' + cnt + ' 张</div></div>' +
         '</div>' +
-        (act ? '<div class="clock"><b>' + left + '</b></div>' : '') +
+        (act && S.phase === 'play' ? '<div class="clock"><b>' + left + '</b></div>' : '') +
         '</div>';
     }
     /* 一列 = 信息块 + 打出的牌。左侧：信息块在左、牌向右展开；
@@ -786,6 +824,8 @@ window.Game = (function () {
       elT.innerHTML = '';
       elMy.classList.remove('hidden2');
       elMyP.classList.remove('hidden2');
+      /* v74：轮到我出牌时，我方昵称/身份栏也亮金框（原来只有左右两家有） */
+      elMy.classList.toggle('act', turnSeat(S) === me);
       elMy.innerHTML =
         '<div class="av">' + Avatar.svg(meU && meU.avatar, 28) + '</div>' +
         '<div class="ts-i">' +
@@ -806,6 +846,7 @@ window.Game = (function () {
       // 两人场「我」已经在右侧，隐藏底部那一行的个人信息
       elMy.classList.add('hidden2');
       elMyP.classList.add('hidden2');
+      elMy.classList.remove('act');
       elMy.innerHTML = '';
       elMyP.innerHTML = '';
     }
@@ -1781,11 +1822,15 @@ window.Game = (function () {
     try {
       var box = document.getElementById('big-sticker');
       if (!box) return;
+      clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);   /* v73：先清旧计时 */
       var u = (window.Stickers && Stickers.imgUrl) ? Stickers.imgUrl(url || '') : (url || '');
       if (!u) u = String(url || '');
       /* v59：WebView 里 Net.abs 可能补成 localhost → 图片必然破。统一换成真实服务器地址 */
       var srvBase = (window.APP_SERVER || '').replace(/\/$/, '');
-      if (srvBase && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(u))
+      /* v73：原生私有缓存的本地服务地址不能被当成 localhost 旧地址重写，
+         否则 /__ddz__/xxx 会被拼到服务器上 → 必 404 → 「图片地址打不开」。 */
+      var isLocalCache = /^https?:\/\/127\.0\.0\.1(:\d+)?\/__ddz__\//i.test(u);
+      if (!isLocalCache && srvBase && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(u))
         u = srvBase + u.replace(/^https?:\/\/[^/]+/i, '');
       /* v62：同 origin 的 /api/file/... 改走相对路径，避开 WebView 里
          APP_SERVER 注入成旧地址 / 代理解析差异导致的 404。不同源时保持绝对地址。 */
@@ -1815,13 +1860,16 @@ window.Game = (function () {
          这样 GIF/APNG/WebP 动图能播，且完全不依赖服务端 Content-Type。
          fetch 不可用（老 WebView 的 data:/blob:）时回退到直连 <img src>。 */
       function direct(reason) {
+        img.onload = function () { img.__ok = 1; startTimer(); };
         img.onerror = function () { fail(reason || '图片地址打不开'); };
         img.src = u;
       }
-      /* v72 真因：v65 起「未命中缓存就只等 fetchURL 异步回包」，而表情预热是
-          每 4 秒才扫一次的定时器、且 syncGlobal 是异步的 —— 刚打开 App 就发，
-          缓存里没有，3 秒计时已经走完，图上还没出来 → 报「图片解码失败」；
-          第二次发时缓存好了，就正常。现在改成「先直链同步出图，后台再补缓存」。 */
+      /* ---------- v73：恢复「字节 → 魔数 → 带 type 的 Blob → objectURL」主路径 ----------
+         v72 把主路径改回 img.src=直链，服务端 /api/file 对 mime 为空的表情常回
+         application/octet-stream，WebView 直接拒绝渲染 → 「图片地址打不开」。
+         现在：缓存命中同步出图；未命中立即 fetch 字节、按魔数重建 Blob，
+         几百毫秒内出图，绝不依赖 Content-Type；两次都失败才明确报错。
+         本地私有缓存地址（127.0.0.1/__ddz__）原样放行。 */
       var shownAt = Date.now();
       function startTimer() {
         clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
@@ -1830,28 +1878,40 @@ window.Game = (function () {
           bigStkOutTimer = setTimeout(hideBigSticker, 300);
         }, 3000);
       }
+      function renderSrc(src, finalFallback) {
+        if (box.classList.contains('hidden')) return;
+        img.onerror = function () {
+          if (finalFallback) { fail(finalFallback); return; }
+          img.onerror = null; direct('图片地址打不开');
+        };
+        img.onload = function () { img.__ok = 1; startTimer(); };
+        img.src = src;
+      }
       var hit = null;
       try { hit = (window.MediaCache && MediaCache.get) ? MediaCache.get(u) : null; } catch (e) { }
-      img.onload = function () { img.__ok = 1; startTimer(); };
-      img.onerror = function () {
-        if (hit) { hit = null; img.onerror = null; img.src = u; return; }  /* 缓存副本坏了退回直链 */
-        fail('图片地址打不开');
-      };
-      img.src = hit || u;                       /* 同步赋值，第一帧就有画面 */
-      try {
-        if (!hit && window.MediaCache && MediaCache.fetchURL) {
-          MediaCache.fetchURL(u).then(function (obj) {
-            if (!obj || obj === u) return;
-            if (box.classList.contains('hidden') || Date.now() - shownAt > 2600) return;
-            var im2 = box.querySelector('img');
-            if (im2 && im2.parentNode) { im2.onerror = null; im2.src = obj; }
-          }).catch(function () { });
-        }
-      } catch (e) { }
+      if (hit) { renderSrc(hit, null); }
+      else if (/^(data|blob):/i.test(u)) { renderSrc(u, null); }
+      else {
+        /* 先给一个占位，避免大图整块空白 */
+        fetch(u, { credentials: 'same-origin' })
+          .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.arrayBuffer();
+          })
+          .then(function (buf) {
+            if (box.classList.contains('hidden')) return;
+            var type = sniffMime(buf) || 'image/png';
+            var ou = URL.createObjectURL(new Blob([buf], { type: type }));
+            renderSrc(ou, null);
+            /* 后台补一份私有缓存，下次同步出图 */
+            try { if (window.MediaCache && MediaCache.prefetch) MediaCache.prefetch(u); } catch (e) { }
+          })
+          ['catch'](function (e) { direct((e && e.message) || '图片地址打不开'); });
+      }
       box.classList.remove('hidden');
       box.classList.remove('out');
-      clearTimeout(bigStkTimer); clearTimeout(bigStkOutTimer);
-      /* 直链/缓存都没在 1.2 秒内 load 时给一个兜底计时，避免大图永远挂着 */
+      /* v73：这里不能再 clearTimeout —— renderSrc 里 onload 可能已启动 3 秒计时。
+         只在 1.2 秒仍没 load 时兜底启动一次，避免大图永远挂着。 */
       setTimeout(function () { if (!img.__ok) startTimer(); }, 1200);
       /* v61：整屏可点，touchstart / pointerdown 立即关并 preventDefault，
          不等动画、不穿透到牌桌；click 兜底。每次显示覆盖 on*，不累积监听器。 */
@@ -2133,7 +2193,7 @@ window.Game = (function () {
   function toast(t) { App.toast(t); }
 
   return {
-    init: init, onRoom: onRoom, onGame: onGame, onResult: onResult, reset: reset,
+    init: init, onRoom: onRoom, onGame: onGame, onResult: onResult, reset: reset, setFace: setFace,
     play: play, pass: pass, hint: hint, bid: bid, leave: leave, resign: resign, rematch: rematch,
     backHome: backHome, addBot: addBot, fillAll: fillAll, kickBot: kickBot,
     onTableChat: onTableChat, closeTableChat: closeTableChat, onSpeaking: onSpeaking, startNow: startNow,
@@ -2144,6 +2204,7 @@ window.Game = (function () {
     __showRest: function (rest, cb) { return showRest(rest, cb); },
     __showResult: function (m) { return showResult(m); },
     __quick: function () { return QUICK; }, __stick: function () { return QSTICK; },
+    __cardHTML: cardHTML, __facePos: facePos,   /* v74 自检钩子 */
     __layoutSeats: function () { layoutSeats(); },
     __layoutRail: function () { layoutRail(); }, __railRect: function () { var r = document.getElementById('table-rail'); return r ? { top: Math.round(r.getBoundingClientRect().top), h: r.offsetHeight, cls: r.className, inline: r.style.top } : null; }
   };

@@ -1,6 +1,13 @@
 /* ============================================================
  *  机器人 AI（服务端托管，前端完全感知不到是机器）
  *  支持 2 人 / 3 人，行为拟人：有思考延迟、偶尔犹豫、会犯错
+ *
+ * v75 强化：五档参数全部真正参与决策（此前 lookahead / count 只是摆设），
+ *   - 记牌：服务端把真实打出的牌记到 g.seenCards，AI 据此判断「顶张」；
+ *   - 手数：高难度领出时评估「出完这手还剩几手碎牌」，不再无脑先出小单张；
+ *   - 地主：对手快出完时不失误、不藏牌、不送小单张、不玩随机次优；
+ *   - 农民：地主剩牌少时强制拦截，队友牌少时坚决让路，不再压真人队友；
+ *   - 叫分 / 加倍：高难度提高叫地主门槛，牌不够硬不乱叫、不乱加倍。
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./engine.js'));
@@ -13,7 +20,12 @@
 
   /* ---------- 难度档位 ----------
    * 1=新手 2=普通 3=熟练 4=高手 5=大师（默认 3）
-   * 数值越高：失误越少、会算牌记牌、压制更果断、懂得拆牌与保留关键牌。
+   * mistake  = 非紧急时的看走眼概率
+   * lookahead= 是否评估「出完这手后的剩余手数」（>=2 启用，>=3 跟牌也挑最优）
+   * count    = 是否用已出牌记牌判断顶张（>=1 启用）
+   * greed    = 舍得出大牌的程度
+   * split    = 残局拆牌求一手走完的程度
+   * trap     = 上家出小牌时故意藏牌的程度
    * 难度由服务端统一保存，对所有人同时生效（同一局里机器人水平一致）。 */
   var LEVELS = {
     1: { name: '新手', mistake: 0.55, lookahead: 0, count: 0, greed: 0.30, split: 0.15, trap: 0.00 },
@@ -29,6 +41,57 @@
     return LV.id;
   }
   function getLevel() { if (!LV) setLevel(3); return LV; }
+
+  /* ---------- 记牌 / 手牌结构 ---------- */
+  function copies(v) { return v >= 16 ? 1 : 4; }              // 大小王各 1 张
+  function countMap(hand) {
+    var c = {}; (hand || []).forEach(function (x) { c[x.v] = (c[x.v] || 0) + 1; });
+    return c;
+  }
+  /* 已见牌 = 真实打出的牌 + 公开的底牌（地主已收进手牌，对外也算已知） */
+  function seenMap(g) {
+    var m = {}, i;
+    if (g && g.seenCards) for (i = 0; i < g.seenCards.length; i++) {
+      var v = g.seenCards[i].v; m[v] = (m[v] || 0) + 1;
+    }
+    if (g && g.landlord >= 0 && g.bottom) for (i = 0; i < g.bottom.length; i++) {
+      var bv = g.bottom[i].v; m[bv] = (m[bv] || 0) + 1;
+    }
+    return m;
+  }
+  /* 这张牌是不是「外面已经没有更大的牌」：高难度据此放心出/压，不再无脑藏牌 */
+  function isTop(v, hand, g) {
+    var mine = countMap(hand), seen = seenMap(g), unseen = 0;
+    for (var hv = Number(v) + 1; hv <= 17; hv++) {
+      var left = copies(hv) - (mine[hv] || 0) - (seen[hv] || 0);
+      if (left > 0) unseen += left;
+    }
+    return unseen <= 0;
+  }
+  /* 剩余手牌的「碎度」：单张越多越差，炸弹/对子越多越好。数值越小越好。 */
+  function fragility(hand) {
+    var c = countMap(hand), singles = 0, pairs = 0, bombs = 0;
+    Object.keys(c).forEach(function (v) {
+      var n = c[v];
+      if (+v <= 14 && n === 1) singles++;
+      if (n === 2) pairs++;
+      if (n === 4) bombs++;
+    });
+    return singles * 1.8 + (hand || []).length * 0.12 - bombs * 1.2 - pairs * 0.4;
+  }
+  function restOf(hand, cards) {
+    var set = {}; cards.forEach(function (c) { set[c.id] = 1; });
+    return hand.filter(function (c) { return !set[c.id]; });
+  }
+  /* 对手最小剩牌数：地主看所有农民；农民只盯地主，绝不把队友当敌人 */
+  function oppMin(g, seat, isLandlord) {
+    var m = 99;
+    (g.hands || []).forEach(function (h, i) {
+      if (i === seat || !h) return;
+      if (isLandlord || i === g.landlord) m = Math.min(m, h.length);
+    });
+    return m;
+  }
 
   /* ---------- 手牌强度评估（0~100） ---------- */
   function strength(hand) {
@@ -47,34 +110,42 @@
       if (vals[i] === vals[i - 1] + 1) { run++; if (run > best) best = run; } else run = 1;
     }
     if (best >= 5) s += (best - 4) * 4;
-    // 牌型数量（能出的手数越多越差）
-    var moves = DDZ.allMoves(hand).length;
-    s -= Math.max(0, moves - 9) * 1.1;
+    /* v75 真因修复：旧代码用「能组成的牌型数量」当惩罚，可牌越好组合越多，
+       强牌反而被扣到 20 分以下，机器人拿王炸三条还不敢叫地主 —— 这就是
+       「机器人当地主老输」的源头。改成按剩余单张/碎度扣分，才符合牌理。 */
+    s -= Math.min(12, fragility(hand) * 0.6);
     return Math.max(0, s);
   }
 
-  /* ---------- 叫分 / 叫地主决策 ---------- */
+  /* ---------- 叫分 / 叫地主决策 ----------
+     高难度不再拿一手平庸牌抢地主（这是「机器人当地主老输」的源头之一）。 */
   function bid(g, seat) {
-    var h = g.hands[seat], s = strength(h);
-    /* v46：46 张也走叫分制，不再走「抢地主让牌」 */
-    // 叫分制：1~3
+    var h = g.hands[seat], s = strength(h), L = getLevel();
     var cur = g.bid ? g.bid.score : 0;
-    var want = s >= 50 ? 3 : s >= 36 ? 2 : s >= 22 ? 1 : 0;
-    // 拟人：先表态的人往往愿意叫 1 分试水，避免总是流局
-    if (want === 0 && g.bidSeq.length === 0 && Math.random() < 0.55) want = 1;
+    var t = L.id >= 4 ? [26, 40, 50] : [18, 32, 44];
+    var want = s >= t[2] ? 3 : s >= t[1] ? 2 : s >= t[0] ? 1 : 0;
+    // 拟人：先表态的人偶尔愿意叫 1 分试水，避免总是流局；高难度更克制
+    if (want === 0 && g.bidSeq.length === 0 && Math.random() < (L.id >= 4 ? 0.18 : 0.55)) want = 1;
     // 兜底：最后一位表态且全场无人叫 → 叫 1 分，避免流局
     var nobodyBid = g.bidSeq.every(function (b) { return b.act === 'pass'; });
     if (want === 0 && nobodyBid && g.bidSeq.length === g.seats - 1) want = 1;
     if (Math.random() < 0.12) want += (Math.random() < 0.5 ? 1 : -1);
-    /* v45：后叫的人只能叫得更高，不能和上一个一样。
-       引擎层会直接拒绝同分，这里先挡一道，避免机器人被拒后卡在叫分阶段。 */
     var score = Math.min(3, want);
     if (score <= cur || score <= 0) return { type: 'pass' };
     return { type: 'bid', score: score };
   }
 
-  /* v46 减牌竞叫决策：牌越强越敢叫大数字（意味着更有把握早出完）。
-     首叫只有 1/2 两个选项，之后只能在上家基础上 +1 或 +2。 */
+  /* v75 加倍决策：牌不够硬不乱加倍（原来只数 2/A/王，太容易翻倍送分） */
+  function double(g, seat) {
+    var h = g.hands[seat] || [], s = strength(h), c = countMap(h), L = getLevel();
+    var bomb = Object.keys(c).some(function (v) { return c[v] === 4; });
+    var rocket = !!(c[17] && c[16]);
+    if (rocket) return true;
+    if (bomb && s >= 30) return true;
+    return s >= (L.id >= 4 ? 40 : 46);
+  }
+
+  /* v46 减牌竞叫决策：牌越强越敢叫大数字 */
   function cut(g, seat) {
     var s = strength(g.hands[seat]);
     var opts = DDZ.cutOptions(g);
@@ -90,7 +161,6 @@
   /* ---------- 抢地主（旧让牌玩法，v46 起不再触发，保留兼容） ---------- */
   function grab(g, seat) {
     var s = strength(g.hands[seat]);
-    // 牌力强就抢，最多抢到让牌 4 张
     if (g.grabCount >= 3) return { type: 'pass' };
     var threshold = 30 + g.grabCount * 9;
     return s >= threshold ? { type: 'grab' } : { type: 'pass' };
@@ -101,29 +171,26 @@
     var hand = g.hands[seat];
     var last = g.last;
     var needBeat = (last && last.by !== seat) ? last.info : null;
-
-    // 无人压 → 自由出牌
     if (!needBeat) return freePlay(g, seat, hand);
-
-    // 跟牌
     return follow(g, seat, hand, needBeat, last);
   }
 
   function freePlay(g, seat, hand) {
-    var i;
+    var i, L = getLevel();
     // 一手走完
     var all = DDZ.allMoves(hand);
     var finish = all.filter(function (m) { return m.length === hand.length; });
     if (finish.length) return { ids: finish[0] };
 
     var isLandlord = seat === g.landlord;
-    var c = {}; hand.forEach(function (x) { c[x.v] = (c[x.v] || 0) + 1; });
+    var oppLast = oppMin(g, seat, isLandlord);
+    var c = countMap(hand);
     var mine = all.map(function (m) {
       var cards = DDZ.byId(hand, m);
       return { ids: m, info: DDZ.parse(cards), cards: cards };
     }).filter(function (x) { return x.info; });
+    if (!mine.length) return { ids: [] };
 
-    // 队友（农民）只剩很少牌时，地主应压制；这里简化为：优先出长牌型
     function score(x) {
       var s = 0, t = x.info.type;
       var big = x.info.main >= 14 ? 1 : 0;
@@ -134,17 +201,31 @@
       if (t === 'triple1' || t === 'triple2') s -= 2;
       if (t === 'single' && x.info.main <= 8) s -= 3;
       // 拆牌惩罚：不要拆对子/三张
-      var cc = {}; x.cards.forEach(function (k) { cc[k.v] = (cc[k.v] || 0) + 1; });
+      var cc = countMap(x.cards);
       Object.keys(cc).forEach(function (v) {
         if (c[v] === 2 && cc[v] === 1) s += 8;
         if (c[v] === 3 && cc[v] < 3) s += 12;
         if (c[v] === 4 && cc[v] < 4) s += 40;
       });
+      /* v75：高难度看「出完这手还剩几手碎牌」，优先选让剩余手牌更整齐的一手。
+         这是 lookahead 参数第一次真正生效，也是地主不再把牌权白送出去的关键。 */
+      if (L.lookahead >= 2) {
+        var rest = restOf(hand, x.cards);
+        s += fragility(rest) * (1.2 + L.lookahead * 0.35);
+        if (rest.length === 0) s -= 200;
+      }
+      /* v75：对手快出完时，别再出小单张送牌权；长牌型一次多走几张更实在 */
+      if (oppLast <= 4) {
+        if (t === 'single' && x.info.main <= 10) s += 22;
+        if (x.ids.length >= 5) s -= 10;
+      }
+      /* v75：记牌判定为「外面已无更大牌」的顶张，果断走掉，不再当宝贝攥着 */
+      if (L.count >= 1 && t === 'single' && isTop(x.info.main, hand, g)) s -= 7;
       return s;
     }
     mine.sort(function (a, b) { return score(a) - score(b); });
-    // 拟人：90% 选最优，10% 选次优
-    var idx = (Math.random() < 0.9 || mine.length === 1) ? 0 : 1;
+    // 拟人：90% 选最优，10% 选次优；对手快赢时不玩花样
+    var idx = (oppLast <= 4 || Math.random() < 0.9 || mine.length === 1) ? 0 : 1;
     return { ids: mine[Math.min(idx, mine.length - 1)].ids };
   }
 
@@ -152,25 +233,17 @@
     var lastBy = last.by;
     var isLandlord = seat === g.landlord;
     var teammate = !isLandlord && lastBy !== g.landlord && lastBy !== seat;  // 队友出的牌
+    var L = getLevel();
     /* v72：三人场原来用「所有其他家最小牌数」当对手，把队友也算进去了 ——
        队友只剩 2 张时 urgent=true，机器人会去压队友，最终把农民方拖输。
        现在只认地主的牌数。 */
-    var oppLast;
-    if (g.seats === 3 && g.landlord >= 0) {
-      oppLast = 99;
-      g.hands.forEach(function (h, i) {
-        if (i === seat) return;                 /* 自己不算 */
-        if (isLandlord || i !== g.landlord)     /* 地主看所有农民；农民只看地主 */
-          oppLast = Math.min(oppLast, (h || []).length);
-      });
-    } else {
-      oppLast = (g.hands[1 - seat] || []).length;
-    }
+    var oppLast = oppMin(g, seat, isLandlord);
+    if (oppLast === 99) oppLast = (g.hands[1 - seat] || []).length;   // 二人兜底
 
-    /* v59 农民配合：以前「队友出的牌」92% 直接放过，叠加跟牌保守策略后，
+    /* 农民配合：以前「队友出的牌」92% 直接放过，叠加跟牌保守策略后，
        经常表现成「一家一直出、另一家一整局都不出」，看着像挂机。
-       现在：队友快赢(≤2 张) 一定让路；自己能一手走完就接管收尾；
-       其余按连续让路次数轮换 —— 每让 2 次，第 3 次允许接管一次。 */
+       现在：队友快赢一定让路；自己能一手走完就接管收尾；
+       其余一律让路（v72 撤掉「每让 2 次必接管」，不再压真人队友）。 */
     if (teammate) {
       var mateLeft = (g.hands[lastBy] || []).length;
       var all0 = DDZ.allMoves(hand);
@@ -180,14 +253,8 @@
         return inf && DDZ.beats(inf, needBeat);
       });
       if (finish0.length) return { ids: finish0[0] };       // 自己能一手走完 → 接管收尾
-      /* v72：撤掉「每让 2 次第 3 次必接管」和 8% 手滑。
-         我（真人农民）牌快出完时机器人还压我，多半就是这两条触发的。
-         队友剩 ≤6 张一律让路；只有队友牌还很多(>10)、自己牌极少(≤3)
-         时才偶尔接管一次，避免整局一动不动像挂机。 */
       if (mateLeft <= 6) return { ids: [] };
       if (mateLeft > 10 && hand.length <= 3 && Math.random() < 0.25) {
-        /* 接管就直接出，不再走后面的「藏牌 / 忍让」随机放过，
-           否则刚允许接管又被放过，会退回「一家整局不出」的老毛病。 */
         var take = null;
         for (var ti = 0; ti < all0.length && !take; ti++) {
           var inf2 = DDZ.parse(DDZ.byId(hand, all0[ti]));
@@ -207,11 +274,10 @@
     });
     if (!can.length) return { ids: [] };
 
-    // 对方剩牌很少 → 必须压制
-    var urgent = oppLast <= 2;
-    // 对方剩牌 <= 让牌数（let46）→ 必须压制
-    /* v59：3 人场不能再用 1-landlord 当索引（landlord=2 时是 -1），
-       旧写法会读到 undefined.length，紧急判断直接失效。 */
+    /* v75：地主快出完时农民必须尽力拦截；地主自己也要压住快赢的农民。
+       阈值随难度提高，且紧急局面下一律不失误、不藏牌、不挑次优。 */
+    var urgent = oppLast <= (L.id >= 4 ? 4 : (L.id >= 3 ? 3 : 2));
+    var mustStop = !isLandlord && oppLast <= (L.id >= 4 ? 5 : 4);
     if (g.rule === 'let46') {
       var oppLens = [];
       g.hands.forEach(function (h, idx) {
@@ -219,7 +285,7 @@
         if (isLandlord || idx === g.landlord) oppLens.push(h.length);
       });
       var few = oppLens.length ? Math.min.apply(null, oppLens) : 99;
-      if (!isLandlord && few <= (g.letCount || 0) + 1) urgent = true;
+      if (!isLandlord && few <= (g.letCount || 0) + 1) { urgent = true; mustStop = true; }
       if (isLandlord && few <= (g.letCount || 0)) urgent = true;
     }
 
@@ -227,41 +293,45 @@
     var finish = can.filter(function (x) { return x.ids.length === hand.length; });
     if (finish.length) return { ids: finish[0].ids };
 
-    var c = {}; hand.forEach(function (x) { c[x.v] = (c[x.v] || 0) + 1; });
+    var c = countMap(hand);
     function cost(x) {
       var s = 0, t = x.info.type;
       s += x.info.main * 1.0;
       if (t === 'bomb') s += 90;
       if (t === 'rocket') s += 160;
       if (x.info.main >= 15) s += 20;      // 2 和王
-      var cc = {}; x.cards.forEach(function (k) { cc[k.v] = (cc[k.v] || 0) + 1; });
+      var cc = countMap(x.cards);
       Object.keys(cc).forEach(function (v) {
         if (c[v] === 2 && cc[v] === 1) s += 9;
         if (c[v] === 3 && cc[v] < 3) s += 14;
         if (c[v] === 4 && cc[v] < 4) s += 60;
       });
+      /* 高难度：同样能压，优先选「压完剩牌最整齐」的那一手 */
+      if (L.lookahead >= 3) s += fragility(restOf(hand, x.cards)) * 0.8;
       return s;
     }
     can.sort(function (a, b) { return cost(a) - cost(b); });
     var best = can[0];
 
-    var L = getLevel();
-    // 失误率：低难度会「看走眼」，放过本该压的牌
-    if (Math.random() < L.mistake * 0.5) return { ids: [] };
+    // 失误率：低难度会「看走眼」放过本该压的牌；紧急时不许失误
+    if (!urgent && !mustStop && Math.random() < L.mistake * 0.5) return { ids: [] };
+
+    // 记牌：确认自己这张已是顶张，就不再无脑藏牌
+    var confident = L.count >= 1 && isTop(best.info.main, hand, g);
 
     // 不紧急时，小牌才跟；大牌则放过（难度越高越会忍）
-    if (!urgent) {
+    if (!urgent && !mustStop && !confident) {
       var tooBig = best.info.main >= 15 || best.info.type === 'bomb' || best.info.type === 'rocket';
       var gap = best.info.main - needBeat.main;
       var holdBack = 0.72 - L.greed * 0.45;          // 高手更舍得出大牌
       if (!isLandlord) holdBack *= 0.6;                 // v59：农民别过度忍让
       if (tooBig && needBeat.main <= 12 && Math.random() < holdBack) return { ids: [] };
-      // 高手会「藏牌」：上家出小牌时故意不压，留着关键牌收尾
-      if (L.trap > 0 && needBeat.main <= 8 && Math.random() < L.trap * 0.5) return { ids: [] };
+      // 高手会「藏牌」，但只在开局（对手牌还多）留关键牌；中残局一律积极压制
+      if (L.trap > 0 && oppLast > 8 && needBeat.main <= 8 && Math.random() < L.trap * 0.5) return { ids: [] };
       if (gap > 6 && Math.random() < (0.35 - L.greed * 0.2)) return { ids: [] };
     }
-    // 地主时更积极；高难度会挑「最省牌型」而不是随便出
-    if (isLandlord && Math.random() < 0.12 && can.length > 1) return { ids: can[1].ids };
+    // 地主时更积极；高难度会挑「最省牌型」而不是随便出；紧急时不玩花样
+    if (isLandlord && !urgent && Math.random() < 0.12 && can.length > 1) return { ids: can[1].ids };
     // 高手懂得拆牌：手上剩牌少时优先走能一口气出完的
     if (L.split > 0 && hand.length <= 6) {
       var finisher = can.filter(function (x) { return x.cards.length >= hand.length - 1; });
@@ -271,13 +341,8 @@
   }
 
   /* ---------- 思考延迟（毫秒），拟人 ----------
-     出牌固定 3 秒左右：0.6~2.0 秒太快，牌刚亮就压上来，一眼假。
-     3 秒上下浮动 0.6 秒（2.7~3.3s），既有「在想」的停顿，又不会拖到烦。
-     叫分/加倍是快节奏环节，1.2~1.8 秒足够，太长会让开局显得磨蹭。 */
+     出牌固定 3 秒左右；叫分约 3 秒，加倍约 2 秒，均在限时内。 */
   function thinkTime(g, seat) {
-    /* v52：机器人叫分约 3 秒一个动作（原来 1.2~1.8 秒太快，前端浮标/语音
-       还没播完就被下一步覆盖，表现为「叫分没提示，直接出结果」）。
-       加倍约 2 秒，仍在 4 秒限时内；出牌保持原来的 ~3 秒。 */
     var base = 2700 + Math.random() * 600;
     if (g.phase === 'bid') base = 2700 + Math.random() * 600;
     else if (g.phase === 'double') base = 1800 + Math.random() * 500;
@@ -285,7 +350,8 @@
   }
 
   return {
-    strength: strength, bid: bid, cut: cut, grab: grab, play: play, thinkTime: thinkTime,
-    setLevel: setLevel, getLevel: getLevel, LEVELS: LEVELS
+    strength: strength, bid: bid, cut: cut, grab: grab, play: play, double: double,
+    thinkTime: thinkTime, setLevel: setLevel, getLevel: getLevel, LEVELS: LEVELS,
+    fragility: fragility, isTop: isTop
   };
 });

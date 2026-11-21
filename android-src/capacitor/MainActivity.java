@@ -184,6 +184,10 @@ public class MainActivity extends BridgeActivity {
 
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        /* v73：强制 adjustResize。部分 ROM 默认 adjustPan 会把整个 WebView 上推，
+           导致「输入框跑到页面最上方 / 四个 tab 跟着飞」。resize 模式下
+           CSS 视口自然缩小，flex 列的输入条就贴在键盘上沿。 */
+        try { getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE); } catch (Exception ignored) { }
         sInstance = this;
         /* v37：强制「精确位置」权限。安卓无法在安装时强制授权，
            但可以在运行时要求：没授予就弹不可取消的引导页，不授权就用不了；
@@ -697,6 +701,54 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
+        /* ---------------- v73：从私有缓存保存到公共「下载」目录 ----------------
+           DownloadManager 对无扩展名 / octet-stream 的文件常存成「未知文件」，
+           文件管理的「视频 / 图片」分类里看不到。这里直接复制已缓存的字节，
+           按魔数补扩展名与 MIME，并显式 MediaScanner 扫描，保存完立刻可见。
+           本方法是唯一写公共目录的入口之一（与 saveFile 一样只允许手动保存）。 */
+        @JavascriptInterface
+        public String saveCached(final String id, final String name) {
+            java.io.File src = cacheFile(id);
+            if (src == null || !src.isFile() || src.length() <= 0) return "error:未缓存";
+            try {
+                String mime = PrivateCacheServer.sniffMimeOf(src);
+                if (mime == null) mime = "application/octet-stream";
+                String ext = ".bin";
+                if (mime.equals("video/mp4")) ext = ".mp4";
+                else if (mime.equals("image/gif")) ext = ".gif";
+                else if (mime.equals("image/png")) ext = ".png";
+                else if (mime.equals("image/jpeg")) ext = ".jpg";
+                else if (mime.equals("image/webp")) ext = ".webp";
+                else if (mime.equals("audio/mp4") || mime.equals("audio/mpeg")) ext = ".m4a";
+                String fn = (name == null || name.trim().length() == 0) ? ("ddz_" + id) : name.trim();
+                fn = fn.replaceAll("[\\/:*?\"<>|]", "_");
+                boolean hasExt = fn.matches("(?i).*\\.[a-z0-9]{2,5}$");
+                if (!hasExt) fn = fn + ext;
+                java.io.File dir = android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS);
+                if (dir != null && !dir.exists()) dir.mkdirs();
+                java.io.File dst = new java.io.File(dir, fn);
+                int k = 1;
+                while (dst.exists()) {
+                    String base = hasExt ? fn.substring(0, fn.lastIndexOf('.')) : fn;
+                    String ex = hasExt ? fn.substring(fn.lastIndexOf('.')) : ext;
+                    dst = new java.io.File(dir, base + "(" + (k++) + ")" + ex);
+                }
+                java.io.FileInputStream fi = new java.io.FileInputStream(src);
+                java.io.FileOutputStream fo = new java.io.FileOutputStream(dst);
+                byte[] buf = new byte[64 * 1024]; int r;
+                while ((r = fi.read(buf)) > 0) fo.write(buf, 0, r);
+                fo.flush(); fo.close(); fi.close();
+                try {
+                    android.media.MediaScannerConnection.scanFile(getApplicationContext(),
+                        new String[]{dst.getAbsolutePath()}, new String[]{mime}, null);
+                } catch (Exception ignored) { }
+                return "ok:" + dst.getAbsolutePath();
+            } catch (Exception e) {
+                return "error:" + (e.getMessage() == null ? "保存失败" : e.getMessage());
+            }
+        }
+
         @JavascriptInterface
         public String startRecord() {
             final String[] out = new String[1];
@@ -1002,7 +1054,40 @@ public class MainActivity extends BridgeActivity {
             if (n.endsWith(".png")) return "image/png";
             if (n.endsWith(".jpg")) return "image/jpeg";
             if (n.endsWith(".gif")) return "image/gif";
+            /* v73：上传时 mime 为空 → 服务端 / .type 是 octet-stream，
+               <video> 会拒绝解码 → 表现为 0:00 / 0:00 黑屏。按文件头兜底。 */
+            String sn = sniffMimeOf(f);
+            if (sn != null) return sn;
             return "application/octet-stream";
+        }
+        /* 按魔数嗅探真实类型，与前端 sniffMime 同一套规则 */
+        static String sniffMimeOf(File f) {
+            java.io.FileInputStream fi = null;
+            try {
+                fi = new java.io.FileInputStream(f);
+                byte[] b = new byte[12];
+                int n = fi.read(b);
+                fi.close(); fi = null;
+                if (n < 6) return null;
+                StringBuilder h = new StringBuilder();
+                for (int i = 0; i < n; i++) {
+                    String s = Integer.toHexString(256 + (b[i] & 0xff));
+                    h.append(s.substring(1));
+                }
+                String x = h.toString();
+                if (x.startsWith("47494638")) return "image/gif";
+                if (x.startsWith("89504e470d0a1a0a")) return "image/png";
+                if (x.startsWith("ffd8ff")) return "image/jpeg";
+                if (x.startsWith("52494646") && x.length() >= 16 && x.substring(16, 24).equals("57454250")) return "image/webp";
+                if (x.startsWith("424d")) return "image/bmp";
+                if (x.length() >= 16 && x.substring(8, 16).equals("66747970")) return "video/mp4";
+                if (x.startsWith("1a45dfa3")) return "video/webm";
+                return null;
+            } catch (Exception ignored) {
+                return null;
+            } finally {
+                if (fi != null) try { fi.close(); } catch (Exception ignored) { }
+            }
         }
         private void handle(Socket s) {
             try {

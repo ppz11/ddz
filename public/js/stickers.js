@@ -149,6 +149,8 @@ window.Stickers = (function () {
     if (/^\/(?!\/)/.test(a)) a = (window.APP_SERVER || 'http://101.201.106.149:8080').replace(/\/$/, '') + a;
     /* v59：Net.abs 在 WebView 里可能补成 localhost 绝对地址，图片必然 404。
        统一替换成真实服务器，牌桌动态表情 / 表情格子都能正常显示。 */
+    /* v73：原生私有缓存的 127.0.0.1/__ddz__ 是本机真实可用的地址，不能重写 */
+    if (/^https?:\/\/127\.0\.0\.1(:\d+)?\/__ddz__\//i.test(a)) return a;
     if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(a)) {
       var b = (window.APP_SERVER || 'http://101.201.106.149:8080').replace(/\/$/, '');
       a = b + a.replace(/^https?:\/\/[^/]+/i, '');

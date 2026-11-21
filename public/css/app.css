@@ -91,6 +91,7 @@ input,textarea{font-family:inherit}
 .hero p{margin:0;font-size:12px;color:var(--sub);line-height:1.6}
 .hero .deco{position:absolute;right:-16px;top:-16px;width:110px;height:110px;opacity:.85}
 .mode{margin:0 14px 12px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.mode .m.wide{grid-column:1/-1}
 .mode .m{padding:12px;border-radius:16px;background:rgba(255,255,255,.055);border:1.5px solid transparent;position:relative;transition:.15s}
 .mode .m.on{border-color:var(--gold);background:rgba(243,201,107,.12)}
 .mode .m h4{margin:0 0 4px;font-size:14px}
@@ -878,7 +879,8 @@ body.land .page{padding-bottom:calc(54px + var(--safe-b))}
 .etable .elogo{font-size:40px;color:var(--gold);opacity:.5;line-height:1}
 .etable .etit{font-size:16px;font-weight:800;color:var(--gold)}
 .etable .esub{font-size:11px;color:var(--sub);text-align:center;line-height:1.5}
-.etable .emode{display:flex;gap:8px;width:100%;margin-top:2px}
+.etable .emode{display:flex;gap:8px;width:100%;margin-top:2px;flex-wrap:wrap}
+.etable .emode .em.wide{flex:1 1 100%}
 .etable .emode .em{flex:1;padding:8px 6px;border-radius:12px;text-align:center;cursor:pointer;
   background:rgba(255,255,255,.05);border:1px solid var(--line);display:flex;flex-direction:column;gap:2px}
 .etable .emode .em b{font-size:13px}
@@ -2798,3 +2800,43 @@ body.kb-on #tabbar{visibility:hidden}
   border:1px solid rgba(243,201,107,.35);white-space:nowrap}
 #app #page-play .pcards .pass-word{font-size:calc(20px * var(--k,1))!important}
 /* end v72 */
+
+
+/* ============================================================
+ * v73 真机反馈修正层（2026-11-20）
+ * ============================================================ */
+/* ① 键盘：#app / #tabbar 一律不动，四个按钮留在原位；
+   覆盖 v72 的 position:fixed + bottom:var(--kb)（会把输入条顶到页顶）。 */
+body.kb-on #tabbar{visibility:visible!important;display:flex!important}
+/* v73：新键盘脚本不再加 .kb 类，transform 必须挂在基础选择器上 */
+.thread .composer,.tchat .tc-bar{transform:var(--v73lift,none)!important}
+.thread.kb .composer,.tchat.kb .tc-bar{
+  position:relative!important;left:auto!important;right:auto!important;
+  bottom:auto!important;top:auto!important;
+  transform:var(--v73lift,none)!important;
+  z-index:90!important;flex:0 0 auto!important}
+.thread.kb .msgs{padding-bottom:8px}
+.thread{height:100%}
+.thread .msgs{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important}
+.thread .composer{flex:0 0 auto!important}
+/* 打牌界面房间聊天：输入条作为 flex 最后一项，键盘弹起自然贴键盘上沿 */
+.tchat{display:flex!important;flex-direction:column!important}
+.tchat .tc-msgs{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important}
+.tchat .tc-quick,.tchat .tc-bar{flex:0 0 auto!important}
+.tchat .tc-bar{background:rgba(6,31,24,.98)}
+/* ② 会话顶部空白：保持隐藏 */
+#main.no-topbar #topbar{display:none!important}
+/* end v73 */
+
+
+/* ============ v74：轮次高亮（我方昵称/身份）+ 自定义牌面 ============ */
+/* 左右两家原本就有 .ts.act 金框；我方 .myinfo 与双人场右座补上同款 */
+.myinfo.act{box-shadow:0 0 0 2px rgba(243,201,107,.75);border-radius:14px;background:rgba(243,201,107,.06)}
+.seatleft .ts.act,.seatright .ts.act{box-shadow:0 0 0 2px rgba(243,201,107,.75);border-radius:12px}
+/* 自定义牌面：一张 13 列 × 5 行雪碧图，background-size 用百分比天然适配 mini/tiny */
+.pc.imgface{background-repeat:no-repeat;background-size:1300% 500%;background-color:transparent;
+  border:0;box-shadow:0 3px 8px rgba(0,0,0,.45);color:transparent}
+.pc.imgface .rk,.pc.imgface .su,.pc.imgface .big,.pc.imgface .ctr{display:none}
+body.face-on .pc.back{background-image:var(--face-url);background-position:16.6667% 100%;
+  background-size:1300% 500%;background-repeat:no-repeat;background-color:transparent}
+body.face-on .pc.back::after{display:none}
